@@ -20,6 +20,7 @@ export default function JobDetailDialog({
   onLoadLog,
   logLoadingMode = null,
   onAssignOmdb,
+  onRestartEncode,
   onReencode,
   onDeleteFiles,
   onDeleteEntry,
@@ -32,7 +33,15 @@ export default function JobDetailDialog({
   const running = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(job?.status);
   const showFinalLog = !running;
   const canReencode = !!(job?.rawStatus?.exists && job?.rawStatus?.isEmpty !== true && mkDone && !running);
-  const canDeleteEntry = !running;
+  const hasConfirmedPlan = Boolean(
+    job?.encodePlan
+    && Array.isArray(job?.encodePlan?.titles)
+    && job?.encodePlan?.titles.length > 0
+    && Number(job?.encode_review_confirmed || 0) === 1
+  );
+  const hasRestartInput = Boolean(job?.encode_input_path || job?.raw_path || job?.encodePlan?.encodeInputPath);
+  const canRestartEncode = Boolean(hasConfirmedPlan && hasRestartInput && !running);
+  const canDeleteEntry = !running && typeof onDeleteEntry === 'function';
   const logCount = Number(job?.log_count || 0);
   const logMeta = job?.logMeta && typeof job.logMeta === 'object' ? job.logMeta : null;
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
@@ -107,6 +116,14 @@ export default function JobDetailDialog({
                 <strong>Movie-Dir leer:</strong> {job.movieDirStatus?.isEmpty === null ? '-' : job.movieDirStatus?.isEmpty ? 'ja' : 'nein'}
               </div>
               <div>
+                <strong>Backup erfolgreich:</strong>{' '}
+                {job?.backupSuccess ? <span className="job-step-inline-ok"><i className="pi pi-check-circle" aria-hidden="true" /><span>ja</span></span> : 'nein'}
+              </div>
+              <div>
+                <strong>Encode erfolgreich:</strong>{' '}
+                {job?.encodeSuccess ? <span className="job-step-inline-ok"><i className="pi pi-check-circle" aria-hidden="true" /><span>ja</span></span> : 'nein'}
+              </div>
+              <div>
                 <strong>Fehler:</strong> {job.error_message || '-'}
               </div>
             </div>
@@ -136,8 +153,19 @@ export default function JobDetailDialog({
               size="small"
               onClick={() => onAssignOmdb?.(job)}
               loading={omdbAssignBusy}
-              disabled={running}
+              disabled={running || typeof onAssignOmdb !== 'function'}
             />
+            {typeof onRestartEncode === 'function' ? (
+              <Button
+                label="Encode neu starten"
+                icon="pi pi-play"
+                severity="success"
+                size="small"
+                onClick={() => onRestartEncode?.(job)}
+                loading={actionBusy}
+                disabled={!canRestartEncode}
+              />
+            ) : null}
             <Button
               label="RAW neu encodieren"
               icon="pi pi-cog"
@@ -145,7 +173,7 @@ export default function JobDetailDialog({
               size="small"
               onClick={() => onReencode?.(job)}
               loading={reencodeBusy}
-              disabled={!canReencode}
+              disabled={!canReencode || typeof onReencode !== 'function'}
             />
             <Button
               label="RAW löschen"
@@ -155,7 +183,7 @@ export default function JobDetailDialog({
               size="small"
               onClick={() => onDeleteFiles?.(job, 'raw')}
               loading={actionBusy}
-              disabled={!job.rawStatus?.exists}
+              disabled={!job.rawStatus?.exists || typeof onDeleteFiles !== 'function'}
             />
             <Button
               label="Movie löschen"
@@ -165,7 +193,7 @@ export default function JobDetailDialog({
               size="small"
               onClick={() => onDeleteFiles?.(job, 'movie')}
               loading={actionBusy}
-              disabled={!job.outputStatus?.exists}
+              disabled={!job.outputStatus?.exists || typeof onDeleteFiles !== 'function'}
             />
             <Button
               label="Beides löschen"
@@ -174,7 +202,7 @@ export default function JobDetailDialog({
               size="small"
               onClick={() => onDeleteFiles?.(job, 'both')}
               loading={actionBusy}
-              disabled={!job.rawStatus?.exists && !job.outputStatus?.exists}
+              disabled={(!job.rawStatus?.exists && !job.outputStatus?.exists) || typeof onDeleteFiles !== 'function'}
             />
             <Button
               label="Historieneintrag löschen"

@@ -222,6 +222,18 @@ const defaultSchema = [
     orderIndex: 320
   },
   {
+    key: 'handbrake_restart_delete_incomplete_output',
+    category: 'Tools',
+    label: 'Encode-Neustart: unvollständige Ausgabe löschen',
+    type: 'boolean',
+    required: 1,
+    description: 'Wenn aktiv, wird bei "Encode neu starten" der bisherige (nicht erfolgreiche) Output vor Start entfernt.',
+    defaultValue: 'true',
+    options: [],
+    validation: {},
+    orderIndex: 325
+  },
+  {
     key: 'output_extension',
     category: 'Tools',
     label: 'Ausgabeformat',

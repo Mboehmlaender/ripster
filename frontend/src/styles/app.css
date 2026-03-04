@@ -298,6 +298,40 @@ body {
   justify-content: flex-end;
 }
 
+.job-step-checks {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.job-step-inline-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  color: #1c8a3a;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.job-step-inline-ok .pi {
+  font-size: 0.85rem;
+}
+
+.job-step-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.job-step-ok-icon {
+  color: #1c8a3a;
+}
+
+.muted-inline {
+  color: var(--rip-muted);
+  display: block;
+}
+
 .dashboard-job-poster-fallback {
   display: flex;
   align-items: center;

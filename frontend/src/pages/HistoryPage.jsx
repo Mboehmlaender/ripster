@@ -39,6 +39,8 @@ export default function HistoryPage() {
   const [detailVisible, setDetailVisible] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [logLoadingMode, setLogLoadingMode] = useState(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
   const [loading, setLoading] = useState(false);
   const toastRef = useRef(null);
 
@@ -113,9 +115,109 @@ export default function HistoryPage() {
     }
   };
 
+  const refreshDetailIfOpen = async (jobId) => {
+    if (!detailVisible || Number(selectedJob?.id || 0) !== Number(jobId || 0)) {
+      return;
+    }
+    const response = await api.getJob(jobId, { includeLogs: false });
+    setSelectedJob(response.job);
+  };
+
+  const handleDeleteFiles = async (row, target) => {
+    const label = target === 'raw' ? 'RAW-Dateien' : target === 'movie' ? 'Movie-Datei(en)' : 'RAW + Movie';
+    const title = row.title || row.detected_title || `Job #${row.id}`;
+    const confirmed = window.confirm(`${label} für "${title}" wirklich löschen?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      const response = await api.deleteJobFiles(row.id, target);
+      const summary = response.summary || {};
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Dateien gelöscht',
+        detail: `RAW: ${summary.raw?.filesDeleted ?? 0}, MOVIE: ${summary.movie?.filesDeleted ?? 0}`,
+        life: 3500
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Löschen fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleReencode = async (row) => {
+    const title = row.title || row.detected_title || `Job #${row.id}`;
+    const confirmed = window.confirm(`RAW neu encodieren für "${title}" starten?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setReencodeBusyJobId(row.id);
+    try {
+      await api.reencodeJob(row.id);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Re-Encode gestartet',
+        detail: 'Job wurde in die Mediainfo-Prüfung gesetzt.',
+        life: 3500
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Re-Encode fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setReencodeBusyJobId(null);
+    }
+  };
+
+  const handleRestartEncode = async (row) => {
+    const title = row.title || row.detected_title || `Job #${row.id}`;
+    if (row?.encodeSuccess) {
+      const confirmed = window.confirm(
+        `Encode für "${title}" ist bereits erfolgreich abgeschlossen. Wirklich erneut encodieren?\n` +
+        'Es wird eine neue Datei mit Kollisionsprüfung angelegt.'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setActionBusy(true);
+    try {
+      await api.restartEncodeWithLastSettings(row.id);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Encode-Neustart gestartet',
+        detail: 'Letzte bestätigte Einstellungen werden verwendet.',
+        life: 3500
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Encode-Neustart fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const statusBody = (row) => <Tag value={row.status} />;
-  const mkBody = (row) => row.makemkvInfo ? `${row.makemkvInfo.status || '-'} ${typeof row.makemkvInfo.lastProgress === 'number' ? `${row.makemkvInfo.lastProgress.toFixed(1)}%` : ''}` : '-';
-  const hbBody = (row) => row.handbrakeInfo ? `${row.handbrakeInfo.status || '-'} ${typeof row.handbrakeInfo.lastProgress === 'number' ? `${row.handbrakeInfo.lastProgress.toFixed(1)}%` : ''}` : '-';
+  const mkBody = (row) => (
+    <span className="job-step-cell">
+      {row?.backupSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Backup erfolgreich" title="Backup erfolgreich" /> : null}
+      <span>{row.makemkvInfo ? `${row.makemkvInfo.status || '-'} ${typeof row.makemkvInfo.lastProgress === 'number' ? `${row.makemkvInfo.lastProgress.toFixed(1)}%` : ''}` : '-'}</span>
+    </span>
+  );
+  const hbBody = (row) => (
+    <span className="job-step-cell">
+      {row?.encodeSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Encode erfolgreich" title="Encode erfolgreich" /> : null}
+      <span>{row.handbrakeInfo ? `${row.handbrakeInfo.status || '-'} ${typeof row.handbrakeInfo.lastProgress === 'number' ? `${row.handbrakeInfo.lastProgress.toFixed(1)}%` : ''}` : '-'}</span>
+    </span>
+  );
   const mediaBody = (row) => {
     const mediaType = resolveMediaType(row);
     const src = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
@@ -186,6 +288,11 @@ export default function HistoryPage() {
         detailLoading={detailLoading}
         onLoadLog={handleLoadLog}
         logLoadingMode={logLoadingMode}
+        onRestartEncode={handleRestartEncode}
+        onReencode={handleReencode}
+        onDeleteFiles={handleDeleteFiles}
+        actionBusy={actionBusy}
+        reencodeBusy={reencodeBusyJobId === selectedJob?.id}
         onHide={() => {
           setDetailVisible(false);
           setDetailLoading(false);

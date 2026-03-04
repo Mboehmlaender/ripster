@@ -4894,7 +4894,30 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    const settings = await settingsService.getSettingsMap();
+    const restartDeleteIncompleteOutput = settings?.handbrake_restart_delete_incomplete_output !== undefined
+      ? Boolean(settings.handbrake_restart_delete_incomplete_output)
+      : true;
+    const handBrakeInfo = this.safeParseJson(job.handbrake_info_json);
+    const encodePreviouslySuccessful = String(handBrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
     const previousOutputPath = String(job.output_path || '').trim() || null;
+
+    if (previousOutputPath && restartDeleteIncompleteOutput && !encodePreviouslySuccessful) {
+      try {
+        const deleteResult = await historyService.deleteJobFiles(jobId, 'movie');
+        await historyService.appendLog(
+          jobId,
+          'USER_ACTION',
+          `Encode-Neustart: unvollständigen Output vor Start entfernt (movie files=${deleteResult?.summary?.movie?.filesDeleted ?? 0}, dirs=${deleteResult?.summary?.movie?.dirsRemoved ?? 0}).`
+        );
+      } catch (error) {
+        logger.warn('restartEncodeWithLastSettings:delete-incomplete-output-failed', {
+          jobId,
+          outputPath: previousOutputPath,
+          error: errorToMeta(error)
+        });
+      }
+    }
 
     await historyService.updateJob(jobId, {
       status: 'READY_TO_ENCODE',
@@ -4908,7 +4931,7 @@ class PipelineService extends EventEmitter {
       jobId,
       'USER_ACTION',
       previousOutputPath
-        ? `Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet. Vorheriger Output-Pfad: ${previousOutputPath}`
+        ? `Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
         : 'Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet.'
     );
 

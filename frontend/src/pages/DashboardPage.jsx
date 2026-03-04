@@ -4,6 +4,7 @@ import { Card } from 'primereact/card';
 import { Button } from 'primereact/button';
 import { Tag } from 'primereact/tag';
 import { ProgressBar } from 'primereact/progressbar';
+import { Dialog } from 'primereact/dialog';
 import { api } from '../api/client';
 import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
@@ -73,6 +74,29 @@ function mediaIndicatorMeta(job) {
     };
 }
 
+function JobStepChecks({ backupSuccess, encodeSuccess }) {
+  const hasAny = Boolean(backupSuccess || encodeSuccess);
+  if (!hasAny) {
+    return null;
+  }
+  return (
+    <div className="job-step-checks">
+      {backupSuccess ? (
+        <span className="job-step-inline-ok" title="Backup/Rip erfolgreich">
+          <i className="pi pi-check-circle" aria-hidden="true" />
+          <span>Backup</span>
+        </span>
+      ) : null}
+      {encodeSuccess ? (
+        <span className="job-step-inline-ok" title="Encode erfolgreich">
+          <i className="pi pi-check-circle" aria-hidden="true" />
+          <span>Encode</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const jobId = normalizeJobId(job?.id);
   if (
@@ -98,12 +122,18 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const jobStatus = String(job?.status || job?.last_state || 'IDLE').trim().toUpperCase() || 'IDLE';
   const lastState = String(job?.last_state || '').trim().toUpperCase();
   const errorText = String(job?.error_message || '').trim().toUpperCase();
+  const hasOutputPath = Boolean(String(job?.output_path || '').trim());
   const hasEncodePlan = Boolean(encodePlan && Array.isArray(encodePlan?.titles) && encodePlan.titles.length > 0);
+  const looksLikeCancelledEncode = jobStatus === 'ERROR' && (
+    (errorText.includes('ABGEBROCHEN') || errorText.includes('CANCELLED'))
+    && (hasOutputPath || Boolean(job?.encode_input_path) || Boolean(job?.handbrakeInfo))
+  );
   const looksLikeEncodingError = jobStatus === 'ERROR' && (
     errorText.includes('ENCODING')
     || errorText.includes('HANDBRAKE')
     || lastState === 'ENCODING'
     || Boolean(job?.handbrakeInfo)
+    || looksLikeCancelledEncode
   );
   const canRestartEncodeFromLastSettings = Boolean(
     hasEncodePlan
@@ -151,6 +181,12 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
 export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline }) {
   const [busy, setBusy] = useState(false);
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
+  const [cancelCleanupDialog, setCancelCleanupDialog] = useState({
+    visible: false,
+    jobId: null,
+    outputPath: null
+  });
+  const [cancelCleanupBusy, setCancelCleanupBusy] = useState(false);
   const [liveJobLog, setLiveJobLog] = useState('');
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
@@ -326,11 +362,22 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   };
 
   const handleCancel = async () => {
+    const cancelledState = state;
+    const cancelledJobId = currentPipelineJobId;
+    const cancelledJob = dashboardJobs.find((item) => normalizeJobId(item?.id) === cancelledJobId) || null;
+
     setBusy(true);
     try {
       await api.cancelPipeline();
       await refreshPipeline();
       await loadDashboardJobs();
+      if (cancelledState === 'ENCODING' && cancelledJobId) {
+        setCancelCleanupDialog({
+          visible: true,
+          jobId: cancelledJobId,
+          outputPath: cancelledJob?.output_path || null
+        });
+      }
     } catch (error) {
       showError(error);
     } finally {
@@ -338,13 +385,52 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     }
   };
 
-  const handleStartJob = async (jobId) => {
+  const handleDeleteCancelledOutput = async () => {
+    const jobId = normalizeJobId(cancelCleanupDialog?.jobId);
+    if (!jobId) {
+      setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null });
+      return;
+    }
+
+    setCancelCleanupBusy(true);
+    try {
+      const response = await api.deleteJobFiles(jobId, 'movie');
+      const summary = response?.summary || {};
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Movie gelöscht',
+        detail: `Entfernt: ${summary.movie?.filesDeleted ?? 0} Datei(en), ${summary.movie?.dirsRemoved ?? 0} Ordner.`,
+        life: 4000
+      });
+      await loadDashboardJobs();
+      await refreshPipeline();
+      setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setCancelCleanupBusy(false);
+    }
+  };
+
+  const handleStartJob = async (jobId, options = null) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId) {
+      return;
+    }
+
+    const startOptions = options && typeof options === 'object' ? options : {};
     setBusy(true);
     try {
-      await api.startJob(jobId);
+      if (startOptions.ensureConfirmed) {
+        await api.confirmEncodeReview(normalizedJobId, {
+          selectedEncodeTitleId: startOptions.selectedEncodeTitleId ?? null,
+          selectedTrackSelection: startOptions.selectedTrackSelection ?? null
+        });
+      }
+      await api.startJob(normalizedJobId);
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizeJobId(jobId));
+      setExpandedJobId(normalizedJobId);
     } catch (error) {
       showError(error);
     } finally {
@@ -401,6 +487,18 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   };
 
   const handleRestartEncodeWithLastSettings = async (jobId) => {
+    const job = dashboardJobs.find((item) => normalizeJobId(item?.id) === normalizeJobId(jobId)) || null;
+    const title = job?.title || job?.detected_title || `Job #${jobId}`;
+    if (job?.encodeSuccess) {
+      const confirmed = window.confirm(
+        `Encode für "${title}" ist bereits erfolgreich abgeschlossen. Wirklich erneut encodieren?\n` +
+        'Es wird eine neue Datei mit Kollisionsprüfung angelegt.'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setBusy(true);
     try {
       await api.restartEncodeWithLastSettings(jobId);
@@ -493,6 +591,7 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                           {String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE'
                             ? <Tag value={reviewConfirmed ? 'Review bestätigt' : 'Review offen'} severity={reviewConfirmed ? 'success' : 'warning'} />
                             : null}
+                          <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
                         </div>
                       </div>
                       <Button
@@ -560,6 +659,7 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                     {String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE'
                       ? <Tag value={reviewConfirmed ? 'Bestätigt' : 'Unbestätigt'} severity={reviewConfirmed ? 'success' : 'warning'} />
                       : null}
+                    <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
                   </div>
                   <i className="pi pi-angle-down" aria-hidden="true" />
                 </button>
@@ -624,6 +724,37 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
         onSearch={handleOmdbSearch}
         busy={busy}
       />
+
+      <Dialog
+        header="Encode abgebrochen"
+        visible={Boolean(cancelCleanupDialog.visible)}
+        onHide={() => setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null })}
+        style={{ width: '32rem', maxWidth: '96vw' }}
+        modal
+      >
+        <p>
+          Soll die bisher erzeugte Movie-Datei inklusive Job-Ordner im Ausgabeverzeichnis gelöscht werden?
+        </p>
+        {cancelCleanupDialog?.outputPath ? (
+          <small className="muted-inline">Output-Pfad: {cancelCleanupDialog.outputPath}</small>
+        ) : null}
+        <div className="dialog-actions">
+          <Button
+            label="Behalten"
+            severity="secondary"
+            outlined
+            onClick={() => setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null })}
+            disabled={cancelCleanupBusy}
+          />
+          <Button
+            label="Movie löschen"
+            icon="pi pi-trash"
+            severity="danger"
+            onClick={handleDeleteCancelledOutput}
+            loading={cancelCleanupBusy}
+          />
+        </div>
+      </Dialog>
     </div>
   );
 }

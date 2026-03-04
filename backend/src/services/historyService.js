@@ -210,6 +210,8 @@ function enrichJobRow(job) {
   const omdbInfo = parseJsonSafe(job.omdb_json, null);
   const encodePlan = parseJsonSafe(job.encode_plan_json, null);
   const mediaType = inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan);
+  const backupSuccess = String(makemkvInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  const encodeSuccess = String(handbrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
 
   return {
     ...job,
@@ -219,6 +221,8 @@ function enrichJobRow(job) {
     omdbInfo,
     encodePlan,
     mediaType,
+    backupSuccess,
+    encodeSuccess,
     rawStatus,
     outputStatus,
     movieDirStatus
@@ -959,17 +963,34 @@ class HistoryService {
       } else if (!fs.existsSync(job.output_path)) {
         summary.movie.reason = 'Movie-Datei/Pfad existiert nicht.';
       } else {
-        const stat = fs.lstatSync(job.output_path);
+        const outputPath = normalizeComparablePath(job.output_path);
+        const movieRoot = normalizeComparablePath(settings.movie_dir);
+        const stat = fs.lstatSync(outputPath);
         if (stat.isDirectory()) {
-          const result = deleteFilesRecursively(job.output_path, true);
+          const keepRoot = outputPath === movieRoot;
+          const result = deleteFilesRecursively(outputPath, keepRoot ? true : false);
           summary.movie.deleted = true;
           summary.movie.filesDeleted = result.filesDeleted;
           summary.movie.dirsRemoved = result.dirsRemoved;
         } else {
-          fs.unlinkSync(job.output_path);
-          summary.movie.deleted = true;
-          summary.movie.filesDeleted = 1;
-          summary.movie.dirsRemoved = 0;
+          const parentDir = normalizeComparablePath(path.dirname(outputPath));
+          const canDeleteParentDir = parentDir
+            && parentDir !== movieRoot
+            && isPathInside(movieRoot, parentDir)
+            && fs.existsSync(parentDir)
+            && fs.lstatSync(parentDir).isDirectory();
+
+          if (canDeleteParentDir) {
+            const result = deleteFilesRecursively(parentDir, false);
+            summary.movie.deleted = true;
+            summary.movie.filesDeleted = result.filesDeleted;
+            summary.movie.dirsRemoved = result.dirsRemoved;
+          } else {
+            fs.unlinkSync(outputPath);
+            summary.movie.deleted = true;
+            summary.movie.filesDeleted = 1;
+            summary.movie.dirsRemoved = 0;
+          }
         }
       }
     }

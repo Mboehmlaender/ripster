@@ -312,6 +312,28 @@ export default function PipelineStatusCard({
     () => buildOutputPathPreview(settingsMap, selectedMetadata, retryJobId),
     [settingsMap, selectedMetadata, retryJobId]
   );
+  const buildSelectedTrackSelectionForCurrentTitle = () => {
+    const encodeTitleId = normalizeTitleId(selectedEncodeTitleId);
+    const selectionEntry = encodeTitleId
+      ? (trackSelectionByTitle?.[encodeTitleId] || trackSelectionByTitle?.[String(encodeTitleId)] || null)
+      : null;
+    const fallbackSelection = encodeTitleId
+      ? defaultTrackSelectionForTitle(mediaInfoReview, encodeTitleId)
+      : { audioTrackIds: [], subtitleTrackIds: [] };
+    const effectiveSelection = selectionEntry || fallbackSelection;
+    const selectedTrackSelection = encodeTitleId
+      ? {
+        [encodeTitleId]: {
+          audioTrackIds: normalizeTrackIdList(effectiveSelection?.audioTrackIds || []),
+          subtitleTrackIds: normalizeTrackIdList(effectiveSelection?.subtitleTrackIds || [])
+        }
+      }
+      : null;
+    return {
+      encodeTitleId,
+      selectedTrackSelection
+    };
+  };
 
   return (
     <Card title="Pipeline Status" subTitle="Live Zustand und Fortschritt">
@@ -353,37 +375,6 @@ export default function PipelineStatusCard({
           />
         )}
 
-        {state === 'READY_TO_ENCODE' && retryJobId && (
-          <Button
-            label="Auswahl bestätigen"
-            icon="pi pi-check"
-            severity="warning"
-            outlined
-            onClick={() => {
-              const encodeTitleId = normalizeTitleId(selectedEncodeTitleId);
-              const selectionEntry = encodeTitleId
-                ? (trackSelectionByTitle?.[encodeTitleId] || trackSelectionByTitle?.[String(encodeTitleId)] || null)
-                : null;
-              const fallbackSelection = encodeTitleId
-                ? defaultTrackSelectionForTitle(mediaInfoReview, encodeTitleId)
-                : { audioTrackIds: [], subtitleTrackIds: [] };
-              const effectiveSelection = selectionEntry || fallbackSelection;
-              const selectedTrackSelection = encodeTitleId
-                ? {
-                  [encodeTitleId]: {
-                    audioTrackIds: normalizeTrackIdList(effectiveSelection?.audioTrackIds || []),
-                    subtitleTrackIds: normalizeTrackIdList(effectiveSelection?.subtitleTrackIds || [])
-                  }
-                }
-                : null;
-
-              onConfirmReview(retryJobId, encodeTitleId, selectedTrackSelection);
-            }}
-            loading={busy}
-            disabled={reviewConfirmed || !canConfirmReview}
-          />
-        )}
-
         {playlistDecisionRequiredBeforeStart && retryJobId && (
           <Button
             label="Playlist übernehmen"
@@ -398,12 +389,25 @@ export default function PipelineStatusCard({
 
         {state === 'READY_TO_ENCODE' && retryJobId && (
           <Button
-            label={isPreRipReview ? 'Backup + Encode starten' : 'Encode starten'}
+            label={isPreRipReview ? 'Backup + Encoding starten' : 'Encoding starten'}
             icon="pi pi-play"
             severity="success"
-            onClick={() => onStart(retryJobId)}
+            onClick={async () => {
+              const requiresAutoConfirm = !reviewConfirmed;
+              if (!requiresAutoConfirm) {
+                await onStart(retryJobId);
+                return;
+              }
+
+              const { encodeTitleId, selectedTrackSelection } = buildSelectedTrackSelectionForCurrentTitle();
+              await onStart(retryJobId, {
+                ensureConfirmed: true,
+                selectedEncodeTitleId: encodeTitleId,
+                selectedTrackSelection
+              });
+            }}
             loading={busy}
-            disabled={!canStartReadyJob || !reviewConfirmed}
+            disabled={!canStartReadyJob || !canConfirmReview}
           />
         )}
 
@@ -550,8 +554,8 @@ export default function PipelineStatusCard({
           {state === 'READY_TO_ENCODE' && !reviewConfirmed ? (
             <small>
               {isPreRipReview
-                ? 'Backup/Rip + Encode ist gesperrt, bis die Spurauswahl bestätigt wurde.'
-                : 'Encode ist gesperrt, bis die Titel-/Spurauswahl bestätigt wurde.'}
+                ? 'Spurauswahl kann direkt übernommen werden. Beim Klick auf "Backup + Encoding starten" wird automatisch bestätigt und gestartet.'
+                : 'Spurauswahl kann direkt übernommen werden. Beim Klick auf "Encoding starten" wird automatisch bestätigt und gestartet.'}
               {reviewPlaylistDecisionRequired ? ' Bitte den korrekten Titel per Checkbox auswählen.' : ''}
             </small>
           ) : null}
