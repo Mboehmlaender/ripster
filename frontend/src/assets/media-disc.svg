@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Disc">
+  <defs>
+    <radialGradient id="cdg" cx="40%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="70%" stop-color="#d8dde5"/>
+      <stop offset="100%" stop-color="#8f98a6"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#cdg)"/>
+  <circle cx="32" cy="32" r="9" fill="#f7f9fc" stroke="#9ca6b5" stroke-width="2"/>
+  <path d="M15 25 A20 20 0 0 1 48 18" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <text x="32" y="54" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" fill="#3f4a5d">CD</text>
+</svg>

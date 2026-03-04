@@ -1,0 +1,710 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { getDb } = require('../db/database');
+const logger = require('./logger').child('SETTINGS');
+const {
+  parseJson,
+  normalizeValueByType,
+  serializeValueByType,
+  validateSetting
+} = require('../utils/validators');
+const { splitArgs } = require('../utils/commandLine');
+const { setLogRootDir } = require('./logPathService');
+
+const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
+const SENSITIVE_SETTING_KEYS = new Set([
+  'makemkv_registration_key',
+  'omdb_api_key',
+  'pushover_token',
+  'pushover_user'
+]);
+const AUDIO_SELECTION_KEYS_WITH_VALUE = new Set(['-a', '--audio', '--audio-lang-list']);
+const AUDIO_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-audio', '--first-audio']);
+const SUBTITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-s', '--subtitle', '--subtitle-lang-list']);
+const SUBTITLE_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-subtitles', '--first-subtitle']);
+const SUBTITLE_FLAG_KEYS_WITH_VALUE = new Set(['--subtitle-burned', '--subtitle-default', '--subtitle-forced']);
+const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
+const LOG_DIR_SETTING_KEY = 'log_dir';
+
+function applyRuntimeLogDirSetting(rawValue) {
+  const resolved = setLogRootDir(rawValue);
+  try {
+    fs.mkdirSync(resolved, { recursive: true });
+    return resolved;
+  } catch (error) {
+    const fallbackResolved = setLogRootDir(null);
+    try {
+      fs.mkdirSync(fallbackResolved, { recursive: true });
+    } catch (_fallbackError) {
+      // ignore fallback fs errors here; logger may still print to console
+    }
+    logger.warn('setting:log-dir:fallback', {
+      configured: String(rawValue || '').trim() || null,
+      resolved,
+      fallbackResolved,
+      error: error?.message || String(error)
+    });
+    return fallbackResolved;
+  }
+}
+
+function normalizeTrackIds(rawList) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const seen = new Set();
+  const output = [];
+  for (const item of list) {
+    const value = Number(item);
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    const normalized = String(Math.trunc(value));
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function removeSelectionArgs(extraArgs) {
+  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const filtered = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = String(args[i] || '');
+    const key = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+
+    const isAudioWithValue = AUDIO_SELECTION_KEYS_WITH_VALUE.has(key);
+    const isAudioFlagOnly = AUDIO_SELECTION_KEYS_FLAG_ONLY.has(key);
+    const isSubtitleWithValue = SUBTITLE_SELECTION_KEYS_WITH_VALUE.has(key)
+      || SUBTITLE_FLAG_KEYS_WITH_VALUE.has(key);
+    const isSubtitleFlagOnly = SUBTITLE_SELECTION_KEYS_FLAG_ONLY.has(key);
+    const isTitleWithValue = TITLE_SELECTION_KEYS_WITH_VALUE.has(key);
+    const skip = isAudioWithValue || isAudioFlagOnly || isSubtitleWithValue || isSubtitleFlagOnly || isTitleWithValue;
+
+    if (!skip) {
+      filtered.push(token);
+      continue;
+    }
+
+    if ((isAudioWithValue || isSubtitleWithValue || isTitleWithValue) && !token.includes('=')) {
+      const nextToken = String(args[i + 1] || '');
+      if (nextToken && !nextToken.startsWith('-')) {
+        i += 1;
+      }
+    }
+  }
+
+  return filtered;
+}
+
+function flattenPresetList(input, output = []) {
+  const list = Array.isArray(input) ? input : [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    if (Array.isArray(entry.ChildrenArray) && entry.ChildrenArray.length > 0) {
+      flattenPresetList(entry.ChildrenArray, output);
+      continue;
+    }
+    output.push(entry);
+  }
+  return output;
+}
+
+function buildFallbackPresetProfile(presetName, message = null) {
+  return {
+    source: 'fallback',
+    message,
+    presetName: presetName || null,
+    audioTrackSelectionBehavior: 'first',
+    audioLanguages: [],
+    audioEncoders: [],
+    audioCopyMask: DEFAULT_AUDIO_COPY_MASK,
+    audioFallback: 'av_aac',
+    subtitleTrackSelectionBehavior: 'none',
+    subtitleLanguages: [],
+    subtitleBurnBehavior: 'none'
+  };
+}
+
+class SettingsService {
+  async getSchemaRows() {
+    const db = await getDb();
+    return db.all('SELECT * FROM settings_schema ORDER BY category ASC, order_index ASC');
+  }
+
+  async getSettingsMap() {
+    const rows = await this.getFlatSettings();
+    const map = {};
+
+    for (const row of rows) {
+      map[row.key] = row.value;
+    }
+
+    return map;
+  }
+
+  async getFlatSettings() {
+    const db = await getDb();
+    const rows = await db.all(
+      `
+        SELECT
+          s.key,
+          s.category,
+          s.label,
+          s.type,
+          s.required,
+          s.description,
+          s.default_value,
+          s.options_json,
+          s.validation_json,
+          s.order_index,
+          v.value as current_value
+        FROM settings_schema s
+        LEFT JOIN settings_values v ON v.key = s.key
+        ORDER BY s.category ASC, s.order_index ASC
+      `
+    );
+
+    return rows.map((row) => ({
+      key: row.key,
+      category: row.category,
+      label: row.label,
+      type: row.type,
+      required: Boolean(row.required),
+      description: row.description,
+      defaultValue: row.default_value,
+      options: parseJson(row.options_json, []),
+      validation: parseJson(row.validation_json, {}),
+      value: normalizeValueByType(row.type, row.current_value ?? row.default_value),
+      orderIndex: row.order_index
+    }));
+  }
+
+  async getCategorizedSettings() {
+    const flat = await this.getFlatSettings();
+    const byCategory = new Map();
+
+    for (const item of flat) {
+      if (!byCategory.has(item.category)) {
+        byCategory.set(item.category, []);
+      }
+      byCategory.get(item.category).push(item);
+    }
+
+    return Array.from(byCategory.entries()).map(([category, settings]) => ({
+      category,
+      settings
+    }));
+  }
+
+  async setSettingValue(key, rawValue) {
+    const db = await getDb();
+    const schema = await db.get('SELECT * FROM settings_schema WHERE key = ?', [key]);
+    if (!schema) {
+      const error = new Error(`Setting ${key} existiert nicht.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const result = validateSetting(schema, rawValue);
+    if (!result.valid) {
+      const error = new Error(result.errors.join(' '));
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const serializedValue = serializeValueByType(schema.type, result.normalized);
+
+    await db.run(
+      `
+        INSERT INTO settings_values (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [key, serializedValue]
+    );
+    logger.info('setting:updated', {
+      key,
+      value: SENSITIVE_SETTING_KEYS.has(String(key || '').trim().toLowerCase()) ? '[redacted]' : result.normalized
+    });
+    if (String(key || '').trim().toLowerCase() === LOG_DIR_SETTING_KEY) {
+      applyRuntimeLogDirSetting(result.normalized);
+    }
+
+    return {
+      key,
+      value: result.normalized
+    };
+  }
+
+  async setSettingsBulk(rawPatch) {
+    if (!rawPatch || typeof rawPatch !== 'object' || Array.isArray(rawPatch)) {
+      const error = new Error('Ungültiger Payload. Erwartet wird ein Objekt mit key/value Paaren.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const entries = Object.entries(rawPatch);
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const db = await getDb();
+    const schemaRows = await db.all('SELECT * FROM settings_schema');
+    const schemaByKey = new Map(schemaRows.map((row) => [row.key, row]));
+    const normalizedEntries = [];
+    const validationErrors = [];
+
+    for (const [key, rawValue] of entries) {
+      const schema = schemaByKey.get(key);
+      if (!schema) {
+        const error = new Error(`Setting ${key} existiert nicht.`);
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const result = validateSetting(schema, rawValue);
+      if (!result.valid) {
+        validationErrors.push({
+          key,
+          message: result.errors.join(' ')
+        });
+        continue;
+      }
+
+      normalizedEntries.push({
+        key,
+        value: result.normalized,
+        serializedValue: serializeValueByType(schema.type, result.normalized)
+      });
+    }
+
+    if (validationErrors.length > 0) {
+      const error = new Error('Mindestens ein Setting ist ungültig.');
+      error.statusCode = 400;
+      error.details = validationErrors;
+      throw error;
+    }
+
+    try {
+      await db.exec('BEGIN');
+      for (const item of normalizedEntries) {
+        await db.run(
+          `
+            INSERT INTO settings_values (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = CURRENT_TIMESTAMP
+          `,
+          [item.key, item.serializedValue]
+        );
+      }
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+
+    const logDirChange = normalizedEntries.find(
+      (item) => String(item?.key || '').trim().toLowerCase() === LOG_DIR_SETTING_KEY
+    );
+    if (logDirChange) {
+      applyRuntimeLogDirSetting(logDirChange.value);
+    }
+
+    logger.info('settings:bulk-updated', { count: normalizedEntries.length });
+    return normalizedEntries.map((item) => ({
+      key: item.key,
+      value: item.value
+    }));
+  }
+
+  async buildMakeMKVAnalyzeConfig(deviceInfo = null) {
+    const map = await this.getSettingsMap();
+    const cmd = map.makemkv_command;
+    const args = ['-r', 'info', this.resolveSourceArg(map, deviceInfo)];
+    logger.debug('cli:makemkv:analyze', { cmd, args, deviceInfo });
+    return { cmd, args };
+  }
+
+  async buildMakeMKVAnalyzePathConfig(sourcePath, options = {}) {
+    const map = await this.getSettingsMap();
+    const cmd = map.makemkv_command;
+    const sourceArg = `file:${sourcePath}`;
+    const args = ['-r', 'info', sourceArg];
+    const titleIdRaw = Number(options?.titleId);
+    // "makemkvcon info" supports only <source>; title filtering is done in app parser.
+    logger.debug('cli:makemkv:analyze:path', {
+      cmd,
+      args,
+      sourcePath,
+      requestedTitleId: Number.isFinite(titleIdRaw) && titleIdRaw >= 0 ? Math.trunc(titleIdRaw) : null
+    });
+    return { cmd, args, sourceArg };
+  }
+
+  async buildMakeMKVRipConfig(rawJobDir, deviceInfo = null, options = {}) {
+    const map = await this.getSettingsMap();
+    const cmd = map.makemkv_command;
+    const ripMode = String(map.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
+      ? 'backup'
+      : 'mkv';
+    const sourceArg = this.resolveSourceArg(map, deviceInfo);
+    const rawSelectedTitleId = Number(options?.selectedTitleId);
+    const parsedExtra = splitArgs(map.makemkv_rip_extra_args);
+    let extra = [];
+    let baseArgs = [];
+
+    if (ripMode === 'backup') {
+      if (parsedExtra.length > 0) {
+        logger.warn('cli:makemkv:rip:backup:ignored-extra-args', {
+          ignored: parsedExtra
+        });
+      }
+      baseArgs = [
+        'backup',
+        '--decrypt',
+        sourceArg,
+        rawJobDir
+      ];
+    } else {
+      extra = parsedExtra;
+      const minLength = Number(map.makemkv_min_length_minutes || 60);
+      const hasExplicitTitle = Number.isFinite(rawSelectedTitleId) && rawSelectedTitleId >= 0;
+      const targetTitle = hasExplicitTitle ? String(Math.trunc(rawSelectedTitleId)) : 'all';
+      if (hasExplicitTitle) {
+        baseArgs = [
+          'mkv',
+          sourceArg,
+          targetTitle,
+          rawJobDir
+        ];
+      } else {
+        baseArgs = [
+          '--minlength=' + Math.round(minLength * 60),
+          'mkv',
+          sourceArg,
+          targetTitle,
+          rawJobDir
+        ];
+      }
+    }
+    logger.debug('cli:makemkv:rip', {
+      cmd,
+      args: [...baseArgs, ...extra],
+      ripMode,
+      rawJobDir,
+      deviceInfo,
+      selectedTitleId: ripMode === 'mkv' && Number.isFinite(rawSelectedTitleId) && rawSelectedTitleId >= 0
+        ? Math.trunc(rawSelectedTitleId)
+        : null
+    });
+    return { cmd, args: [...baseArgs, ...extra] };
+  }
+
+  async buildMakeMKVRegisterConfig() {
+    const map = await this.getSettingsMap();
+    const registrationKey = String(map.makemkv_registration_key || '').trim();
+    if (!registrationKey) {
+      return null;
+    }
+
+    const cmd = map.makemkv_command || 'makemkvcon';
+    const args = ['reg', registrationKey];
+    logger.debug('cli:makemkv:register', { cmd, args: ['reg', '<redacted>'] });
+    return {
+      cmd,
+      args,
+      argsForLog: ['reg', '<redacted>']
+    };
+  }
+
+  async buildMediaInfoConfig(inputPath) {
+    const map = await this.getSettingsMap();
+    const cmd = map.mediainfo_command || 'mediainfo';
+    const baseArgs = ['--Output=JSON'];
+    const extra = splitArgs(map.mediainfo_extra_args);
+    const args = [...baseArgs, ...extra, inputPath];
+    logger.debug('cli:mediainfo', { cmd, args, inputPath });
+    return { cmd, args };
+  }
+
+  async buildHandBrakeConfig(inputFile, outputFile, options = {}) {
+    const map = await this.getSettingsMap();
+    const cmd = map.handbrake_command;
+    const rawTitleId = Number(options?.titleId);
+    const selectedTitleId = Number.isFinite(rawTitleId) && rawTitleId > 0
+      ? Math.trunc(rawTitleId)
+      : null;
+    const baseArgs = ['-i', inputFile, '-o', outputFile];
+    if (selectedTitleId !== null) {
+      baseArgs.push('-t', String(selectedTitleId));
+    }
+    baseArgs.push('-Z', map.handbrake_preset);
+    const extra = splitArgs(map.handbrake_extra_args);
+    const rawSelection = options?.trackSelection || null;
+    const hasSelection = rawSelection && typeof rawSelection === 'object';
+
+    if (!hasSelection) {
+      logger.debug('cli:handbrake', {
+        cmd,
+        args: [...baseArgs, ...extra],
+        inputFile,
+        outputFile,
+        selectedTitleId
+      });
+      return { cmd, args: [...baseArgs, ...extra] };
+    }
+
+    const audioTrackIds = normalizeTrackIds(rawSelection.audioTrackIds);
+    const subtitleTrackIds = normalizeTrackIds(rawSelection.subtitleTrackIds);
+    const subtitleBurnTrackId = normalizeTrackIds([rawSelection.subtitleBurnTrackId])[0] || null;
+    const subtitleDefaultTrackId = normalizeTrackIds([rawSelection.subtitleDefaultTrackId])[0] || null;
+    const subtitleForcedTrackId = normalizeTrackIds([rawSelection.subtitleForcedTrackId])[0] || null;
+    const subtitleForcedOnly = Boolean(rawSelection.subtitleForcedOnly);
+    const filteredExtra = removeSelectionArgs(extra);
+    const overrideArgs = [
+      '-a',
+      audioTrackIds.length > 0 ? audioTrackIds.join(',') : 'none',
+      '-s',
+      subtitleTrackIds.length > 0 ? subtitleTrackIds.join(',') : 'none'
+    ];
+    if (subtitleBurnTrackId !== null) {
+      overrideArgs.push(`--subtitle-burned=${subtitleBurnTrackId}`);
+    }
+    if (subtitleDefaultTrackId !== null) {
+      overrideArgs.push(`--subtitle-default=${subtitleDefaultTrackId}`);
+    }
+    if (subtitleForcedTrackId !== null) {
+      overrideArgs.push(`--subtitle-forced=${subtitleForcedTrackId}`);
+    } else if (subtitleForcedOnly) {
+      overrideArgs.push('--subtitle-forced');
+    }
+    const args = [...baseArgs, ...filteredExtra, ...overrideArgs];
+
+    logger.debug('cli:handbrake:with-selection', {
+      cmd,
+      args,
+      inputFile,
+      outputFile,
+      selectedTitleId,
+      trackSelection: {
+        audioTrackIds,
+        subtitleTrackIds,
+        subtitleBurnTrackId,
+        subtitleDefaultTrackId,
+        subtitleForcedTrackId,
+        subtitleForcedOnly
+      }
+    });
+
+    return {
+      cmd,
+      args,
+      trackSelection: {
+        audioTrackIds,
+        subtitleTrackIds,
+        subtitleBurnTrackId,
+        subtitleDefaultTrackId,
+        subtitleForcedTrackId,
+        subtitleForcedOnly
+      }
+    };
+  }
+
+  resolveHandBrakeSourceArg(map, deviceInfo = null) {
+    if (map.drive_mode === 'explicit') {
+      const device = String(map.drive_device || '').trim();
+      if (!device) {
+        throw new Error('drive_device ist leer, obwohl drive_mode=explicit gesetzt ist.');
+      }
+      return device;
+    }
+
+    const detectedPath = String(deviceInfo?.path || '').trim();
+    if (detectedPath) {
+      return detectedPath;
+    }
+
+    const configuredPath = String(map.drive_device || '').trim();
+    if (configuredPath) {
+      return configuredPath;
+    }
+
+    return '/dev/sr0';
+  }
+
+  async buildHandBrakeScanConfig(deviceInfo = null) {
+    const map = await this.getSettingsMap();
+    const cmd = map.handbrake_command || 'HandBrakeCLI';
+    const sourceArg = this.resolveHandBrakeSourceArg(map, deviceInfo);
+    // Match legacy rip.sh behavior: scan all titles, then decide in app logic.
+    const args = ['--scan', '--json', '-i', sourceArg, '-t', '0'];
+    logger.debug('cli:handbrake:scan', {
+      cmd,
+      args,
+      deviceInfo
+    });
+    return { cmd, args, sourceArg };
+  }
+
+  async buildHandBrakeScanConfigForInput(inputPath, options = {}) {
+    const map = await this.getSettingsMap();
+    const cmd = map.handbrake_command || 'HandBrakeCLI';
+    // RAW backup folders must be scanned as full BD source to get usable title list.
+    const rawTitleId = Number(options?.titleId);
+    const titleId = Number.isFinite(rawTitleId) && rawTitleId > 0
+      ? Math.trunc(rawTitleId)
+      : 0;
+    const args = ['--scan', '--json', '-i', inputPath, '-t', String(titleId)];
+    logger.debug('cli:handbrake:scan:input', {
+      cmd,
+      args,
+      inputPath,
+      titleId: titleId > 0 ? titleId : null
+    });
+    return { cmd, args, sourceArg: inputPath };
+  }
+
+  async buildHandBrakePresetProfile(sampleInputPath = null, options = {}) {
+    const map = await this.getSettingsMap();
+    const cmd = map.handbrake_command || 'HandBrakeCLI';
+    const presetName = map.handbrake_preset || null;
+    const rawTitleId = Number(options?.titleId);
+    const presetScanTitleId = Number.isFinite(rawTitleId) && rawTitleId > 0
+      ? Math.trunc(rawTitleId)
+      : 1;
+
+    if (!presetName) {
+      return buildFallbackPresetProfile(null, 'Kein HandBrake-Preset konfiguriert.');
+    }
+
+    if (!sampleInputPath || !fs.existsSync(sampleInputPath)) {
+      return buildFallbackPresetProfile(
+        presetName,
+        'Preset-Export übersprungen: kein gültiger Sample-Input für HandBrake-Scan.'
+      );
+    }
+
+    const exportName = `ripster-export-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const exportFile = path.join(os.tmpdir(), `${exportName}.json`);
+    const args = [
+      '--scan',
+      '-i',
+      sampleInputPath,
+      '-t',
+      String(presetScanTitleId),
+      '-Z',
+      presetName,
+      '--preset-export',
+      exportName,
+      '--preset-export-file',
+      exportFile
+    ];
+
+    try {
+      const result = spawnSync(cmd, args, {
+        encoding: 'utf-8',
+        timeout: 180000,
+        maxBuffer: 10 * 1024 * 1024
+      });
+
+      if (result.error) {
+        return buildFallbackPresetProfile(
+          presetName,
+          `Preset-Export fehlgeschlagen: ${result.error.message}`
+        );
+      }
+
+      if (result.status !== 0) {
+        const stderr = String(result.stderr || '').trim();
+        const stdout = String(result.stdout || '').trim();
+        const tail = stderr || stdout || `exit=${result.status}`;
+        return buildFallbackPresetProfile(
+          presetName,
+          `Preset-Export fehlgeschlagen (${tail.slice(0, 280)})`
+        );
+      }
+
+      if (!fs.existsSync(exportFile)) {
+        return buildFallbackPresetProfile(
+          presetName,
+          'Preset-Export fehlgeschlagen: Exportdatei wurde nicht erzeugt.'
+        );
+      }
+
+      const raw = fs.readFileSync(exportFile, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const presetEntries = flattenPresetList(parsed?.PresetList || []);
+      const exported = presetEntries.find((entry) => entry.PresetName === exportName) || presetEntries[0];
+
+      if (!exported) {
+        return buildFallbackPresetProfile(
+          presetName,
+          'Preset-Export fehlgeschlagen: Kein Preset in Exportdatei gefunden.'
+        );
+      }
+
+      return {
+        source: 'preset-export',
+        message: null,
+        presetName,
+        audioTrackSelectionBehavior: exported.AudioTrackSelectionBehavior || 'first',
+        audioLanguages: Array.isArray(exported.AudioLanguageList) ? exported.AudioLanguageList : [],
+        audioEncoders: Array.isArray(exported.AudioList)
+          ? exported.AudioList
+            .map((item) => item?.AudioEncoder)
+            .filter(Boolean)
+          : [],
+        audioCopyMask: Array.isArray(exported.AudioCopyMask)
+          ? exported.AudioCopyMask
+          : DEFAULT_AUDIO_COPY_MASK,
+        audioFallback: exported.AudioEncoderFallback || 'av_aac',
+        subtitleTrackSelectionBehavior: exported.SubtitleTrackSelectionBehavior || 'none',
+        subtitleLanguages: Array.isArray(exported.SubtitleLanguageList) ? exported.SubtitleLanguageList : [],
+        subtitleBurnBehavior: exported.SubtitleBurnBehavior || 'none'
+      };
+    } catch (error) {
+      return buildFallbackPresetProfile(
+        presetName,
+        `Preset-Export Ausnahme: ${error.message}`
+      );
+    } finally {
+      try {
+        if (fs.existsSync(exportFile)) {
+          fs.unlinkSync(exportFile);
+        }
+      } catch (_error) {
+        // ignore cleanup errors
+      }
+    }
+  }
+
+  resolveSourceArg(map, deviceInfo = null) {
+    const mode = map.drive_mode;
+    if (mode === 'explicit') {
+      const device = map.drive_device;
+      if (!device) {
+        throw new Error('drive_device ist leer, obwohl drive_mode=explicit gesetzt ist.');
+      }
+      return `dev:${device}`;
+    }
+
+    if (deviceInfo && deviceInfo.index !== undefined && deviceInfo.index !== null) {
+      return `disc:${deviceInfo.index}`;
+    }
+
+    return `disc:${map.makemkv_source_index ?? 0}`;
+  }
+}
+
+module.exports = new SettingsService();

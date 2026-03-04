@@ -1,0 +1,124 @@
+site_name: Ripster
+site_description: Halbautomatische Disc-Ripping-Plattform für DVDs & Blu-rays mit HandBrake-Encoding
+site_author: Michael
+site_url: https://mboehmlaender.github.io/ripster/
+
+repo_name: ripster
+repo_url: https://github.com/mboehmlaender/ripster
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: de
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Dunkelmodus aktivieren
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Hellmodus aktivieren
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.integrate
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/disc
+
+nav:
+  - Home: index.md
+  - Erste Schritte:
+    - getting-started/index.md
+    - Voraussetzungen: getting-started/prerequisites.md
+    - Installation: getting-started/installation.md
+    - Konfiguration: getting-started/configuration.md
+    - Schnellstart: getting-started/quickstart.md
+  - Architektur:
+    - architecture/index.md
+    - Übersicht: architecture/overview.md
+    - Backend-Services: architecture/backend.md
+    - Frontend-Komponenten: architecture/frontend.md
+    - Datenbank: architecture/database.md
+  - Pipeline:
+    - pipeline/index.md
+    - Workflow & Zustände: pipeline/workflow.md
+    - Encode-Planung: pipeline/encoding.md
+    - Playlist-Analyse: pipeline/playlist-analysis.md
+  - API-Referenz:
+    - api/index.md
+    - Pipeline API: api/pipeline.md
+    - Settings API: api/settings.md
+    - History API: api/history.md
+    - WebSocket Events: api/websocket.md
+  - Konfiguration:
+    - configuration/index.md
+    - Alle Einstellungen: configuration/settings-reference.md
+    - Umgebungsvariablen: configuration/environment.md
+  - Deployment:
+    - deployment/index.md
+    - Entwicklungsumgebung: deployment/development.md
+    - Produktion: deployment/production.md
+  - Externe Tools:
+    - tools/index.md
+    - MakeMKV: tools/makemkv.md
+    - HandBrake: tools/handbrake.md
+    - MediaInfo: tools/mediainfo.md
+
+plugins:
+  - search:
+      lang: de
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/YOUR_GITHUB_USERNAME/ripster
+  version:
+    provider: mike
+
+extra_css:
+  - stylesheets/extra.css

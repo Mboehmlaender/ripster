@@ -1,0 +1,64 @@
+/* Ripster custom styles */
+
+:root {
+  --md-primary-fg-color: #6a1b9a;
+  --md-accent-fg-color: #ab47bc;
+}
+
+/* Cards grid layout */
+.grid.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.grid.cards > * {
+  border-radius: 0.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  padding: 1.25rem;
+  transition: box-shadow 0.2s ease;
+}
+
+.grid.cards > *:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* Status badge colors */
+.status-idle { color: #78909c; }
+.status-analyzing { color: #fb8c00; }
+.status-ripping { color: #1976d2; }
+.status-encoding { color: #7b1fa2; }
+.status-finished { color: #388e3c; }
+.status-error { color: #d32f2f; }
+
+/* Code blocks */
+.md-typeset pre > code {
+  font-size: 0.85em;
+}
+
+/* Mermaid diagrams */
+.md-typeset .mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1.5rem 0;
+}
+
+/* Table improvements */
+.md-typeset table:not([class]) {
+  width: 100%;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--md-primary-fg-color);
+  color: white;
+}
+
+/* Admonition tweaks */
+.md-typeset .admonition.tip {
+  border-color: #00897b;
+}
+
+.md-typeset .admonition.tip > .admonition-title {
+  background-color: rgba(0, 137, 123, 0.1);
+}
