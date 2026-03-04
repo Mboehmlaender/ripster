@@ -52,6 +52,16 @@ CREATE TABLE jobs (
 CREATE INDEX idx_jobs_status ON jobs(status);
 CREATE INDEX idx_jobs_created_at ON jobs(created_at DESC);
 
+CREATE TABLE scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  script_body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_scripts_name ON scripts(name);
+
 CREATE TABLE pipeline_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   state TEXT NOT NULL,

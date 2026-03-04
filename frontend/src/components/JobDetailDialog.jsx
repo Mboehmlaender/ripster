@@ -1,7 +1,8 @@
 import { Dialog } from 'primereact/dialog';
-import { Tag } from 'primereact/tag';
 import { Button } from 'primereact/button';
 import MediaInfoReviewPanel from './MediaInfoReviewPanel';
+import blurayIndicatorIcon from '../assets/media-bluray.svg';
+import discIndicatorIcon from '../assets/media-disc.svg';
 
 function JsonView({ title, value }) {
   return (
@@ -9,6 +10,67 @@ function JsonView({ title, value }) {
       <h4>{title}</h4>
       <pre className="json-box">{value ? JSON.stringify(value, null, 2) : '-'}</pre>
     </div>
+  );
+}
+
+function resolveMediaType(job) {
+  const raw = String(job?.mediaType || job?.media_type || '').trim().toLowerCase();
+  return raw === 'bluray' ? 'bluray' : 'disc';
+}
+
+function statusBadgeMeta(status) {
+  const normalized = String(status || '').trim().toUpperCase();
+  if (normalized === 'FINISHED') {
+    return { label: normalized, icon: 'pi-check-circle', tone: 'success' };
+  }
+  if (normalized === 'ERROR') {
+    return { label: normalized, icon: 'pi-times-circle', tone: 'danger' };
+  }
+  if (normalized === 'READY_TO_ENCODE' || normalized === 'READY_TO_START') {
+    return { label: normalized, icon: 'pi-play-circle', tone: 'info' };
+  }
+  if (normalized === 'WAITING_FOR_USER_DECISION') {
+    return { label: normalized, icon: 'pi-exclamation-circle', tone: 'warning' };
+  }
+  if (normalized === 'METADATA_SELECTION') {
+    return { label: normalized, icon: 'pi-list', tone: 'warning' };
+  }
+  if (normalized === 'ANALYZING') {
+    return { label: normalized, icon: 'pi-search', tone: 'warning' };
+  }
+  if (normalized === 'RIPPING') {
+    return { label: normalized, icon: 'pi-download', tone: 'warning' };
+  }
+  if (normalized === 'MEDIAINFO_CHECK') {
+    return { label: normalized, icon: 'pi-sliders-h', tone: 'warning' };
+  }
+  if (normalized === 'ENCODING') {
+    return { label: normalized, icon: 'pi-cog', tone: 'warning' };
+  }
+  return { label: normalized || '-', icon: 'pi-info-circle', tone: 'secondary' };
+}
+
+function omdbField(value) {
+  const raw = String(value || '').trim();
+  return raw || '-';
+}
+
+function omdbRottenTomatoesScore(omdbInfo) {
+  const ratings = Array.isArray(omdbInfo?.Ratings) ? omdbInfo.Ratings : [];
+  const entry = ratings.find((item) => String(item?.Source || '').trim().toLowerCase() === 'rotten tomatoes');
+  return omdbField(entry?.Value);
+}
+
+function BoolState({ value }) {
+  const isTrue = Boolean(value);
+  return isTrue ? (
+    <span className="job-step-inline-ok" title="Ja">
+      <i className="pi pi-check-circle" aria-hidden="true" />
+    </span>
+  ) : (
+    <span className="job-step-inline-no" title="Nein">
+      <i className="pi pi-times-circle" aria-hidden="true" />
+    </span>
   );
 }
 
@@ -46,6 +108,12 @@ export default function JobDetailDialog({
   const logMeta = job?.logMeta && typeof job.logMeta === 'object' ? job.logMeta : null;
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
   const logTruncated = Boolean(logMeta?.truncated);
+  const mediaType = resolveMediaType(job);
+  const mediaTypeLabel = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges Medium';
+  const mediaTypeIcon = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
+  const mediaTypeAlt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
+  const statusMeta = statusBadgeMeta(job?.status);
+  const omdbInfo = job?.omdbInfo && typeof job.omdbInfo === 'object' ? job.omdbInfo : {};
 
   return (
     <Dialog
@@ -68,22 +136,80 @@ export default function JobDetailDialog({
               <div className="poster-large poster-fallback">Kein Poster</div>
             )}
 
-            <div className="job-meta-grid">
+            <div className="job-film-info-grid">
+              <section className="job-meta-block job-meta-block-film">
+                <h4>Film-Infos</h4>
+                <div className="job-meta-list">
+                  <div className="job-meta-item">
+                    <strong>Titel:</strong>
+                    <span>{job.title || job.detected_title || '-'}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Jahr:</strong>
+                    <span>{job.year || '-'}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>IMDb:</strong>
+                    <span>{job.imdb_id || '-'}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>OMDb Match:</strong>
+                    <BoolState value={job.selected_from_omdb} />
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Medium:</strong>
+                    <span className="job-step-cell">
+                      <img src={mediaTypeIcon} alt={mediaTypeAlt} title={mediaTypeLabel} className="media-indicator-icon" />
+                      <span>{mediaTypeLabel}</span>
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              <section className="job-meta-block job-meta-block-film">
+                <h4>OMDb Details</h4>
+                <div className="job-meta-list">
+                  <div className="job-meta-item">
+                    <strong>Regisseur:</strong>
+                    <span>{omdbField(omdbInfo?.Director)}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Schauspieler:</strong>
+                    <span>{omdbField(omdbInfo?.Actors)}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Laufzeit:</strong>
+                    <span>{omdbField(omdbInfo?.Runtime)}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Genre:</strong>
+                    <span>{omdbField(omdbInfo?.Genre)}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>Rotten Tomatoes:</strong>
+                    <span>{omdbRottenTomatoesScore(omdbInfo)}</span>
+                  </div>
+                  <div className="job-meta-item">
+                    <strong>imdbRating:</strong>
+                    <span>{omdbField(omdbInfo?.imdbRating)}</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <section className="job-meta-block job-meta-block-full">
+            <h4>Job-Infos</h4>
+            <div className="job-meta-grid job-meta-grid-compact">
               <div>
-                <strong>Titel:</strong> {job.title || job.detected_title || '-'}
-              </div>
-              <div>
-                <strong>Jahr:</strong> {job.year || '-'}
-              </div>
-              <div>
-                <strong>IMDb:</strong> {job.imdb_id || '-'}
-              </div>
-              <div>
-                <strong>OMDb Match:</strong>{' '}
-                <Tag value={job.selected_from_omdb ? 'Ja' : 'Nein'} severity={job.selected_from_omdb ? 'success' : 'secondary'} />
-              </div>
-              <div>
-                <strong>Status:</strong> <Tag value={job.status} />
+                <strong>Aktueller Status:</strong>{' '}
+                <span
+                  className={`job-status-icon tone-${statusMeta.tone}`}
+                  title={statusMeta.label}
+                  aria-label={statusMeta.label}
+                >
+                  <i className={`pi ${statusMeta.icon}`} aria-hidden="true" />
+                </span>
               </div>
               <div>
                 <strong>Start:</strong> {job.start_time || '-'}
@@ -101,40 +227,29 @@ export default function JobDetailDialog({
                 <strong>Encode Input:</strong> {job.encode_input_path || '-'}
               </div>
               <div>
-                <strong>Mediainfo bestätigt:</strong> {job.encode_review_confirmed ? 'ja' : 'nein'}
+                <strong>RAW vorhanden:</strong> <BoolState value={job.rawStatus?.exists} />
               </div>
               <div>
-                <strong>RAW vorhanden:</strong> {job.rawStatus?.exists ? 'ja' : 'nein'}
+                <strong>Movie Datei vorhanden:</strong> <BoolState value={job.outputStatus?.exists} />
               </div>
               <div>
-                <strong>RAW leer:</strong> {job.rawStatus?.isEmpty === null ? '-' : job.rawStatus?.isEmpty ? 'ja' : 'nein'}
+                <strong>Backup erfolgreich:</strong> <BoolState value={job?.backupSuccess} />
               </div>
               <div>
-                <strong>Movie Datei vorhanden:</strong> {job.outputStatus?.exists ? 'ja' : 'nein'}
+                <strong>Encode erfolgreich:</strong> <BoolState value={job?.encodeSuccess} />
               </div>
-              <div>
-                <strong>Movie-Dir leer:</strong> {job.movieDirStatus?.isEmpty === null ? '-' : job.movieDirStatus?.isEmpty ? 'ja' : 'nein'}
-              </div>
-              <div>
-                <strong>Backup erfolgreich:</strong>{' '}
-                {job?.backupSuccess ? <span className="job-step-inline-ok"><i className="pi pi-check-circle" aria-hidden="true" /><span>ja</span></span> : 'nein'}
-              </div>
-              <div>
-                <strong>Encode erfolgreich:</strong>{' '}
-                {job?.encodeSuccess ? <span className="job-step-inline-ok"><i className="pi pi-check-circle" aria-hidden="true" /><span>ja</span></span> : 'nein'}
-              </div>
-              <div>
-                <strong>Fehler:</strong> {job.error_message || '-'}
+              <div className="job-meta-col-span-2">
+                <strong>Letzter Fehler:</strong> {job.error_message || '-'}
               </div>
             </div>
-          </div>
+          </section>
 
           <div className="job-json-grid">
             <JsonView title="OMDb Info" value={job.omdbInfo} />
             <JsonView title="MakeMKV Info" value={job.makemkvInfo} />
-            <JsonView title="HandBrake Info" value={job.handbrakeInfo} />
             <JsonView title="Mediainfo Info" value={job.mediainfoInfo} />
             <JsonView title="Encode Plan" value={job.encodePlan} />
+            <JsonView title="HandBrake Info" value={job.handbrakeInfo} />
           </div>
 
           {job.encodePlan ? (

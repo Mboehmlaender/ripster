@@ -14,6 +14,7 @@ const { splitArgs } = require('../utils/commandLine');
 const { setLogRootDir } = require('./logPathService');
 
 const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
+const HANDBRAKE_PRESET_LIST_TIMEOUT_MS = 30000;
 const SENSITIVE_SETTING_KEYS = new Set([
   'makemkv_registration_key',
   'omdb_api_key',
@@ -130,6 +131,200 @@ function buildFallbackPresetProfile(presetName, message = null) {
     subtitleLanguages: [],
     subtitleBurnBehavior: 'none'
   };
+}
+
+function stripAnsiEscapeCodes(value) {
+  return String(value || '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function uniqueOrderedValues(values) {
+  const unique = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const normalized = String(value || '').trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+  return unique;
+}
+
+function uniquePresetEntries(entries) {
+  const unique = [];
+  const seenNames = new Set();
+  for (const entry of entries || []) {
+    const name = String(entry?.name || '').trim();
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+    seenNames.add(name);
+    const categoryRaw = entry?.category;
+    const category = categoryRaw === null || categoryRaw === undefined
+      ? null
+      : String(categoryRaw).trim() || null;
+    unique.push({ name, category });
+  }
+  return unique;
+}
+
+function normalizePresetListLines(rawOutput) {
+  const lines = String(rawOutput || '').split(/\r?\n/);
+  const normalized = [];
+
+  for (const line of lines) {
+    const sanitized = stripAnsiEscapeCodes(line || '').replace(/\r/g, '');
+    if (!sanitized.trim()) {
+      continue;
+    }
+    if (/^\s*\[[^\]]+\]/.test(sanitized)) {
+      continue;
+    }
+    if (
+      /^\s*(Cannot load|Compile-time|qsv:|HandBrake \d|Opening |No title found|libhb:|hb_init:|thread |bdj\.c:|stream:|scan:|bd:|libdvdnav:|libdvdread:)/i
+        .test(sanitized)
+    ) {
+      continue;
+    }
+    if (/^\s*HandBrake has exited\.?\s*$/i.test(sanitized)) {
+      continue;
+    }
+    const leadingWhitespace = (sanitized.match(/^[\t ]*/) || [''])[0];
+    const indentation = leadingWhitespace.replace(/\t/g, '    ').length;
+    const text = sanitized.trim();
+    normalized.push({ indentation, text });
+  }
+
+  return normalized;
+}
+
+function parsePlusTreePresetEntries(lines) {
+  const plusEntries = [];
+  for (const line of lines || []) {
+    const match = String(line?.text || '').match(/^\+\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+    plusEntries.push({
+      indentation: Number(line?.indentation || 0),
+      name: String(match[1] || '').trim()
+    });
+  }
+
+  if (plusEntries.length === 0) {
+    return [];
+  }
+
+  const leafEntries = [];
+  for (let index = 0; index < plusEntries.length; index += 1) {
+    const current = plusEntries[index];
+    const next = plusEntries[index + 1];
+    const hasChildren = Boolean(next) && next.indentation > current.indentation;
+    if (!hasChildren) {
+      let category = null;
+      for (let parentIndex = index - 1; parentIndex >= 0; parentIndex -= 1) {
+        const candidate = plusEntries[parentIndex];
+        if (candidate.indentation < current.indentation) {
+          category = candidate.name || null;
+          break;
+        }
+      }
+      leafEntries.push({
+        name: current.name,
+        category
+      });
+    }
+  }
+
+  return uniquePresetEntries(leafEntries);
+}
+
+function parseSlashTreePresetEntries(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  const presetEntries = [];
+  let currentCategoryIndent = null;
+  let currentCategoryName = null;
+  let currentPresetIndent = null;
+
+  for (const line of list) {
+    const indentation = Number(line?.indentation || 0);
+    const text = String(line?.text || '').trim();
+    if (!text) {
+      continue;
+    }
+
+    if (text.endsWith('/')) {
+      currentCategoryIndent = indentation;
+      currentCategoryName = String(text.slice(0, -1) || '').trim() || null;
+      currentPresetIndent = null;
+      continue;
+    }
+
+    if (currentCategoryIndent === null) {
+      continue;
+    }
+
+    if (indentation <= currentCategoryIndent) {
+      currentCategoryIndent = null;
+      currentCategoryName = null;
+      currentPresetIndent = null;
+      continue;
+    }
+
+    if (currentPresetIndent === null) {
+      currentPresetIndent = indentation;
+    }
+
+    if (indentation === currentPresetIndent) {
+      presetEntries.push({
+        name: text,
+        category: currentCategoryName
+      });
+    }
+  }
+
+  return uniquePresetEntries(presetEntries);
+}
+
+function parseHandBrakePresetEntriesFromListOutput(rawOutput) {
+  const lines = normalizePresetListLines(rawOutput);
+  const plusTreeEntries = parsePlusTreePresetEntries(lines);
+  if (plusTreeEntries.length > 0) {
+    return plusTreeEntries;
+  }
+  return parseSlashTreePresetEntries(lines);
+}
+
+function mapPresetEntriesToOptions(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const options = [];
+  const seenCategories = new Set();
+  const INDENT = '\u00A0\u00A0\u00A0';
+
+  for (const entry of list) {
+    const name = String(entry?.name || '').trim();
+    if (!name) {
+      continue;
+    }
+    const category = entry?.category ? String(entry.category).trim() : '';
+    if (category && !seenCategories.has(category)) {
+      seenCategories.add(category);
+      options.push({
+        label: `${category}/`,
+        value: `__group__${category.toLowerCase().replace(/\s+/g, '_')}`,
+        disabled: true,
+        category
+      });
+    }
+    options.push({
+      label: category ? `${INDENT}${name}` : name,
+      value: name,
+      category: category || null
+    });
+  }
+
+  return options;
 }
 
 class SettingsService {
@@ -704,6 +899,85 @@ class SettingsService {
     }
 
     return `disc:${map.makemkv_source_index ?? 0}`;
+  }
+
+  async getHandBrakePresetOptions() {
+    const map = await this.getSettingsMap();
+    const configuredPreset = String(map.handbrake_preset || '').trim();
+    const fallbackOptions = configuredPreset
+      ? [{ label: configuredPreset, value: configuredPreset }]
+      : [];
+    const rawCommand = String(map.handbrake_command || 'HandBrakeCLI').trim();
+    const commandTokens = splitArgs(rawCommand);
+    const cmd = commandTokens[0] || 'HandBrakeCLI';
+    const baseArgs = commandTokens.slice(1);
+    const args = [...baseArgs, '-z'];
+
+    try {
+      const result = spawnSync(cmd, args, {
+        encoding: 'utf-8',
+        timeout: HANDBRAKE_PRESET_LIST_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024
+      });
+
+      if (result.error) {
+        return {
+          source: 'fallback',
+          message: `Preset-Liste konnte nicht geladen werden: ${result.error.message}`,
+          options: fallbackOptions
+        };
+      }
+
+      if (result.status !== 0) {
+        const stderr = String(result.stderr || '').trim();
+        const stdout = String(result.stdout || '').trim();
+        const detail = (stderr || stdout || `exit=${result.status}`).slice(0, 280);
+        return {
+          source: 'fallback',
+          message: `Preset-Liste konnte nicht geladen werden (${detail})`,
+          options: fallbackOptions
+        };
+      }
+
+      const combinedOutput = `${String(result.stdout || '')}\n${String(result.stderr || '')}`;
+      const entries = parseHandBrakePresetEntriesFromListOutput(combinedOutput);
+      const options = mapPresetEntriesToOptions(entries);
+      if (options.length === 0) {
+        return {
+          source: 'fallback',
+          message: 'Preset-Liste konnte aus HandBrakeCLI -z nicht geparst werden.',
+          options: fallbackOptions
+        };
+      }
+      if (!configuredPreset) {
+        return {
+          source: 'handbrake-cli',
+          message: null,
+          options
+        };
+      }
+
+      const hasConfiguredPreset = options.some((option) => option.value === configuredPreset);
+      if (hasConfiguredPreset) {
+        return {
+          source: 'handbrake-cli',
+          message: null,
+          options
+        };
+      }
+
+      return {
+        source: 'handbrake-cli',
+        message: `Aktuell gesetztes Preset "${configuredPreset}" wurde in HandBrakeCLI -z nicht gefunden.`,
+        options: [{ label: configuredPreset, value: configuredPreset }, ...options]
+      };
+    } catch (error) {
+      return {
+        source: 'fallback',
+        message: `Preset-Liste konnte nicht geladen werden: ${error.message}`,
+        options: fallbackOptions
+      };
+    }
   }
 }
 

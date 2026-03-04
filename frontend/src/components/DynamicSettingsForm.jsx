@@ -38,8 +38,8 @@ function buildToolSections(settings) {
     {
       id: 'output',
       title: 'Output',
-      description: 'Container-Format und Dateinamen-Template.',
-      match: (key) => key === 'output_extension' || key === 'filename_template'
+      description: 'Container-Format sowie Datei- und Ordnernamen-Template.',
+      match: (key) => key === 'output_extension' || key === 'filename_template' || key === 'output_folder_template'
     }
   ];
 
@@ -93,6 +93,10 @@ function buildSectionsForCategory(categoryName, settings) {
       settings: list
     }
   ];
+}
+
+function isHandBrakePresetSetting(setting) {
+  return String(setting?.key || '').trim().toLowerCase() === 'handbrake_preset';
 }
 
 export default function DynamicSettingsForm({
@@ -194,11 +198,24 @@ export default function DynamicSettingsForm({
                                 options={setting.options}
                                 optionLabel="label"
                                 optionValue="value"
+                                optionDisabled="disabled"
                                 onChange={(event) => onChange?.(setting.key, event.value)}
                               />
                             ) : null}
 
                             <small>{setting.description || ''}</small>
+                            {isHandBrakePresetSetting(setting) ? (
+                              <small>
+                                Preset-Erklärung:{' '}
+                                <a
+                                  href="https://handbrake.fr/docs/en/latest/technical/official-presets.html"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  HandBrake Official Presets
+                                </a>
+                              </small>
+                            ) : null}
                             {error ? (
                               <small className="error-text">{error}</small>
                             ) : (

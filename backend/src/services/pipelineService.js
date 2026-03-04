@@ -5,6 +5,7 @@ const { getDb } = require('../db/database');
 const settingsService = require('./settingsService');
 const historyService = require('./historyService');
 const omdbService = require('./omdbService');
+const scriptService = require('./scriptService');
 const wsService = require('./websocketService');
 const diskDetectionService = require('./diskDetectionService');
 const notificationService = require('./notificationService');
@@ -42,28 +43,45 @@ function withTimestampBeforeExtension(targetPath, suffix) {
   return path.join(dir, `${base}_${suffix}${ext}`);
 }
 
-function buildOutputPathFromJob(settings, job, fallbackJobId = null) {
+function resolveOutputTemplateValues(job, fallbackJobId = null) {
+  return {
+    title: job.title || job.detected_title || (fallbackJobId ? `job-${fallbackJobId}` : 'job'),
+    year: job.year || new Date().getFullYear(),
+    imdbId: job.imdb_id || (fallbackJobId ? `job-${fallbackJobId}` : 'noimdb')
+  };
+}
+
+function resolveOutputFileName(settings, values) {
+  const fileTemplate = settings.filename_template || '${title} (${year})';
+  return sanitizeFileName(renderTemplate(fileTemplate, values));
+}
+
+function resolveFinalOutputFolderName(settings, values) {
+  const folderTemplateRaw = String(settings.output_folder_template || '').trim();
+  const fallbackTemplate = settings.filename_template || '${title} (${year})';
+  const folderTemplate = folderTemplateRaw || fallbackTemplate;
+  return sanitizeFileName(renderTemplate(folderTemplate, values));
+}
+
+function buildFinalOutputPathFromJob(settings, job, fallbackJobId = null) {
   const movieDir = settings.movie_dir;
-  const title = job.title || job.detected_title || (fallbackJobId ? `job-${fallbackJobId}` : 'job');
-  const year = job.year || new Date().getFullYear();
-  const imdbId = job.imdb_id || (fallbackJobId ? `job-${fallbackJobId}` : 'noimdb');
-  const template = settings.filename_template || '${title} (${year})';
-  const folderName = sanitizeFileName(
-    renderTemplate('${title} (${year})', {
-      title,
-      year,
-      imdbId
-    })
-  );
-  const baseName = sanitizeFileName(
-    renderTemplate(template, {
-      title,
-      year,
-      imdbId
-    })
-  );
-  const ext = settings.output_extension || 'mkv';
+  const values = resolveOutputTemplateValues(job, fallbackJobId);
+  const folderName = resolveFinalOutputFolderName(settings, values);
+  const baseName = resolveOutputFileName(settings, values);
+  const ext = String(settings.output_extension || 'mkv').trim() || 'mkv';
   return path.join(movieDir, folderName, `${baseName}.${ext}`);
+}
+
+function buildIncompleteOutputPathFromJob(settings, job, fallbackJobId = null) {
+  const movieDir = settings.movie_dir;
+  const values = resolveOutputTemplateValues(job, fallbackJobId);
+  const baseName = resolveOutputFileName(settings, values);
+  const ext = String(settings.output_extension || 'mkv').trim() || 'mkv';
+  const numericJobId = Number(fallbackJobId || job?.id || 0);
+  const incompleteFolder = Number.isFinite(numericJobId) && numericJobId > 0
+    ? `Incomplete_job-${numericJobId}`
+    : 'Incomplete_job-unknown';
+  return path.join(movieDir, incompleteFolder, `${baseName}.${ext}`);
 }
 
 function ensureUniqueOutputPath(outputPath) {
@@ -79,6 +97,65 @@ function ensureUniqueOutputPath(outputPath) {
     i += 1;
   }
   return attempt;
+}
+
+function moveFileWithFallback(sourcePath, targetPath) {
+  try {
+    fs.renameSync(sourcePath, targetPath);
+  } catch (error) {
+    if (error?.code !== 'EXDEV') {
+      throw error;
+    }
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.unlinkSync(sourcePath);
+  }
+}
+
+function removeDirectoryIfEmpty(directoryPath) {
+  try {
+    const entries = fs.readdirSync(directoryPath);
+    if (entries.length === 0) {
+      fs.rmdirSync(directoryPath);
+    }
+  } catch (_error) {
+    // Best effort cleanup.
+  }
+}
+
+function finalizeOutputPathForCompletedEncode(incompleteOutputPath, preferredFinalOutputPath) {
+  const sourcePath = String(incompleteOutputPath || '').trim();
+  if (!sourcePath) {
+    throw new Error('Encode-Finalisierung fehlgeschlagen: temporärer Output-Pfad fehlt.');
+  }
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Encode-Finalisierung fehlgeschlagen: temporäre Datei fehlt (${sourcePath}).`);
+  }
+
+  const plannedTargetPath = String(preferredFinalOutputPath || '').trim();
+  if (!plannedTargetPath) {
+    throw new Error('Encode-Finalisierung fehlgeschlagen: finaler Output-Pfad fehlt.');
+  }
+
+  const sourceResolved = path.resolve(sourcePath);
+  const targetPath = ensureUniqueOutputPath(plannedTargetPath);
+  const targetResolved = path.resolve(targetPath);
+  const outputPathWithTimestamp = targetPath !== plannedTargetPath;
+
+  if (sourceResolved === targetResolved) {
+    return {
+      outputPath: targetPath,
+      outputPathWithTimestamp
+    };
+  }
+
+  ensureDir(path.dirname(targetPath));
+  moveFileWithFallback(sourcePath, targetPath);
+  removeDirectoryIfEmpty(path.dirname(sourcePath));
+
+  return {
+    outputPath: targetPath,
+    outputPathWithTimestamp
+  };
 }
 
 function truncateLine(value, max = 180) {
@@ -1537,6 +1614,26 @@ function applyEncodeTitleSelectionToPlan(encodePlan, selectedEncodeTitleId) {
 }
 
 function normalizeTrackIdList(rawList) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const seen = new Set();
+  const output = [];
+  for (const item of list) {
+    const value = Number(item);
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    const normalized = Math.trunc(value);
+    const key = String(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function normalizeScriptIdList(rawList) {
   const list = Array.isArray(rawList) ? rawList : [];
   const seen = new Set();
   const output = [];
@@ -3806,7 +3903,10 @@ class PipelineService extends EventEmitter {
     logger.info('confirmEncodeReview:requested', {
       jobId,
       selectedEncodeTitleId: options?.selectedEncodeTitleId ?? null,
-      selectedTrackSelectionProvided: Boolean(options?.selectedTrackSelection)
+      selectedTrackSelectionProvided: Boolean(options?.selectedTrackSelection),
+      selectedPostEncodeScriptIdsCount: Array.isArray(options?.selectedPostEncodeScriptIds)
+        ? options.selectedPostEncodeScriptIds.length
+        : 0
     });
 
     const job = await historyService.getJobById(jobId);
@@ -3837,6 +3937,13 @@ class PipelineService extends EventEmitter {
       options?.selectedTrackSelection || null
     );
     planForConfirm = trackSelectionResult.plan;
+    const hasExplicitPostScriptSelection = options?.selectedPostEncodeScriptIds !== undefined;
+    const selectedPostEncodeScriptIds = hasExplicitPostScriptSelection
+      ? normalizeScriptIdList(options?.selectedPostEncodeScriptIds || [])
+      : normalizeScriptIdList(planForConfirm?.postEncodeScriptIds || encodePlan?.postEncodeScriptIds || []);
+    const selectedPostEncodeScripts = await scriptService.resolveScriptsByIds(selectedPostEncodeScriptIds, {
+      strict: true
+    });
     const confirmedMode = String(planForConfirm?.mode || encodePlan?.mode || 'rip').trim().toLowerCase();
     const isPreRipMode = confirmedMode === 'pre_rip' || Boolean(planForConfirm?.preRip);
 
@@ -3848,6 +3955,11 @@ class PipelineService extends EventEmitter {
 
     const confirmedPlan = {
       ...planForConfirm,
+      postEncodeScriptIds: selectedPostEncodeScripts.map((item) => Number(item.id)),
+      postEncodeScripts: selectedPostEncodeScripts.map((item) => ({
+        id: Number(item.id),
+        name: item.name
+      })),
       reviewConfirmed: true,
       reviewConfirmedAt: nowIso()
     };
@@ -3869,6 +3981,7 @@ class PipelineService extends EventEmitter {
       `Mediainfo-Prüfung bestätigt.${isPreRipMode ? ' Backup/Rip darf gestartet werden.' : ' Encode darf gestartet werden.'}${confirmedPlan.encodeInputTitleId ? ` Gewählter Titel #${confirmedPlan.encodeInputTitleId}.` : ''}`
       + ` Audio-Spuren: ${trackSelectionResult.audioTrackIds.length > 0 ? trackSelectionResult.audioTrackIds.join(',') : 'none'}.`
       + ` Subtitle-Spuren: ${trackSelectionResult.subtitleTrackIds.length > 0 ? trackSelectionResult.subtitleTrackIds.join(',') : 'none'}.`
+      + ` Post-Encode-Scripte: ${selectedPostEncodeScripts.length > 0 ? selectedPostEncodeScripts.map((item) => item.name).join(' -> ') : 'none'}.`
     );
 
     await this.setState('READY_TO_ENCODE', {
@@ -4245,6 +4358,160 @@ class PipelineService extends EventEmitter {
     return enrichedReview;
   }
 
+  async runPostEncodeScripts(jobId, encodePlan, context = {}) {
+    const scriptIds = normalizeScriptIdList(encodePlan?.postEncodeScriptIds || []);
+    if (scriptIds.length === 0) {
+      return {
+        configured: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+        results: []
+      };
+    }
+
+    const scripts = await scriptService.resolveScriptsByIds(scriptIds, { strict: false });
+    const scriptById = new Map(scripts.map((item) => [Number(item.id), item]));
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    let aborted = false;
+    let abortReason = null;
+    let failedScriptName = null;
+    let failedScriptId = null;
+    const titleForPush = context?.jobTitle || `Job #${jobId}`;
+
+    for (let index = 0; index < scriptIds.length; index += 1) {
+      const scriptId = scriptIds[index];
+      const script = scriptById.get(Number(scriptId));
+      if (!script) {
+        failed += 1;
+        aborted = true;
+        failedScriptId = Number(scriptId);
+        failedScriptName = `Script #${scriptId}`;
+        abortReason = `Post-Encode Skript #${scriptId} wurde nicht gefunden (${index + 1}/${scriptIds.length}).`;
+        await historyService.appendLog(jobId, 'SYSTEM', abortReason);
+        results.push({
+          scriptId,
+          scriptName: null,
+          status: 'ERROR',
+          error: 'missing'
+        });
+        break;
+      }
+
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Post-Encode Skript startet (${index + 1}/${scriptIds.length}): ${script.name}`
+      );
+
+      let prepared = null;
+      try {
+        prepared = await scriptService.createExecutableScriptFile(script, {
+          source: 'post_encode',
+          mode: context?.mode || null,
+          jobId,
+          jobTitle: context?.jobTitle || null,
+          inputPath: context?.inputPath || null,
+          outputPath: context?.outputPath || null,
+          rawPath: context?.rawPath || null
+        });
+        const runInfo = await this.runCommand({
+          jobId,
+          stage: 'ENCODING',
+          source: 'POST_ENCODE_SCRIPT',
+          cmd: prepared.cmd,
+          args: prepared.args,
+          argsForLog: prepared.argsForLog
+        });
+
+        succeeded += 1;
+        results.push({
+          scriptId: script.id,
+          scriptName: script.name,
+          status: 'SUCCESS',
+          runInfo
+        });
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Post-Encode Skript erfolgreich: ${script.name}`
+        );
+      } catch (error) {
+        failed += 1;
+        aborted = true;
+        failedScriptId = Number(script.id);
+        failedScriptName = script.name;
+        abortReason = error?.message || 'unknown';
+        results.push({
+          scriptId: script.id,
+          scriptName: script.name,
+          status: 'ERROR',
+          error: abortReason
+        });
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Post-Encode Skript fehlgeschlagen: ${script.name} (${abortReason})`
+        );
+        logger.warn('encode:post-script:failed', {
+          jobId,
+          scriptId: script.id,
+          scriptName: script.name,
+          error: errorToMeta(error)
+        });
+        break;
+      } finally {
+        if (prepared?.cleanup) {
+          await prepared.cleanup();
+        }
+      }
+    }
+
+    if (aborted) {
+      const executedScriptIds = new Set(results.map((item) => Number(item?.scriptId)));
+      for (const pendingScriptId of scriptIds) {
+        const numericId = Number(pendingScriptId);
+        if (executedScriptIds.has(numericId)) {
+          continue;
+        }
+        const pendingScript = scriptById.get(numericId);
+        skipped += 1;
+        results.push({
+          scriptId: numericId,
+          scriptName: pendingScript?.name || null,
+          status: 'SKIPPED_ABORTED'
+        });
+      }
+
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Post-Encode Skriptkette abgebrochen nach Fehler in ${failedScriptName || `Script #${failedScriptId || 'unknown'}`}.`
+      );
+      void this.notifyPushover('job_error', {
+        title: 'Ripster - Post-Encode Skriptfehler',
+        message: `${titleForPush}: ${failedScriptName || `Script #${failedScriptId || 'unknown'}`} fehlgeschlagen (${abortReason || 'unknown'}). Skriptkette abgebrochen.`
+      });
+    }
+
+    return {
+      configured: scriptIds.length,
+      attempted: scriptIds.length - skipped,
+      succeeded,
+      failed,
+      skipped,
+      aborted,
+      abortReason,
+      failedScriptId,
+      failedScriptName,
+      results
+    };
+  }
+
   async startEncodingFromPrepared(jobId) {
     this.ensureNotBusy('startEncodingFromPrepared');
     logger.info('encode:start-from-prepared', { jobId });
@@ -4284,10 +4551,9 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    const preferredOutputPath = buildOutputPathFromJob(settings, job, jobId);
-    const outputPath = ensureUniqueOutputPath(preferredOutputPath);
-    const outputPathWithTimestamp = outputPath !== preferredOutputPath;
-    ensureDir(path.dirname(outputPath));
+    const incompleteOutputPath = buildIncompleteOutputPathFromJob(settings, job, jobId);
+    const preferredFinalOutputPath = buildFinalOutputPathFromJob(settings, job, jobId);
+    ensureDir(path.dirname(incompleteOutputPath));
 
     await this.setState('ENCODING', {
       activeJobId: jobId,
@@ -4298,7 +4564,7 @@ class PipelineService extends EventEmitter {
         jobId,
         mode,
         inputPath,
-        outputPath,
+        outputPath: incompleteOutputPath,
         reviewConfirmed: true,
         mediaInfoReview: encodePlan || null,
         selectedMetadata: {
@@ -4313,27 +4579,25 @@ class PipelineService extends EventEmitter {
     await historyService.updateJob(jobId, {
       status: 'ENCODING',
       last_state: 'ENCODING',
-      output_path: outputPath,
+      output_path: incompleteOutputPath,
       encode_input_path: inputPath
     });
 
-    if (outputPathWithTimestamp) {
-      await historyService.appendLog(
-        jobId,
-        'SYSTEM',
-        `Output existierte bereits. Neuer Output-Pfad mit Timestamp: ${outputPath}`
-      );
-    }
+    await historyService.appendLog(
+      jobId,
+      'SYSTEM',
+      `Temporärer Encode-Output: ${incompleteOutputPath} (wird nach erfolgreichem Encode in den finalen Zielordner verschoben).`
+    );
 
     if (mode === 'reencode') {
       void this.notifyPushover('reencode_started', {
         title: 'Ripster - Re-Encode gestartet',
-        message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${outputPath}`
+        message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${preferredFinalOutputPath}`
       });
     } else {
       void this.notifyPushover('encoding_started', {
         title: 'Ripster - Encoding gestartet',
-        message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${outputPath}`
+        message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${preferredFinalOutputPath}`
       });
     }
 
@@ -4407,7 +4671,7 @@ class PipelineService extends EventEmitter {
           handBrakeTitleId = normalizeReviewTitleId(encodePlan?.handBrakeTitleId ?? encodePlan?.encodeInputTitleId);
         }
       }
-      const handBrakeConfig = await settingsService.buildHandBrakeConfig(inputPath, outputPath, {
+      const handBrakeConfig = await settingsService.buildHandBrakeConfig(inputPath, incompleteOutputPath, {
         trackSelection,
         titleId: handBrakeTitleId
       });
@@ -4434,39 +4698,98 @@ class PipelineService extends EventEmitter {
         args: handBrakeConfig.args,
         parser: parseHandBrakeProgress
       });
+      const outputFinalization = finalizeOutputPathForCompletedEncode(
+        incompleteOutputPath,
+        preferredFinalOutputPath
+      );
+      const finalizedOutputPath = outputFinalization.outputPath;
+      if (outputFinalization.outputPathWithTimestamp) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Finaler Output existierte bereits. Neuer Zielpfad mit Timestamp: ${finalizedOutputPath}`
+        );
+      }
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Encode-Output finalisiert: ${finalizedOutputPath}`
+      );
+      let postEncodeScriptsSummary = {
+        configured: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+        results: []
+      };
+      try {
+        postEncodeScriptsSummary = await this.runPostEncodeScripts(jobId, encodePlan, {
+          mode,
+          jobTitle: job.title || job.detected_title || null,
+          inputPath,
+          outputPath: finalizedOutputPath,
+          rawPath: job.raw_path || null
+        });
+      } catch (error) {
+        logger.warn('encode:post-script:summary-failed', {
+          jobId,
+          error: errorToMeta(error)
+        });
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Post-Encode Skripte konnten nicht vollständig ausgeführt werden: ${error?.message || 'unknown'}`
+        );
+      }
+      if (postEncodeScriptsSummary.configured > 0) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Post-Encode Skripte abgeschlossen: ${postEncodeScriptsSummary.succeeded} erfolgreich, ${postEncodeScriptsSummary.failed} fehlgeschlagen, ${postEncodeScriptsSummary.skipped} übersprungen.${postEncodeScriptsSummary.aborted ? ' Kette wurde abgebrochen.' : ''}`
+        );
+      }
+      const handbrakeInfoWithPostScripts = {
+        ...handbrakeInfo,
+        postEncodeScripts: postEncodeScriptsSummary
+      };
 
       await historyService.updateJob(jobId, {
-        handbrake_info_json: JSON.stringify(handbrakeInfo),
+        handbrake_info_json: JSON.stringify(handbrakeInfoWithPostScripts),
         status: 'FINISHED',
         last_state: 'FINISHED',
         end_time: nowIso(),
-        output_path: outputPath,
+        output_path: finalizedOutputPath,
         error_message: null
       });
 
-      logger.info('encoding:finished', { jobId, mode, outputPath });
+      logger.info('encoding:finished', { jobId, mode, outputPath: finalizedOutputPath });
+      const finishedStatusTextBase = mode === 'reencode' ? 'Re-Encode abgeschlossen' : 'Job abgeschlossen';
+      const finishedStatusText = postEncodeScriptsSummary.failed > 0
+        ? `${finishedStatusTextBase} (${postEncodeScriptsSummary.failed} Skript(e) fehlgeschlagen)`
+        : finishedStatusTextBase;
 
       await this.setState('FINISHED', {
         activeJobId: jobId,
         progress: 100,
         eta: null,
-        statusText: mode === 'reencode' ? 'Re-Encode abgeschlossen' : 'Job abgeschlossen',
+        statusText: finishedStatusText,
         context: {
           jobId,
           mode,
-          outputPath
+          outputPath: finalizedOutputPath
         }
       });
 
       if (mode === 'reencode') {
         void this.notifyPushover('reencode_finished', {
           title: 'Ripster - Re-Encode abgeschlossen',
-          message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${outputPath}`
+          message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${finalizedOutputPath}`
         });
       } else {
         void this.notifyPushover('job_finished', {
           title: 'Ripster - Job abgeschlossen',
-          message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${outputPath}`
+          message: `${job.title || job.detected_title || `Job #${jobId}`} -> ${finalizedOutputPath}`
         });
       }
 
@@ -4510,6 +4833,9 @@ class PipelineService extends EventEmitter {
     const preRipTrackSelectionPayload = hasPreRipConfirmedSelection
       ? extractManualSelectionPayloadFromPlan(preRipPlanBeforeRip)
       : null;
+    const preRipPostEncodeScriptIds = hasPreRipConfirmedSelection
+      ? normalizeScriptIdList(preRipPlanBeforeRip?.postEncodeScriptIds || [])
+      : [];
     const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job);
     const selectedTitleId = playlistDecision.selectedTitleId;
     const selectedPlaylist = playlistDecision.selectedPlaylist;
@@ -4693,7 +5019,8 @@ class PipelineService extends EventEmitter {
         );
         await this.confirmEncodeReview(jobId, {
           selectedEncodeTitleId: review?.encodeInputTitleId || null,
-          selectedTrackSelection: preRipTrackSelectionPayload || null
+          selectedTrackSelection: preRipTrackSelectionPayload || null,
+          selectedPostEncodeScriptIds: preRipPostEncodeScriptIds
         });
         const autoStartResult = await this.startPreparedJob(jobId);
         logger.info('rip:auto-encode-started', {

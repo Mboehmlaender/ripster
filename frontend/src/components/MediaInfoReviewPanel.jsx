@@ -1,3 +1,6 @@
+import { Button } from 'primereact/button';
+import { Dropdown } from 'primereact/dropdown';
+
 function formatDuration(minutes) {
   const value = Number(minutes || 0);
   if (!Number.isFinite(value)) {
@@ -636,15 +639,50 @@ function normalizeTitleId(value) {
   return Math.trunc(parsed);
 }
 
+function normalizeScriptId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function normalizeScriptIdList(values) {
+  const list = Array.isArray(values) ? values : [];
+  const seen = new Set();
+  const output = [];
+  for (const value of list) {
+    const normalized = normalizeScriptId(value);
+    if (normalized === null) {
+      continue;
+    }
+    const key = String(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
 export default function MediaInfoReviewPanel({
   review,
+  presetDisplayValue = '',
   commandOutputPath = null,
   selectedEncodeTitleId = null,
   allowTitleSelection = false,
   onSelectEncodeTitle = null,
   allowTrackSelection = false,
   trackSelectionByTitle = {},
-  onTrackSelectionChange = null
+  onTrackSelectionChange = null,
+  availablePostScripts = [],
+  selectedPostEncodeScriptIds = [],
+  allowPostScriptSelection = false,
+  onAddPostEncodeScript = null,
+  onChangePostEncodeScript = null,
+  onRemovePostEncodeScript = null,
+  onReorderPostEncodeScript = null
 }) {
   if (!review) {
     return <p>Keine Mediainfo-Daten vorhanden.</p>;
@@ -656,11 +694,35 @@ export default function MediaInfoReviewPanel({
   const processedFiles = Number(review.processedFiles || titles.length || 0);
   const totalFiles = Number(review.totalFiles || titles.length || 0);
   const playlistRecommendation = review.playlistRecommendation || null;
+  const presetLabel = String(presetDisplayValue || review.selectors?.preset || '').trim() || '-';
+  const scriptRows = normalizeScriptIdList(selectedPostEncodeScriptIds);
+  const scriptCatalog = (Array.isArray(availablePostScripts) ? availablePostScripts : [])
+    .map((item) => ({
+      id: normalizeScriptId(item?.id),
+      name: String(item?.name || '').trim()
+    }))
+    .filter((item) => item.id !== null && item.name.length > 0);
+  const scriptById = new Map(scriptCatalog.map((item) => [item.id, item]));
+  const canAddScriptRow = allowPostScriptSelection && scriptCatalog.length > 0 && scriptRows.length < scriptCatalog.length;
+  const canReorderScriptRows = allowPostScriptSelection && scriptRows.length > 1;
+
+  const handleScriptDrop = (event, targetIndex) => {
+    if (!allowPostScriptSelection || typeof onReorderPostEncodeScript !== 'function') {
+      return;
+    }
+    event.preventDefault();
+    const fromText = event.dataTransfer?.getData('text/plain');
+    const fromIndex = Number(fromText);
+    if (!Number.isInteger(fromIndex)) {
+      return;
+    }
+    onReorderPostEncodeScript(fromIndex, targetIndex);
+  };
 
   return (
     <div className="media-review-wrap">
       <div className="media-review-meta">
-        <div><strong>Preset:</strong> {review.selectors?.preset || '-'}</div>
+        <div><strong>Preset:</strong> {presetLabel}</div>
         <div><strong>Extra Args:</strong> {review.selectors?.extraArgs || '(keine)'}</div>
         <div><strong>Preset-Profil:</strong> {review.selectors?.presetProfileSource || '-'}</div>
         <div><strong>MIN_LENGTH_MINUTES:</strong> {review.minLengthMinutes}</div>
@@ -694,6 +756,87 @@ export default function MediaInfoReviewPanel({
           ))}
         </div>
       ) : null}
+
+      <div className="post-script-box">
+        <h4>Post-Encode Scripte (optional)</h4>
+        {scriptCatalog.length === 0 ? (
+          <small>Keine Scripte konfiguriert. In den Settings unter "Scripte" anlegen.</small>
+        ) : null}
+        {scriptRows.length === 0 ? (
+          <small>Keine Post-Encode Scripte ausgewählt.</small>
+        ) : null}
+        {scriptRows.map((scriptId, rowIndex) => {
+          const script = scriptById.get(scriptId) || null;
+          const selectedInOtherRows = new Set(
+            scriptRows.filter((id, index) => index !== rowIndex).map((id) => String(id))
+          );
+          const options = scriptCatalog.map((item) => ({
+            label: item.name,
+            value: item.id,
+            disabled: selectedInOtherRows.has(String(item.id))
+          }));
+          return (
+            <div
+              key={`post-script-row-${rowIndex}-${scriptId}`}
+              className={`post-script-row${allowPostScriptSelection ? ' editable' : ''}`}
+              onDragOver={(event) => {
+                if (!canReorderScriptRows) {
+                  return;
+                }
+                event.preventDefault();
+                if (event.dataTransfer) {
+                  event.dataTransfer.dropEffect = 'move';
+                }
+              }}
+              onDrop={(event) => handleScriptDrop(event, rowIndex)}
+            >
+              {allowPostScriptSelection ? (
+                <>
+                  <span
+                    className={`post-script-drag-handle pi pi-bars${canReorderScriptRows ? '' : ' disabled'}`}
+                    title={canReorderScriptRows ? 'Ziehen zum Umordnen' : 'Mindestens zwei Scripte zum Umordnen'}
+                    draggable={canReorderScriptRows}
+                    onDragStart={(event) => {
+                      if (!canReorderScriptRows) {
+                        return;
+                      }
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', String(rowIndex));
+                    }}
+                  />
+                  <Dropdown
+                    value={scriptId}
+                    options={options}
+                    optionLabel="label"
+                    optionValue="value"
+                    optionDisabled="disabled"
+                    onChange={(event) => onChangePostEncodeScript?.(rowIndex, event.value)}
+                    className="full-width"
+                  />
+                  <Button
+                    icon="pi pi-times"
+                    severity="danger"
+                    outlined
+                    onClick={() => onRemovePostEncodeScript?.(rowIndex)}
+                  />
+                </>
+              ) : (
+                <small>{`${rowIndex + 1}. ${script?.name || `Script #${scriptId}`}`}</small>
+              )}
+            </div>
+          );
+        })}
+        {canAddScriptRow ? (
+          <Button
+            label="Script hinzufügen"
+            icon="pi pi-plus"
+            severity="secondary"
+            outlined
+            onClick={() => onAddPostEncodeScript?.()}
+          />
+        ) : null}
+        <small>Ausführung erfolgt nur nach erfolgreichem Encode, strikt nacheinander in genau dieser Reihenfolge (Drag-and-Drop möglich).</small>
+      </div>
 
       <h4>Titel</h4>
       <div className="media-title-list">

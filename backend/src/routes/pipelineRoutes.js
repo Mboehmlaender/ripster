@@ -94,15 +94,20 @@ router.post(
     const jobId = Number(req.params.jobId);
     const selectedEncodeTitleId = req.body?.selectedEncodeTitleId ?? null;
     const selectedTrackSelection = req.body?.selectedTrackSelection ?? null;
+    const selectedPostEncodeScriptIds = req.body?.selectedPostEncodeScriptIds;
     logger.info('post:confirm-encode', {
       reqId: req.reqId,
       jobId,
       selectedEncodeTitleId,
-      selectedTrackSelectionProvided: Boolean(selectedTrackSelection)
+      selectedTrackSelectionProvided: Boolean(selectedTrackSelection),
+      selectedPostEncodeScriptIdsCount: Array.isArray(selectedPostEncodeScriptIds)
+        ? selectedPostEncodeScriptIds.length
+        : 0
     });
     const job = await pipelineService.confirmEncodeReview(jobId, {
       selectedEncodeTitleId,
-      selectedTrackSelection
+      selectedTrackSelection,
+      selectedPostEncodeScriptIds
     });
     res.json({ job });
   })

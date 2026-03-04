@@ -36,6 +36,34 @@ export const api = {
   getSettings() {
     return request('/settings');
   },
+  getHandBrakePresets() {
+    return request('/settings/handbrake-presets');
+  },
+  getScripts() {
+    return request('/settings/scripts');
+  },
+  createScript(payload = {}) {
+    return request('/settings/scripts', {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
+  },
+  updateScript(scriptId, payload = {}) {
+    return request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload || {})
+    });
+  },
+  deleteScript(scriptId) {
+    return request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
+      method: 'DELETE'
+    });
+  },
+  testScript(scriptId) {
+    return request(`/settings/scripts/${encodeURIComponent(scriptId)}/test`, {
+      method: 'POST'
+    });
+  },
   updateSetting(key, value) {
     return request(`/settings/${encodeURIComponent(key)}`, {
       method: 'PUT',

@@ -65,6 +65,33 @@ function normalizeTrackIdList(values) {
   return output;
 }
 
+function normalizeScriptId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function normalizeScriptIdList(values) {
+  const list = Array.isArray(values) ? values : [];
+  const seen = new Set();
+  const output = [];
+  for (const value of list) {
+    const normalized = normalizeScriptId(value);
+    if (normalized === null) {
+      continue;
+    }
+    const key = String(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
 function buildDefaultTrackSelection(review) {
   const titles = Array.isArray(review?.titles) ? review.titles : [];
   const selection = {};
@@ -108,6 +135,23 @@ function buildSettingsMap(categories) {
   return map;
 }
 
+function buildPresetDisplayMap(options) {
+  const map = {};
+  const list = Array.isArray(options) ? options : [];
+  for (const option of list) {
+    if (!option || option.disabled) {
+      continue;
+    }
+    const value = String(option.value || '').trim();
+    if (!value) {
+      continue;
+    }
+    const category = String(option.category || '').trim();
+    map[value] = category ? `${category}/${value}` : value;
+  }
+  return map;
+}
+
 function sanitizeFileName(input) {
   return String(input || 'untitled')
     .replace(/[\\/:*?"<>|]/g, '_')
@@ -135,9 +179,10 @@ function buildOutputPathPreview(settings, metadata, fallbackJobId = null) {
   const title = metadata?.title || (fallbackJobId ? `job-${fallbackJobId}` : 'job');
   const year = metadata?.year || new Date().getFullYear();
   const imdbId = metadata?.imdbId || (fallbackJobId ? `job-${fallbackJobId}` : 'noimdb');
-  const template = settings?.filename_template || '${title} (${year})';
-  const folderName = sanitizeFileName(renderTemplate('${title} (${year})', { title, year, imdbId }));
-  const baseName = sanitizeFileName(renderTemplate(template, { title, year, imdbId }));
+  const fileTemplate = settings?.filename_template || '${title} (${year})';
+  const folderTemplate = String(settings?.output_folder_template || '').trim() || fileTemplate;
+  const folderName = sanitizeFileName(renderTemplate(folderTemplate, { title, year, imdbId }));
+  const baseName = sanitizeFileName(renderTemplate(fileTemplate, { title, year, imdbId }));
   const ext = String(settings?.output_extension || 'mkv').trim() || 'mkv';
   const root = movieDir.replace(/\/+$/g, '');
   return `${root}/${folderName}/${baseName}.${ext}`;
@@ -171,18 +216,43 @@ export default function PipelineStatusCard({
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(null);
   const [trackSelectionByTitle, setTrackSelectionByTitle] = useState({});
   const [settingsMap, setSettingsMap] = useState({});
+  const [presetDisplayMap, setPresetDisplayMap] = useState({});
+  const [scriptCatalog, setScriptCatalog] = useState([]);
+  const [selectedPostEncodeScriptIds, setSelectedPostEncodeScriptIds] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
     const loadSettings = async () => {
       try {
-        const response = await api.getSettings();
+        const [settingsResponse, presetsResponse, scriptsResponse] = await Promise.allSettled([
+          api.getSettings(),
+          api.getHandBrakePresets(),
+          api.getScripts()
+        ]);
         if (!cancelled) {
-          setSettingsMap(buildSettingsMap(response?.categories || []));
+          const categories = settingsResponse.status === 'fulfilled'
+            ? (settingsResponse.value?.categories || [])
+            : [];
+          setSettingsMap(buildSettingsMap(categories));
+          const presetOptions = presetsResponse.status === 'fulfilled'
+            ? (presetsResponse.value?.options || [])
+            : [];
+          setPresetDisplayMap(buildPresetDisplayMap(presetOptions));
+          const scripts = scriptsResponse.status === 'fulfilled'
+            ? (Array.isArray(scriptsResponse.value?.scripts) ? scriptsResponse.value.scripts : [])
+            : [];
+          setScriptCatalog(
+            scripts.map((item) => ({
+              id: item?.id,
+              name: item?.name
+            }))
+          );
         }
       } catch (_error) {
         if (!cancelled) {
           setSettingsMap({});
+          setPresetDisplayMap({});
+          setScriptCatalog([]);
         }
       }
     };
@@ -196,6 +266,9 @@ export default function PipelineStatusCard({
     const fromReview = normalizeTitleId(mediaInfoReview?.encodeInputTitleId);
     setSelectedEncodeTitleId(fromReview);
     setTrackSelectionByTitle(buildDefaultTrackSelection(mediaInfoReview));
+    setSelectedPostEncodeScriptIds(
+      normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || [])
+    );
   }, [mediaInfoReview?.encodeInputTitleId, mediaInfoReview?.generatedAt, retryJobId]);
 
   useEffect(() => {
@@ -312,6 +385,13 @@ export default function PipelineStatusCard({
     () => buildOutputPathPreview(settingsMap, selectedMetadata, retryJobId),
     [settingsMap, selectedMetadata, retryJobId]
   );
+  const presetDisplayValue = useMemo(() => {
+    const preset = String(mediaInfoReview?.selectors?.preset || '').trim();
+    if (!preset) {
+      return '';
+    }
+    return presetDisplayMap[preset] || preset;
+  }, [mediaInfoReview?.selectors?.preset, presetDisplayMap]);
   const buildSelectedTrackSelectionForCurrentTitle = () => {
     const encodeTitleId = normalizeTitleId(selectedEncodeTitleId);
     const selectionEntry = encodeTitleId
@@ -329,9 +409,11 @@ export default function PipelineStatusCard({
         }
       }
       : null;
+    const selectedPostScriptIds = normalizeScriptIdList(selectedPostEncodeScriptIds);
     return {
       encodeTitleId,
-      selectedTrackSelection
+      selectedTrackSelection,
+      selectedPostScriptIds
     };
   };
 
@@ -399,11 +481,16 @@ export default function PipelineStatusCard({
                 return;
               }
 
-              const { encodeTitleId, selectedTrackSelection } = buildSelectedTrackSelectionForCurrentTitle();
+              const {
+                encodeTitleId,
+                selectedTrackSelection,
+                selectedPostScriptIds
+              } = buildSelectedTrackSelectionForCurrentTitle();
               await onStart(retryJobId, {
                 ensureConfirmed: true,
                 selectedEncodeTitleId: encodeTitleId,
-                selectedTrackSelection
+                selectedTrackSelection,
+                selectedPostEncodeScriptIds: selectedPostScriptIds
               });
             }}
             loading={busy}
@@ -561,6 +648,7 @@ export default function PipelineStatusCard({
           ) : null}
           <MediaInfoReviewPanel
             review={mediaInfoReview}
+            presetDisplayValue={presetDisplayValue}
             commandOutputPath={commandOutputPath}
             selectedEncodeTitleId={normalizeTitleId(selectedEncodeTitleId)}
             allowTitleSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed}
@@ -592,6 +680,72 @@ export default function PipelineStatusCard({
                     [key]: next
                   }
                 };
+              });
+            }}
+            availablePostScripts={scriptCatalog}
+            selectedPostEncodeScriptIds={selectedPostEncodeScriptIds}
+            allowPostScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed}
+            onAddPostEncodeScript={() => {
+              setSelectedPostEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                const selectedSet = new Set(normalizedCurrent.map((id) => String(id)));
+                const nextCandidate = (Array.isArray(scriptCatalog) ? scriptCatalog : [])
+                  .map((item) => normalizeScriptId(item?.id))
+                  .find((id) => id !== null && !selectedSet.has(String(id)));
+                if (nextCandidate === undefined || nextCandidate === null) {
+                  return normalizedCurrent;
+                }
+                return [...normalizedCurrent, nextCandidate];
+              });
+            }}
+            onChangePostEncodeScript={(rowIndex, nextScriptId) => {
+              setSelectedPostEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
+                  return normalizedCurrent;
+                }
+                const normalizedScriptId = normalizeScriptId(nextScriptId);
+                if (normalizedScriptId === null) {
+                  return normalizedCurrent;
+                }
+                const duplicateAtOtherIndex = normalizedCurrent.some((id, idx) =>
+                  idx !== rowIndex && String(id) === String(normalizedScriptId)
+                );
+                if (duplicateAtOtherIndex) {
+                  return normalizedCurrent;
+                }
+                const next = [...normalizedCurrent];
+                next[rowIndex] = normalizedScriptId;
+                return next;
+              });
+            }}
+            onRemovePostEncodeScript={(rowIndex) => {
+              setSelectedPostEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
+                  return normalizedCurrent;
+                }
+                return normalizedCurrent.filter((_, idx) => idx !== rowIndex);
+              });
+            }}
+            onReorderPostEncodeScript={(fromIndex, toIndex) => {
+              setSelectedPostEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                const from = Number(fromIndex);
+                const to = Number(toIndex);
+                if (!Number.isInteger(from) || !Number.isInteger(to)) {
+                  return normalizedCurrent;
+                }
+                if (from < 0 || to < 0 || from >= normalizedCurrent.length || to >= normalizedCurrent.length) {
+                  return normalizedCurrent;
+                }
+                if (from === to) {
+                  return normalizedCurrent;
+                }
+                const next = [...normalizedCurrent];
+                const [moved] = next.splice(from, 1);
+                next.splice(to, 0, moved);
+                return next;
               });
             }}
           />

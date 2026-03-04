@@ -424,7 +424,8 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
       if (startOptions.ensureConfirmed) {
         await api.confirmEncodeReview(normalizedJobId, {
           selectedEncodeTitleId: startOptions.selectedEncodeTitleId ?? null,
-          selectedTrackSelection: startOptions.selectedTrackSelection ?? null
+          selectedTrackSelection: startOptions.selectedTrackSelection ?? null,
+          selectedPostEncodeScriptIds: startOptions.selectedPostEncodeScriptIds ?? []
         });
       }
       await api.startJob(normalizedJobId);
@@ -438,12 +439,18 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     }
   };
 
-  const handleConfirmReview = async (jobId, selectedEncodeTitleId = null, selectedTrackSelection = null) => {
+  const handleConfirmReview = async (
+    jobId,
+    selectedEncodeTitleId = null,
+    selectedTrackSelection = null,
+    selectedPostEncodeScriptIds = undefined
+  ) => {
     setBusy(true);
     try {
       await api.confirmEncodeReview(jobId, {
         selectedEncodeTitleId,
-        selectedTrackSelection
+        selectedTrackSelection,
+        selectedPostEncodeScriptIds
       });
       await refreshPipeline();
       await loadDashboardJobs();

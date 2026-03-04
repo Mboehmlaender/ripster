@@ -1,6 +1,7 @@
 const express = require('express');
 const asyncHandler = require('../middleware/asyncHandler');
 const settingsService = require('../services/settingsService');
+const scriptService = require('../services/scriptService');
 const notificationService = require('../services/notificationService');
 const pipelineService = require('../services/pipelineService');
 const wsService = require('../services/websocketService');
@@ -22,6 +23,83 @@ router.get(
     logger.debug('get:settings', { reqId: req.reqId });
     const categories = await settingsService.getCategorizedSettings();
     res.json({ categories });
+  })
+);
+
+router.get(
+  '/handbrake-presets',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:settings:handbrake-presets', { reqId: req.reqId });
+    const presets = await settingsService.getHandBrakePresetOptions();
+    res.json(presets);
+  })
+);
+
+router.get(
+  '/scripts',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:settings:scripts', { reqId: req.reqId });
+    const scripts = await scriptService.listScripts();
+    res.json({ scripts });
+  })
+);
+
+router.post(
+  '/scripts',
+  asyncHandler(async (req, res) => {
+    const payload = req.body || {};
+    logger.info('post:settings:scripts:create', {
+      reqId: req.reqId,
+      name: String(payload?.name || '').trim() || null,
+      scriptBodyLength: String(payload?.scriptBody || '').length
+    });
+    const script = await scriptService.createScript(payload);
+    wsService.broadcast('SETTINGS_SCRIPTS_UPDATED', { action: 'created', id: script.id });
+    res.status(201).json({ script });
+  })
+);
+
+router.put(
+  '/scripts/:id',
+  asyncHandler(async (req, res) => {
+    const scriptId = Number(req.params.id);
+    const payload = req.body || {};
+    logger.info('put:settings:scripts:update', {
+      reqId: req.reqId,
+      scriptId,
+      name: String(payload?.name || '').trim() || null,
+      scriptBodyLength: String(payload?.scriptBody || '').length
+    });
+    const script = await scriptService.updateScript(scriptId, payload);
+    wsService.broadcast('SETTINGS_SCRIPTS_UPDATED', { action: 'updated', id: script.id });
+    res.json({ script });
+  })
+);
+
+router.delete(
+  '/scripts/:id',
+  asyncHandler(async (req, res) => {
+    const scriptId = Number(req.params.id);
+    logger.info('delete:settings:scripts', {
+      reqId: req.reqId,
+      scriptId
+    });
+    const removed = await scriptService.deleteScript(scriptId);
+    wsService.broadcast('SETTINGS_SCRIPTS_UPDATED', { action: 'deleted', id: removed.id });
+    res.json({ removed });
+  })
+);
+
+router.post(
+  '/scripts/:id/test',
+  asyncHandler(async (req, res) => {
+    const scriptId = Number(req.params.id);
+    logger.info('post:settings:scripts:test', {
+      reqId: req.reqId,
+      scriptId
+    });
+    const result = await scriptService.testScript(scriptId);
+    res.json({ result });
   })
 );
 

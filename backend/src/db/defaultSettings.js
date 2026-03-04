@@ -261,6 +261,18 @@ const defaultSchema = [
     orderIndex: 340
   },
   {
+    key: 'output_folder_template',
+    category: 'Tools',
+    label: 'Ordnername Template',
+    type: 'string',
+    required: 0,
+    description: 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template verwenden.',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 345
+  },
+  {
     key: 'omdb_api_key',
     category: 'Metadaten',
     label: 'OMDb API Key',

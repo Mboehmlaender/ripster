@@ -10,6 +10,8 @@ import { Toast } from 'primereact/toast';
 import { api } from '../api/client';
 import JobDetailDialog from '../components/JobDetailDialog';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
+import blurayIndicatorIcon from '../assets/media-bluray.svg';
+import discIndicatorIcon from '../assets/media-disc.svg';
 
 const statusOptions = [
   { label: 'Alle', value: '' },
@@ -32,6 +34,11 @@ function statusSeverity(status) {
   if (status === 'WAITING_FOR_USER_DECISION') return 'warning';
   if (status === 'RIPPING' || status === 'ENCODING' || status === 'ANALYZING' || status === 'MEDIAINFO_CHECK') return 'warning';
   return 'secondary';
+}
+
+function resolveMediaType(row) {
+  const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
+  return raw === 'bluray' ? 'bluray' : 'disc';
 }
 
 export default function DatabasePage() {
@@ -425,6 +432,19 @@ export default function DatabasePage() {
   );
 
   const stateBody = (row) => <Tag value={row.status} severity={statusSeverity(row.status)} />;
+  const mediaBody = (row) => {
+    const mediaType = resolveMediaType(row);
+    const src = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
+    const alt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
+    const title = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges Medium';
+    const label = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges';
+    return (
+      <span className="job-step-cell">
+        <img src={src} alt={alt} title={title} className="media-indicator-icon" />
+        <span>{label}</span>
+      </span>
+    );
+  };
   const orphanTitleBody = (row) => (
     <div>
       <div><strong>{row.title || '-'}</strong></div>
@@ -483,6 +503,7 @@ export default function DatabasePage() {
           >
             <Column field="id" header="ID" style={{ width: '6rem' }} />
             <Column header="Bild" body={posterBody} style={{ width: '7rem' }} />
+            <Column header="Medium" body={mediaBody} style={{ width: '10rem' }} />
             <Column header="Titel" body={titleBody} style={{ minWidth: '18rem' }} />
             <Column header="Status" body={stateBody} style={{ width: '11rem' }} />
             <Column field="start_time" header="Start" style={{ width: '16rem' }} />
