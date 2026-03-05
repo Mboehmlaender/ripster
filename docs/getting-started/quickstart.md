@@ -6,24 +6,106 @@ Nach der [Installation](installation.md) und [Konfiguration](configuration.md) f
 
 ## Übersicht: Pipeline-Zustände
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> IDLE
-    IDLE --> DISC_DETECTED: Disc eingelegt
-    DISC_DETECTED --> METADATA_SELECTION: Analyse gestartet
-    METADATA_SELECTION --> READY_TO_START: Metadaten bestätigt\n(keine Obfuskierung)
-    METADATA_SELECTION --> WAITING_FOR_USER_DECISION: Obfuskierung erkannt\n→ Playlist wählen
-    WAITING_FOR_USER_DECISION --> READY_TO_START: Playlist bestätigt
-    READY_TO_START --> MEDIAINFO_CHECK: Vorhandene Raw-Datei\ngefunden
-    READY_TO_START --> RIPPING: Ripping starten
-    RIPPING --> MEDIAINFO_CHECK: MakeMKV fertig
-    MEDIAINFO_CHECK --> READY_TO_ENCODE: Track-Review bereit
-    READY_TO_ENCODE --> ENCODING: Encode bestätigt
-    ENCODING --> FINISHED: Erfolg
-    ENCODING --> ERROR: Fehler
-    RIPPING --> ERROR: Fehler
-```
+<div class="pipeline-steps">
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-idle">●</div>
+    <div class="pipeline-step-label">IDLE</div>
+    <div class="pipeline-step-sub">Warten</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-idle">1</div>
+    <div class="pipeline-step-label">DISC_DETECTED</div>
+    <div class="pipeline-step-sub">Disc erkannt</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-running">2</div>
+    <div class="pipeline-step-label">METADATA_SELECTION</div>
+    <div class="pipeline-step-sub">Scan &amp; Metadaten</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-wait">⚠</div>
+    <div class="pipeline-step-label">WAITING_FOR_USER_DECISION</div>
+    <div class="pipeline-step-sub">Playlist wählen<br><em>(nur bei Obfusk.)</em></div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-user">3</div>
+    <div class="pipeline-step-label">READY_TO_START</div>
+    <div class="pipeline-step-sub">Bereit</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-running">4</div>
+    <div class="pipeline-step-label">RIPPING</div>
+    <div class="pipeline-step-sub">MakeMKV</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-running">5</div>
+    <div class="pipeline-step-label">MEDIAINFO_CHECK</div>
+    <div class="pipeline-step-sub">HandBrake-Scan</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-user">6</div>
+    <div class="pipeline-step-label">READY_TO_ENCODE</div>
+    <div class="pipeline-step-sub">Track-Review</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-encode">7</div>
+    <div class="pipeline-step-label">ENCODING</div>
+    <div class="pipeline-step-sub">HandBrake</div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-encode">8</div>
+    <div class="pipeline-step-label">POST_ENCODE_SCRIPTS</div>
+    <div class="pipeline-step-sub">Skripte<br><em>(optional)</em></div>
+  </div>
+  <div class="pipeline-step">
+    <div class="pipeline-step-badge step-done">✓</div>
+    <div class="pipeline-step-label">FINISHED</div>
+    <div class="pipeline-step-sub">Fertig</div>
+  </div>
+</div>
+
+**Legende:** <span style="color:#546e7a">● Warten</span> &nbsp;|&nbsp; <span style="color:#1565c0">■ Läuft automatisch</span> &nbsp;|&nbsp; <span style="color:#3949ab">■ Benutzeraktion</span> &nbsp;|&nbsp; <span style="color:#e65100">⚠ Optional</span> &nbsp;|&nbsp; <span style="color:#6a1b9a">■ Encodierung</span> &nbsp;|&nbsp; <span style="color:#2e7d32">✓ Fertig</span>
+
+??? note "Vollständiges Zustandsdiagramm (inkl. Fehler- &amp; Alternativpfade)"
+
+    <div class="pipeline-diagram">
+
+    ```mermaid
+    flowchart LR
+        START(( )) --> IDLE
+
+        IDLE -->|Disc erkannt| DD[DISC_DETECTED]
+        DD -->|Analyse starten| META[METADATA\nSELECTION]
+
+        META -->|1 Kandidat| RTS[READY_TO\nSTART]
+        META -->|mehrere Kandidaten| WUD[WAITING_FOR\nUSER_DECISION]
+        WUD -->|Playlist bestätigt| RTS
+
+        RTS -->|Raw vorhanden| MIC[MEDIAINFO\nCHECK]
+        RTS -->|Ripping starten| RIP[RIPPING]
+        RIP -->|MKV fertig| MIC
+        RIP -->|Fehler| ERR
+
+        MIC --> RTE[READY_TO\nENCODE]
+        RTE -->|bestätigt| ENC[ENCODING]
+
+        ENC -->|mit Skripten| PES[POST_ENCODE\nSCRIPTS]
+        ENC -->|ohne Skripte| FIN([FINISHED])
+        ENC -->|Fehler| ERR
+
+        PES -->|Erfolg| FIN
+        PES -->|Fehler| ERR
+
+        ERR([ERROR]) -->|Retry / Cancel| IDLE
+
+        style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
+        style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
+        style WUD fill:#fff8e1,stroke:#ffa726,color:#e65100
+        style PES fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+        style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+    ```
+
+    </div>
 
 ---
 

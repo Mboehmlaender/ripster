@@ -6,39 +6,47 @@ Der Ripping-Workflow von Ripster ist als **State Machine** implementiert. Jeder 
 
 ## Zustandsdiagramm
 
+<div class="pipeline-diagram">
+
 ```mermaid
-stateDiagram-v2
-    direction TB
-    [*] --> IDLE
+flowchart LR
+    START(( )) --> IDLE
 
-    IDLE --> DISC_DETECTED: Disc erkannt
-    DISC_DETECTED --> METADATA_SELECTION: Analyse starten
+    IDLE -->|Disc erkannt| DD[DISC_DETECTED]
+    DD -->|Analyse starten| META[METADATA\nSELECTION]
 
-    METADATA_SELECTION --> READY_TO_START: Kein Obfuskierungsverdacht\n(ein Kandidat)
-    METADATA_SELECTION --> WAITING_FOR_USER_DECISION: Mehrere Playlist-Kandidaten\n→ manuelle Auswahl nötig
+    META -->|1 Kandidat| RTS[READY_TO\nSTART]
+    META -->|mehrere Kandidaten| WUD[WAITING_FOR\nUSER_DECISION]
+    WUD -->|Playlist bestätigt| RTS
 
-    WAITING_FOR_USER_DECISION --> READY_TO_START: Playlist bestätigt
+    RTS -->|Raw vorhanden| MIC[MEDIAINFO\nCHECK]
+    RTS -->|Ripping starten| RIP[RIPPING]
+    RIP -->|MKV fertig| MIC
+    RIP -->|Fehler| ERR
 
-    READY_TO_START --> RIPPING: Starten\n(kein Raw vorhanden)
-    READY_TO_START --> MEDIAINFO_CHECK: Starten\n(Raw bereits vorhanden)
+    MIC --> RTE[READY_TO\nENCODE]
+    RTE -->|Tracks + Skripte\nbestätigt| ENC[ENCODING]
 
-    RIPPING --> MEDIAINFO_CHECK: MKV/Backup erstellt
+    ENC -->|mit Skripten| PES[POST_ENCODE\nSCRIPTS]
+    ENC -->|ohne Skripte| FIN([FINISHED])
+    ENC -->|Fehler| ERR
 
-    MEDIAINFO_CHECK --> READY_TO_ENCODE: Track-Scan\nabgeschlossen
+    PES -->|Erfolg| FIN
+    PES -->|Fehler| ERR
 
-    READY_TO_ENCODE --> ENCODING: Tracks + Skripte\nbestätigt
+    ERR([ERROR]) -->|Retry / Cancel| IDLE
+    FIN -->|Neue Disc| IDLE
 
-    ENCODING --> POST_ENCODE_SCRIPTS: Erfolg\n(Skripte konfiguriert)
-    ENCODING --> FINISHED: Erfolg\n(keine Skripte)
-    POST_ENCODE_SCRIPTS --> FINISHED: Alle Skripte\nerfolgt
-
-    RIPPING --> ERROR: Fehler
-    ENCODING --> ERROR: Fehler
-    POST_ENCODE_SCRIPTS --> ERROR: Skript-Fehler
-
-    ERROR --> IDLE: Abbrechen / Retry
-    FINISHED --> IDLE: Neue Disc
+    style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
+    style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
+    style WUD fill:#fff8e1,stroke:#ffa726,color:#e65100
+    style PES fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+    style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+    style RIP fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
+    style MIC fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
 ```
+
+</div>
 
 ---
 

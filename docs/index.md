@@ -112,19 +112,31 @@ open http://localhost:5173
 
 ## Pipeline-Überblick
 
+<div class="pipeline-diagram">
+
 ```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> ANALYZING: Disc erkannt
-    ANALYZING --> METADATA_SELECTION: Analyse abgeschlossen
-    METADATA_SELECTION --> READY_TO_START: Metadaten bestätigt
-    READY_TO_START --> RIPPING: Start gedrückt
-    RIPPING --> MEDIAINFO_CHECK: MKV erstellt
-    MEDIAINFO_CHECK --> READY_TO_ENCODE: Tracks analysiert
-    READY_TO_ENCODE --> ENCODING: Encode bestätigt
-    ENCODING --> FINISHED: Encoding fertig
-    ENCODING --> ERROR: Fehler
-    RIPPING --> ERROR: Fehler
-    ERROR --> [*]
-    FINISHED --> [*]
+flowchart LR
+    IDLE --> DD[DISC_DETECTED]
+    DD --> META[METADATA\nSELECTION]
+    META -->|1 Kandidat| RTS[READY_TO\nSTART]
+    META -->|Obfuskierung| WUD[WAITING_FOR\nUSER_DECISION]
+    WUD --> RTS
+    RTS --> RIP[RIPPING]
+    RTS -->|Raw vorhanden| MIC
+    RIP --> MIC[MEDIAINFO\nCHECK]
+    MIC --> RTE[READY_TO\nENCODE]
+    RTE --> ENC[ENCODING]
+    ENC --> PES[POST_ENCODE\nSCRIPTS]
+    ENC -->|keine Skripte| FIN([FINISHED])
+    PES --> FIN
+    ENC --> ERR([ERROR])
+    RIP --> ERR
+
+    style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
+    style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
+    style WUD fill:#fff8e1,stroke:#ffa726,color:#e65100
+    style PES fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+    style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
 ```
+
+</div>

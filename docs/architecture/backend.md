@@ -29,22 +29,32 @@ Das Backend ist in Node.js/Express geschrieben und in **Services** aufgeteilt, d
 
 ### Zustandsübergänge
 
+<div class="pipeline-diagram">
+
 ```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> ANALYZING: analyzeDisc()
-    ANALYZING --> METADATA_SELECTION: MakeMKV fertig
-    METADATA_SELECTION --> READY_TO_START: selectMetadata()
-    READY_TO_START --> RIPPING: startJob()
-    RIPPING --> MEDIAINFO_CHECK: MKV erstellt
-    MEDIAINFO_CHECK --> READY_TO_ENCODE: Tracks analysiert
-    READY_TO_ENCODE --> ENCODING: confirmEncode()
-    ENCODING --> FINISHED: HandBrake fertig
-    ENCODING --> ERROR: Fehler
-    RIPPING --> ERROR: Fehler
-    ERROR --> IDLE: retryJob() / cancel
-    FINISHED --> IDLE: cancel / neue Disc
+flowchart LR
+    START(( )) --> IDLE
+    IDLE -->|analyzeDisc()| ANALYZING[ANALYZING]
+    ANALYZING -->|MakeMKV fertig| META[METADATA\nSELECTION]
+    META -->|selectMetadata()| RTS[READY_TO\nSTART]
+    RTS -->|startJob()| RIP[RIPPING]
+    RIP -->|MKV erstellt| MIC[MEDIAINFO\nCHECK]
+    MIC -->|Tracks analysiert| RTE[READY_TO\nENCODE]
+    RTE -->|confirmEncode()| ENC[ENCODING]
+    ENC -->|HandBrake fertig| FIN([FINISHED])
+    ENC -->|Fehler| ERR([ERROR])
+    RIP -->|Fehler| ERR
+    ERR -->|retryJob() / cancel| IDLE
+    FIN -->|cancel / neue Disc| IDLE
+
+    style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
+    style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
+    style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
+    style RIP fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
+    style MIC fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
 ```
+
+</div>
 
 ---
 
