@@ -607,6 +607,22 @@ class HistoryService {
     }));
   }
 
+  async getRunningEncodeJobs() {
+    const db = await getDb();
+    const rows = await db.all(
+      `
+        SELECT *
+        FROM jobs
+        WHERE status = 'ENCODING'
+        ORDER BY updated_at ASC, id ASC
+      `
+    );
+    return rows.map((job) => ({
+      ...enrichJobRow(job),
+      log_count: hasProcessLogFile(job.id) ? 1 : 0
+    }));
+  }
+
   async getJobWithLogs(jobId, options = {}) {
     const db = await getDb();
     const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);

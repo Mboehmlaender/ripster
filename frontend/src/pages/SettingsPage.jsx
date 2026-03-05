@@ -111,6 +111,15 @@ export default function SettingsPage() {
   });
   const [scriptErrors, setScriptErrors] = useState({});
   const [lastScriptTestResult, setLastScriptTestResult] = useState(null);
+
+  // Script chains state
+  const [chains, setChains] = useState([]);
+  const [chainsLoading, setChainsLoading] = useState(false);
+  const [chainSaving, setChainSaving] = useState(false);
+  const [chainEditor, setChainEditor] = useState({ open: false, id: null, name: '', steps: [] });
+  const [chainEditorErrors, setChainEditorErrors] = useState({});
+  const [chainDragSource, setChainDragSource] = useState(null);
+
   const toastRef = useRef(null);
 
   const loadScripts = async ({ silent = false } = {}) => {
@@ -132,13 +141,32 @@ export default function SettingsPage() {
     }
   };
 
+  const loadChains = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setChainsLoading(true);
+    }
+    try {
+      const response = await api.getScriptChains();
+      setChains(Array.isArray(response?.chains) ? response.chains : []);
+    } catch (error) {
+      if (!silent) {
+        toastRef.current?.show({ severity: 'error', summary: 'Skriptketten', detail: error.message });
+      }
+    } finally {
+      if (!silent) {
+        setChainsLoading(false);
+      }
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     try {
-      const [settingsResponse, presetsResponse, scriptsResponse] = await Promise.allSettled([
+      const [settingsResponse, presetsResponse, scriptsResponse, chainsResponse] = await Promise.allSettled([
         api.getSettings(),
         api.getHandBrakePresets(),
-        api.getScripts()
+        api.getScripts(),
+        api.getScriptChains()
       ]);
       if (settingsResponse.status !== 'fulfilled') {
         throw settingsResponse.reason;
@@ -173,6 +201,9 @@ export default function SettingsPage() {
           summary: 'Scripte',
           detail: 'Script-Liste konnte nicht geladen werden.'
         });
+      }
+      if (chainsResponse.status === 'fulfilled') {
+        setChains(Array.isArray(chainsResponse.value?.chains) ? chainsResponse.value.chains : []);
       }
     } catch (error) {
       toastRef.current?.show({ severity: 'error', summary: 'Fehler', detail: error.message });
@@ -438,6 +469,162 @@ export default function SettingsPage() {
     }
   };
 
+  // Chain editor handlers
+  const openChainEditor = (chain = null) => {
+    if (chain) {
+      setChainEditor({ open: true, id: chain.id, name: chain.name, steps: (chain.steps || []).map((s, i) => ({ ...s, _key: `${s.id || i}-${Date.now()}` })) });
+    } else {
+      setChainEditor({ open: true, id: null, name: '', steps: [] });
+    }
+    setChainEditorErrors({});
+  };
+
+  const closeChainEditor = () => {
+    setChainEditor({ open: false, id: null, name: '', steps: [] });
+    setChainEditorErrors({});
+  };
+
+  const addChainStep = (stepType, scriptId = null, scriptName = null) => {
+    setChainEditor((prev) => ({
+      ...prev,
+      steps: [
+        ...prev.steps,
+        {
+          _key: `new-${Date.now()}-${Math.random()}`,
+          stepType,
+          scriptId: stepType === 'script' ? scriptId : null,
+          scriptName: stepType === 'script' ? scriptName : null,
+          waitSeconds: stepType === 'wait' ? 10 : null
+        }
+      ]
+    }));
+  };
+
+  const removeChainStep = (index) => {
+    setChainEditor((prev) => ({ ...prev, steps: prev.steps.filter((_, i) => i !== index) }));
+  };
+
+  const updateChainStepWait = (index, seconds) => {
+    setChainEditor((prev) => ({
+      ...prev,
+      steps: prev.steps.map((s, i) => i === index ? { ...s, waitSeconds: seconds } : s)
+    }));
+  };
+
+  const moveChainStep = (fromIndex, toIndex) => {
+    if (fromIndex === toIndex) {
+      return;
+    }
+    setChainEditor((prev) => {
+      const steps = [...prev.steps];
+      const [moved] = steps.splice(fromIndex, 1);
+      steps.splice(toIndex, 0, moved);
+      return { ...prev, steps };
+    });
+  };
+
+  const handleSaveChain = async () => {
+    const name = String(chainEditor.name || '').trim();
+    if (!name) {
+      setChainEditorErrors({ name: 'Name darf nicht leer sein.' });
+      return;
+    }
+    const payload = {
+      name,
+      steps: chainEditor.steps.map((s) => ({
+        stepType: s.stepType,
+        scriptId: s.stepType === 'script' ? s.scriptId : null,
+        waitSeconds: s.stepType === 'wait' ? Number(s.waitSeconds || 10) : null
+      }))
+    };
+    setChainSaving(true);
+    try {
+      if (chainEditor.id) {
+        await api.updateScriptChain(chainEditor.id, payload);
+        toastRef.current?.show({ severity: 'success', summary: 'Skriptkette', detail: 'Kette aktualisiert.' });
+      } else {
+        await api.createScriptChain(payload);
+        toastRef.current?.show({ severity: 'success', summary: 'Skriptkette', detail: 'Kette angelegt.' });
+      }
+      await loadChains({ silent: true });
+      closeChainEditor();
+    } catch (error) {
+      const details = Array.isArray(error?.details) ? error.details : [];
+      if (details.length > 0) {
+        const errs = {};
+        for (const item of details) {
+          if (item?.field) {
+            errs[item.field] = item.message || 'Ungültig';
+          }
+        }
+        setChainEditorErrors(errs);
+      }
+      toastRef.current?.show({ severity: 'error', summary: 'Kette speichern fehlgeschlagen', detail: error.message });
+    } finally {
+      setChainSaving(false);
+    }
+  };
+
+  const handleDeleteChain = async (chain) => {
+    const chainId = Number(chain?.id);
+    if (!Number.isFinite(chainId) || chainId <= 0) {
+      return;
+    }
+    if (!window.confirm(`Skriptkette "${chain?.name || chainId}" wirklich löschen?`)) {
+      return;
+    }
+    try {
+      await api.deleteScriptChain(chainId);
+      toastRef.current?.show({ severity: 'success', summary: 'Skriptketten', detail: 'Kette gelöscht.' });
+      await loadChains({ silent: true });
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Kette löschen fehlgeschlagen', detail: error.message });
+    }
+  };
+
+  // Chain DnD handlers
+  const handleChainPaletteDragStart = (event, data) => {
+    setChainDragSource({ origin: 'palette', ...data });
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('text/plain', JSON.stringify(data));
+  };
+
+  const handleChainStepDragStart = (event, index) => {
+    setChainDragSource({ origin: 'step', index });
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(index));
+  };
+
+  const handleChainDropzoneDrop = (event, targetIndex) => {
+    event.preventDefault();
+    if (!chainDragSource) {
+      return;
+    }
+    if (chainDragSource.origin === 'palette') {
+      const newStep = {
+        _key: `new-${Date.now()}-${Math.random()}`,
+        stepType: chainDragSource.stepType,
+        scriptId: chainDragSource.stepType === 'script' ? chainDragSource.scriptId : null,
+        scriptName: chainDragSource.stepType === 'script' ? chainDragSource.scriptName : null,
+        waitSeconds: chainDragSource.stepType === 'wait' ? 10 : null
+      };
+      setChainEditor((prev) => {
+        const steps = [...prev.steps];
+        const insertAt = targetIndex != null ? targetIndex : steps.length;
+        steps.splice(insertAt, 0, newStep);
+        return { ...prev, steps };
+      });
+    } else if (chainDragSource.origin === 'step') {
+      moveChainStep(chainDragSource.index, targetIndex != null ? targetIndex : chainEditor.steps.length - 1);
+    }
+    setChainDragSource(null);
+  };
+
+  const handleChainDragOver = (event) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = chainDragSource?.origin === 'palette' ? 'copy' : 'move';
+  };
+
   return (
     <div className="page-grid">
       <Toast ref={toastRef} />
@@ -676,6 +863,240 @@ export default function SettingsPage() {
                 </div>
               ) : null}
             </div>
+          </TabPanel>
+
+          <TabPanel header="Skriptketten">
+            <div className="script-manager-wrap">
+              <div className="actions-row">
+                <Button
+                  label="Neue Kette erstellen"
+                  icon="pi pi-plus"
+                  severity="success"
+                  outlined
+                  onClick={() => openChainEditor()}
+                />
+                <Button
+                  label="Ketten neu laden"
+                  icon="pi pi-refresh"
+                  severity="secondary"
+                  onClick={() => loadChains()}
+                  loading={chainsLoading}
+                />
+              </div>
+
+              <small>
+                Skriptketten kombinieren einzelne Scripte und Systemblöcke (z.B. Warten) zu einer ausführbaren Sequenz.
+                Ketten können an Jobs als Pre- oder Post-Encode-Aktion hinterlegt werden.
+              </small>
+
+              <div className="script-list-box">
+                <h4>Verfügbare Skriptketten</h4>
+                {chainsLoading ? (
+                  <p>Lade Skriptketten...</p>
+                ) : chains.length === 0 ? (
+                  <p>Keine Skriptketten vorhanden.</p>
+                ) : (
+                  <div className="script-list">
+                    {chains.map((chain) => (
+                      <div key={chain.id} className="script-list-item">
+                        <div className="script-list-main">
+                          <strong className="script-id-title">{`ID #${chain.id} - ${chain.name}`}</strong>
+                          <small>
+                            {chain.steps?.length ?? 0} Schritt(e):
+                            {' '}
+                            {(chain.steps || []).map((s, i) => (
+                              <span key={i}>
+                                {i > 0 ? ' → ' : ''}
+                                {s.stepType === 'wait'
+                                  ? `⏱ ${s.waitSeconds}s`
+                                  : (s.scriptName || `Script #${s.scriptId}`)}
+                              </span>
+                            ))}
+                          </small>
+                        </div>
+                        <div className="script-list-actions">
+                          <Button
+                            icon="pi pi-pencil"
+                            label="Bearbeiten"
+                            severity="secondary"
+                            outlined
+                            onClick={() => openChainEditor(chain)}
+                          />
+                          <Button
+                            icon="pi pi-trash"
+                            label="Löschen"
+                            severity="danger"
+                            outlined
+                            onClick={() => handleDeleteChain(chain)}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Chain editor dialog */}
+            <Dialog
+              header={chainEditor.id ? `Skriptkette bearbeiten (#${chainEditor.id})` : 'Neue Skriptkette'}
+              visible={chainEditor.open}
+              onHide={closeChainEditor}
+              style={{ width: 'min(70rem, calc(100vw - 1.5rem))' }}
+              className="script-edit-dialog chain-editor-dialog"
+              dismissableMask={false}
+              draggable={false}
+            >
+              <div className="chain-editor-name-row">
+                <label htmlFor="chain-name">Name der Kette</label>
+                <InputText
+                  id="chain-name"
+                  value={chainEditor.name}
+                  onChange={(e) => {
+                    setChainEditor((prev) => ({ ...prev, name: e.target.value }));
+                    setChainEditorErrors((prev) => ({ ...prev, name: null }));
+                  }}
+                  placeholder="z.B. Plex-Refresh + Cleanup"
+                />
+                {chainEditorErrors.name ? <small className="error-text">{chainEditorErrors.name}</small> : null}
+              </div>
+
+              <div className="chain-editor-body">
+                {/* Palette */}
+                <div className="chain-palette">
+                  <h4>Bausteine</h4>
+                  <p className="chain-palette-hint">Auf Schritt klicken oder in die Kette ziehen</p>
+
+                  <div className="chain-palette-section">
+                    <strong>Systemblöcke</strong>
+                    <div
+                      className="chain-palette-item chain-palette-item--system"
+                      draggable
+                      onDragStart={(e) => handleChainPaletteDragStart(e, { stepType: 'wait' })}
+                      onClick={() => addChainStep('wait')}
+                      title="Wartezeit zwischen zwei Schritten"
+                    >
+                      <i className="pi pi-clock" />
+                      {' '}Warten (Sekunden)
+                    </div>
+                  </div>
+
+                  {scripts.length > 0 ? (
+                    <div className="chain-palette-section">
+                      <strong>Scripte</strong>
+                      {scripts.map((script) => (
+                        <div
+                          key={script.id}
+                          className="chain-palette-item chain-palette-item--script"
+                          draggable
+                          onDragStart={(e) => handleChainPaletteDragStart(e, { stepType: 'script', scriptId: script.id, scriptName: script.name })}
+                          onClick={() => addChainStep('script', script.id, script.name)}
+                          title={`Script #${script.id} hinzufügen`}
+                        >
+                          <i className="pi pi-code" />
+                          {' '}{script.name}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <small>Keine Scripte verfügbar. Zuerst Scripte anlegen.</small>
+                  )}
+                </div>
+
+                {/* Chain canvas */}
+                <div className="chain-canvas">
+                  <h4>Kette ({chainEditor.steps.length} Schritt{chainEditor.steps.length !== 1 ? 'e' : ''})</h4>
+
+                  {chainEditor.steps.length === 0 ? (
+                    <div
+                      className="chain-canvas-empty"
+                      onDragOver={handleChainDragOver}
+                      onDrop={(e) => handleChainDropzoneDrop(e, 0)}
+                    >
+                      Bausteine hierhin ziehen oder links anklicken
+                    </div>
+                  ) : (
+                    <div className="chain-steps-list">
+                      {chainEditor.steps.map((step, index) => (
+                        <div key={step._key || index} className="chain-step-wrapper">
+                          {/* Drop zone before step */}
+                          <div
+                            className="chain-drop-zone"
+                            onDragOver={handleChainDragOver}
+                            onDrop={(e) => handleChainDropzoneDrop(e, index)}
+                          />
+                          <div
+                            className={`chain-step chain-step--${step.stepType}`}
+                            draggable
+                            onDragStart={(e) => handleChainStepDragStart(e, index)}
+                            onDragEnd={() => setChainDragSource(null)}
+                          >
+                            <div className="chain-step-drag-handle">
+                              <i className="pi pi-bars" />
+                            </div>
+                            <div className="chain-step-content">
+                              {step.stepType === 'wait' ? (
+                                <div className="chain-step-wait">
+                                  <i className="pi pi-clock" />
+                                  <span>Warten:</span>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="3600"
+                                    value={step.waitSeconds ?? 10}
+                                    onChange={(e) => updateChainStepWait(index, Number(e.target.value))}
+                                    className="chain-wait-input"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <span>Sekunden</span>
+                                </div>
+                              ) : (
+                                <div className="chain-step-script">
+                                  <i className="pi pi-code" />
+                                  <span>{step.scriptName || `Script #${step.scriptId}`}</span>
+                                </div>
+                              )}
+                            </div>
+                            <Button
+                              icon="pi pi-times"
+                              severity="danger"
+                              text
+                              rounded
+                              className="chain-step-remove"
+                              onClick={() => removeChainStep(index)}
+                              title="Schritt entfernen"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      {/* Drop zone after last step */}
+                      <div
+                        className="chain-drop-zone chain-drop-zone--end"
+                        onDragOver={handleChainDragOver}
+                        onDrop={(e) => handleChainDropzoneDrop(e, chainEditor.steps.length)}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="actions-row" style={{ marginTop: '1rem' }}>
+                <Button
+                  label={chainEditor.id ? 'Kette aktualisieren' : 'Kette erstellen'}
+                  icon="pi pi-save"
+                  onClick={handleSaveChain}
+                  loading={chainSaving}
+                />
+                <Button
+                  label="Abbrechen"
+                  icon="pi pi-times"
+                  severity="secondary"
+                  outlined
+                  onClick={closeChainEditor}
+                  disabled={chainSaving}
+                />
+              </div>
+            </Dialog>
           </TabPanel>
         </TabView>
       </Card>

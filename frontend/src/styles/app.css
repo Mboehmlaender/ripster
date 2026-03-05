@@ -1704,4 +1704,245 @@ body {
     padding: 0.9rem 1rem 1rem;
     max-height: 78vh;
   }
+
+  .chain-editor-body {
+    flex-direction: column;
+  }
+
+  .chain-palette,
+  .chain-canvas {
+    min-width: unset;
+    max-width: unset;
+    width: 100%;
+  }
+}
+
+/* ── Chain Editor ─────────────────────────────────────── */
+.chain-editor-name-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.chain-editor-body {
+  display: flex;
+  gap: 1rem;
+  min-height: 20rem;
+}
+
+.chain-palette {
+  min-width: 14rem;
+  max-width: 18rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--rip-panel-soft);
+}
+
+.chain-palette h4 {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+  color: var(--rip-muted);
+}
+
+.chain-palette-hint {
+  font-size: 0.72rem;
+  color: var(--rip-muted);
+  margin: 0 0 0.5rem;
+}
+
+.chain-palette-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.chain-palette-section strong {
+  font-size: 0.78rem;
+  color: var(--rip-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chain-palette-item {
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--rip-border);
+  cursor: grab;
+  font-size: 0.85rem;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.chain-palette-item:hover {
+  background: var(--rip-gold-200);
+  border-color: var(--rip-gold-400);
+}
+
+.chain-palette-item--system {
+  background: #fff3cd;
+  border-color: #ffc107;
+}
+
+.chain-palette-item--script {
+  background: var(--rip-cream-100);
+}
+
+.chain-canvas {
+  flex: 1;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--rip-panel);
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.chain-canvas h4 {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+  color: var(--rip-muted);
+}
+
+.chain-canvas-empty {
+  flex: 1;
+  border: 2px dashed var(--rip-border);
+  border-radius: 0.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rip-muted);
+  font-size: 0.85rem;
+  min-height: 8rem;
+}
+
+.chain-steps-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.chain-step-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.chain-drop-zone {
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  transition: height 0.12s, background 0.12s;
+}
+
+.chain-drop-zone--end {
+  flex: 1;
+  min-height: 1.5rem;
+}
+
+.chain-drop-zone:hover,
+.chain-drop-zone:focus-within {
+  height: 1.5rem;
+  background: var(--rip-gold-200);
+}
+
+.chain-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  cursor: grab;
+  user-select: none;
+  margin: 0.1rem 0;
+}
+
+.chain-step--wait {
+  background: #fffbe6;
+  border-color: #ffc107;
+}
+
+.chain-step--script {
+  background: var(--rip-cream-100);
+}
+
+.chain-step-drag-handle {
+  color: var(--rip-muted);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.chain-step-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.chain-step-wait,
+.chain-step-script {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+}
+
+.chain-wait-input {
+  width: 4rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.25rem;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.88rem;
+  text-align: center;
+  background: #fff;
+}
+
+.chain-step-remove {
+  flex-shrink: 0;
+}
+
+.chain-selection-groups {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.chain-selection-group {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0;
+  border-top: 1px dashed var(--rip-border);
+}
+
+.chain-selection-group:first-child {
+  border-top: none;
+}
+
+.chain-selection-group strong {
+  font-size: 0.82rem;
+  color: var(--rip-muted);
+}
+
+.chain-add-dropdown {
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .chain-selection-groups {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .chain-selection-group {
+    flex: unset;
+    width: 100%;
+  }
 }

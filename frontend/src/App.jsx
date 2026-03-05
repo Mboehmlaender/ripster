@@ -31,10 +31,31 @@ function App() {
       }
 
       if (message.type === 'PIPELINE_PROGRESS') {
-        setPipeline((prev) => ({
-          ...prev,
-          ...message.payload
-        }));
+        const payload = message.payload;
+        const progressJobId = payload?.activeJobId;
+        setPipeline((prev) => {
+          const next = { ...prev };
+          // Update per-job progress map so concurrent jobs don't overwrite each other.
+          if (progressJobId != null) {
+            next.jobProgress = {
+              ...(prev?.jobProgress || {}),
+              [progressJobId]: {
+                state: payload.state,
+                progress: payload.progress,
+                eta: payload.eta,
+                statusText: payload.statusText
+              }
+            };
+          }
+          // Update global snapshot fields only for the primary active job.
+          if (progressJobId === prev?.activeJobId || progressJobId == null) {
+            next.state = payload.state ?? prev?.state;
+            next.progress = payload.progress ?? prev?.progress;
+            next.eta = payload.eta ?? prev?.eta;
+            next.statusText = payload.statusText ?? prev?.statusText;
+          }
+          return next;
+        });
       }
 
       if (message.type === 'PIPELINE_QUEUE_CHANGED') {

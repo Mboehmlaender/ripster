@@ -64,6 +64,26 @@ export const api = {
       method: 'POST'
     });
   },
+  getScriptChains() {
+    return request('/settings/script-chains');
+  },
+  createScriptChain(payload = {}) {
+    return request('/settings/script-chains', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+  updateScriptChain(chainId, payload = {}) {
+    return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+  },
+  deleteScriptChain(chainId) {
+    return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
+      method: 'DELETE'
+    });
+  },
   updateSetting(key, value) {
     return request(`/settings/${encodeURIComponent(key)}`, {
       method: 'PUT',

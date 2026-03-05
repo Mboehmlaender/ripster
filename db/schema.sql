@@ -62,6 +62,29 @@ CREATE TABLE scripts (
 
 CREATE INDEX idx_scripts_name ON scripts(name);
 
+CREATE TABLE script_chains (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_script_chains_name ON script_chains(name);
+
+CREATE TABLE script_chain_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  step_type TEXT NOT NULL,
+  script_id INTEGER,
+  wait_seconds INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (chain_id) REFERENCES script_chains(id) ON DELETE CASCADE,
+  FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_script_chain_steps_chain ON script_chain_steps(chain_id, position);
+
 CREATE TABLE pipeline_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   state TEXT NOT NULL,

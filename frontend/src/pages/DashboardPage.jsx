@@ -305,12 +305,17 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     };
   }
 
+  // Use live per-job progress from the backend if available (concurrent jobs).
+  const liveJobProgress = currentPipeline?.jobProgress && jobId
+    ? (currentPipeline.jobProgress[jobId] || null)
+    : null;
+
   return {
-    state: jobStatus,
+    state: liveJobProgress?.state || jobStatus,
     activeJobId: jobId,
-    progress: Number.isFinite(Number(job?.progress)) ? Number(job.progress) : 0,
-    eta: job?.eta || null,
-    statusText: job?.status_text || job?.error_message || null,
+    progress: liveJobProgress != null ? Number(liveJobProgress.progress ?? 0) : 0,
+    eta: liveJobProgress?.eta || null,
+    statusText: liveJobProgress?.statusText || job?.error_message || null,
     context: computedContext
   };
 }
@@ -723,6 +728,9 @@ export default function DashboardPage({
           selectedEncodeTitleId: startOptions.selectedEncodeTitleId ?? null,
           selectedTrackSelection: startOptions.selectedTrackSelection ?? null,
           selectedPostEncodeScriptIds: startOptions.selectedPostEncodeScriptIds ?? [],
+          selectedPreEncodeScriptIds: startOptions.selectedPreEncodeScriptIds ?? [],
+          selectedPostEncodeChainIds: startOptions.selectedPostEncodeChainIds ?? [],
+          selectedPreEncodeChainIds: startOptions.selectedPreEncodeChainIds ?? [],
           skipPipelineStateUpdate: true
         });
       }

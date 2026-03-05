@@ -486,14 +486,21 @@ function resolveAudioEncoderPreviewLabel(track, encoderToken, copyMask, fallback
       : [];
 
     let canCopy = false;
+    let effectiveCodec = sourceCodec;
     if (explicitCopyCodec) {
       canCopy = Boolean(sourceCodec && sourceCodec === explicitCopyCodec);
     } else if (sourceCodec && normalizedCopyMask.length > 0) {
       canCopy = normalizedCopyMask.includes(sourceCodec);
+      // DTS-HD MA contains an embedded DTS core. When dtshd is not in the copy
+      // mask but dts is, HandBrake will extract and copy the DTS core layer.
+      if (!canCopy && sourceCodec === 'dtshd' && normalizedCopyMask.includes('dts')) {
+        canCopy = true;
+        effectiveCodec = 'dts';
+      }
     }
 
     if (canCopy) {
-      return `Copy (${sourceCodec || track?.format || 'Quelle'})`;
+      return `Copy (${effectiveCodec || track?.format || 'Quelle'})`;
     }
 
     const fallback = String(fallbackEncoder || DEFAULT_AUDIO_FALLBACK_PREVIEW).trim().toLowerCase() || DEFAULT_AUDIO_FALLBACK_PREVIEW;
@@ -684,7 +691,21 @@ export default function MediaInfoReviewPanel({
   onAddPostEncodeScript = null,
   onChangePostEncodeScript = null,
   onRemovePostEncodeScript = null,
-  onReorderPostEncodeScript = null
+  onReorderPostEncodeScript = null,
+  availablePreScripts = [],
+  selectedPreEncodeScriptIds = [],
+  allowPreScriptSelection = false,
+  onAddPreEncodeScript = null,
+  onChangePreEncodeScript = null,
+  onRemovePreEncodeScript = null,
+  availableChains = [],
+  selectedPreEncodeChainIds = [],
+  selectedPostEncodeChainIds = [],
+  allowChainSelection = false,
+  onAddPreEncodeChain = null,
+  onRemovePreEncodeChain = null,
+  onAddPostEncodeChain = null,
+  onRemovePostEncodeChain = null
 }) {
   if (!review) {
     return <p>Keine Mediainfo-Daten vorhanden.</p>;
@@ -756,6 +777,136 @@ export default function MediaInfoReviewPanel({
           {review.notes.map((note, idx) => (
             <small key={`${idx}-${note}`}>{note}</small>
           ))}
+        </div>
+      ) : null}
+
+      {/* Pre-Encode Scripts */}
+      {(allowPreScriptSelection || normalizeScriptIdList(selectedPreEncodeScriptIds).length > 0) ? (
+        <div className="post-script-box">
+          <h4>Pre-Encode Scripte (optional)</h4>
+          {(Array.isArray(availablePreScripts) ? availablePreScripts : []).length === 0 ? (
+            <small>Keine Scripte konfiguriert. In den Settings unter "Scripte" anlegen.</small>
+          ) : null}
+          {normalizeScriptIdList(selectedPreEncodeScriptIds).length === 0 ? (
+            <small>Keine Pre-Encode Scripte ausgewählt.</small>
+          ) : null}
+          {normalizeScriptIdList(selectedPreEncodeScriptIds).map((scriptId, rowIndex) => {
+            const preCatalog = (Array.isArray(availablePreScripts) ? availablePreScripts : [])
+              .map((item) => ({ id: normalizeScriptId(item?.id), name: String(item?.name || '') }))
+              .filter((item) => item.id !== null);
+            const preById = new Map(preCatalog.map((item) => [item.id, item]));
+            const script = preById.get(scriptId) || null;
+            const selectedElsewhere = new Set(
+              normalizeScriptIdList(selectedPreEncodeScriptIds).filter((_, i) => i !== rowIndex).map((id) => String(id))
+            );
+            const options = preCatalog.map((item) => ({
+              label: item.name,
+              value: item.id,
+              disabled: selectedElsewhere.has(String(item.id))
+            }));
+            return (
+              <div key={`pre-script-row-${rowIndex}-${scriptId}`} className={`post-script-row${allowPreScriptSelection ? ' editable' : ''}`}>
+                {allowPreScriptSelection ? (
+                  <>
+                    <Dropdown
+                      value={scriptId}
+                      options={options}
+                      optionLabel="label"
+                      optionValue="value"
+                      optionDisabled="disabled"
+                      onChange={(event) => onChangePreEncodeScript?.(rowIndex, event.value)}
+                      className="full-width"
+                    />
+                    <Button
+                      icon="pi pi-times"
+                      severity="danger"
+                      outlined
+                      onClick={() => onRemovePreEncodeScript?.(rowIndex)}
+                    />
+                  </>
+                ) : (
+                  <small>{`${rowIndex + 1}. ${script?.name || `Script #${scriptId}`}`}</small>
+                )}
+              </div>
+            );
+          })}
+          {allowPreScriptSelection && (Array.isArray(availablePreScripts) ? availablePreScripts : []).length > normalizeScriptIdList(selectedPreEncodeScriptIds).length ? (
+            <Button
+              label="Pre-Script hinzufügen"
+              icon="pi pi-plus"
+              severity="secondary"
+              outlined
+              onClick={() => onAddPreEncodeScript?.()}
+            />
+          ) : null}
+          <small>Diese Scripte werden vor dem Encoding ausgeführt. Bei Fehler wird der Encode abgebrochen.</small>
+        </div>
+      ) : null}
+
+      {/* Chain Selections */}
+      {(allowChainSelection || selectedPreEncodeChainIds.length > 0 || selectedPostEncodeChainIds.length > 0) ? (
+        <div className="post-script-box">
+          <h4>Skriptketten (optional)</h4>
+          {(Array.isArray(availableChains) ? availableChains : []).length === 0 ? (
+            <small>Keine Skriptketten konfiguriert. In den Settings unter "Skriptketten" anlegen.</small>
+          ) : null}
+          {(Array.isArray(availableChains) ? availableChains : []).length > 0 ? (
+            <div className="chain-selection-groups">
+              <div className="chain-selection-group">
+                <strong>Pre-Encode Ketten</strong>
+                {selectedPreEncodeChainIds.length === 0 ? <small>Keine ausgewählt.</small> : null}
+                {selectedPreEncodeChainIds.map((chainId, index) => {
+                  const chain = (Array.isArray(availableChains) ? availableChains : []).find((c) => Number(c.id) === chainId);
+                  return (
+                    <div key={`pre-chain-${index}-${chainId}`} className="post-script-row editable">
+                      <small>{`${index + 1}. ${chain?.name || `Kette #${chainId}`}`}</small>
+                      {allowChainSelection ? (
+                        <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePreEncodeChain?.(index)} />
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {allowChainSelection ? (
+                  <Dropdown
+                    value={null}
+                    options={(Array.isArray(availableChains) ? availableChains : [])
+                      .filter((c) => !selectedPreEncodeChainIds.includes(Number(c.id)))
+                      .map((c) => ({ label: c.name, value: c.id }))}
+                    onChange={(e) => onAddPreEncodeChain?.(e.value)}
+                    placeholder="Kette hinzufügen..."
+                    className="chain-add-dropdown"
+                  />
+                ) : null}
+              </div>
+
+              <div className="chain-selection-group">
+                <strong>Post-Encode Ketten</strong>
+                {selectedPostEncodeChainIds.length === 0 ? <small>Keine ausgewählt.</small> : null}
+                {selectedPostEncodeChainIds.map((chainId, index) => {
+                  const chain = (Array.isArray(availableChains) ? availableChains : []).find((c) => Number(c.id) === chainId);
+                  return (
+                    <div key={`post-chain-${index}-${chainId}`} className="post-script-row editable">
+                      <small>{`${index + 1}. ${chain?.name || `Kette #${chainId}`}`}</small>
+                      {allowChainSelection ? (
+                        <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePostEncodeChain?.(index)} />
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {allowChainSelection ? (
+                  <Dropdown
+                    value={null}
+                    options={(Array.isArray(availableChains) ? availableChains : [])
+                      .filter((c) => !selectedPostEncodeChainIds.includes(Number(c.id)))
+                      .map((c) => ({ label: c.name, value: c.id }))}
+                    onChange={(e) => onAddPostEncodeChain?.(e.value)}
+                    placeholder="Kette hinzufügen..."
+                    className="chain-add-dropdown"
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

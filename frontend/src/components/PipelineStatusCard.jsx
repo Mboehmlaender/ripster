@@ -224,16 +224,21 @@ export default function PipelineStatusCard({
   const [settingsMap, setSettingsMap] = useState({});
   const [presetDisplayMap, setPresetDisplayMap] = useState({});
   const [scriptCatalog, setScriptCatalog] = useState([]);
+  const [chainCatalog, setChainCatalog] = useState([]);
   const [selectedPostEncodeScriptIds, setSelectedPostEncodeScriptIds] = useState([]);
+  const [selectedPreEncodeScriptIds, setSelectedPreEncodeScriptIds] = useState([]);
+  const [selectedPostEncodeChainIds, setSelectedPostEncodeChainIds] = useState([]);
+  const [selectedPreEncodeChainIds, setSelectedPreEncodeChainIds] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
     const loadSettings = async () => {
       try {
-        const [settingsResponse, presetsResponse, scriptsResponse] = await Promise.allSettled([
+        const [settingsResponse, presetsResponse, scriptsResponse, chainsResponse] = await Promise.allSettled([
           api.getSettings(),
           api.getHandBrakePresets(),
-          api.getScripts()
+          api.getScripts(),
+          api.getScriptChains()
         ]);
         if (!cancelled) {
           const categories = settingsResponse.status === 'fulfilled'
@@ -253,12 +258,17 @@ export default function PipelineStatusCard({
               name: item?.name
             }))
           );
+          const chains = chainsResponse.status === 'fulfilled'
+            ? (Array.isArray(chainsResponse.value?.chains) ? chainsResponse.value.chains : [])
+            : [];
+          setChainCatalog(chains.map((item) => ({ id: item?.id, name: item?.name })));
         }
       } catch (_error) {
         if (!cancelled) {
           setSettingsMap({});
           setPresetDisplayMap({});
           setScriptCatalog([]);
+          setChainCatalog([]);
         }
       }
     };
@@ -274,6 +284,17 @@ export default function PipelineStatusCard({
     setTrackSelectionByTitle(buildDefaultTrackSelection(mediaInfoReview));
     setSelectedPostEncodeScriptIds(
       normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || [])
+    );
+    setSelectedPreEncodeScriptIds(
+      normalizeScriptIdList(mediaInfoReview?.preEncodeScriptIds || [])
+    );
+    setSelectedPostEncodeChainIds(
+      (Array.isArray(mediaInfoReview?.postEncodeChainIds) ? mediaInfoReview.postEncodeChainIds : [])
+        .map(Number).filter((id) => Number.isFinite(id) && id > 0)
+    );
+    setSelectedPreEncodeChainIds(
+      (Array.isArray(mediaInfoReview?.preEncodeChainIds) ? mediaInfoReview.preEncodeChainIds : [])
+        .map(Number).filter((id) => Number.isFinite(id) && id > 0)
     );
   }, [mediaInfoReview?.encodeInputTitleId, mediaInfoReview?.generatedAt, retryJobId]);
 
@@ -434,10 +455,16 @@ export default function PipelineStatusCard({
       }
       : null;
     const selectedPostScriptIds = normalizeScriptIdList(selectedPostEncodeScriptIds);
+    const selectedPreScriptIds = normalizeScriptIdList(selectedPreEncodeScriptIds);
+    const normalizeChainIdList = (raw) =>
+      (Array.isArray(raw) ? raw : []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
     return {
       encodeTitleId,
       selectedTrackSelection,
-      selectedPostScriptIds
+      selectedPostScriptIds,
+      selectedPreScriptIds,
+      selectedPostChainIds: normalizeChainIdList(selectedPostEncodeChainIds),
+      selectedPreChainIds: normalizeChainIdList(selectedPreEncodeChainIds)
     };
   };
 
@@ -530,13 +557,19 @@ export default function PipelineStatusCard({
                   const {
                     encodeTitleId,
                     selectedTrackSelection,
-                    selectedPostScriptIds
+                    selectedPostScriptIds,
+                    selectedPreScriptIds,
+                    selectedPostChainIds,
+                    selectedPreChainIds
                   } = buildSelectedTrackSelectionForCurrentTitle();
                   await onStart(retryJobId, {
                     ensureConfirmed: true,
                     selectedEncodeTitleId: encodeTitleId,
                     selectedTrackSelection,
-                    selectedPostEncodeScriptIds: selectedPostScriptIds
+                    selectedPostEncodeScriptIds: selectedPostScriptIds,
+                    selectedPreEncodeScriptIds: selectedPreScriptIds,
+                    selectedPostEncodeChainIds: selectedPostChainIds,
+                    selectedPreEncodeChainIds: selectedPreChainIds
                   });
                 }}
                 loading={busy}
@@ -808,6 +841,77 @@ export default function PipelineStatusCard({
                 next.splice(to, 0, moved);
                 return next;
               });
+            }}
+            availablePreScripts={scriptCatalog}
+            selectedPreEncodeScriptIds={selectedPreEncodeScriptIds}
+            allowPreScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            onAddPreEncodeScript={() => {
+              setSelectedPreEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                const selectedSet = new Set(normalizedCurrent.map((id) => String(id)));
+                const nextCandidate = (Array.isArray(scriptCatalog) ? scriptCatalog : [])
+                  .map((item) => normalizeScriptId(item?.id))
+                  .find((id) => id !== null && !selectedSet.has(String(id)));
+                if (nextCandidate === undefined || nextCandidate === null) {
+                  return normalizedCurrent;
+                }
+                return [...normalizedCurrent, nextCandidate];
+              });
+            }}
+            onChangePreEncodeScript={(rowIndex, nextScriptId) => {
+              setSelectedPreEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
+                  return normalizedCurrent;
+                }
+                const normalizedScriptId = normalizeScriptId(nextScriptId);
+                if (normalizedScriptId === null) {
+                  return normalizedCurrent;
+                }
+                if (normalizedCurrent.some((id, idx) => idx !== rowIndex && String(id) === String(normalizedScriptId))) {
+                  return normalizedCurrent;
+                }
+                const next = [...normalizedCurrent];
+                next[rowIndex] = normalizedScriptId;
+                return next;
+              });
+            }}
+            onRemovePreEncodeScript={(rowIndex) => {
+              setSelectedPreEncodeScriptIds((prev) => {
+                const normalizedCurrent = normalizeScriptIdList(prev);
+                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
+                  return normalizedCurrent;
+                }
+                return normalizedCurrent.filter((_, idx) => idx !== rowIndex);
+              });
+            }}
+            availableChains={chainCatalog}
+            selectedPreEncodeChainIds={selectedPreEncodeChainIds}
+            selectedPostEncodeChainIds={selectedPostEncodeChainIds}
+            allowChainSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            onAddPreEncodeChain={(chainId) => {
+              setSelectedPreEncodeChainIds((prev) => {
+                const id = Number(chainId);
+                if (!Number.isFinite(id) || id <= 0 || prev.includes(id)) {
+                  return prev;
+                }
+                return [...prev, id];
+              });
+            }}
+            onRemovePreEncodeChain={(index) => {
+              setSelectedPreEncodeChainIds((prev) => prev.filter((_, i) => i !== index));
+            }}
+            onAddPostEncodeChain={(chainId) => {
+              setSelectedPostEncodeChainIds((prev) => {
+                const id = Number(chainId);
+                if (!Number.isFinite(id) || id <= 0 || prev.includes(id)) {
+                  return prev;
+                }
+                return [...prev, id];
+              });
+            }}
+            onRemovePostEncodeChain={(index) => {
+              setSelectedPostEncodeChainIds((prev) => prev.filter((_, i) => i !== index));
             }}
           />
         </div>

@@ -2,6 +2,7 @@ const express = require('express');
 const asyncHandler = require('../middleware/asyncHandler');
 const settingsService = require('../services/settingsService');
 const scriptService = require('../services/scriptService');
+const scriptChainService = require('../services/scriptChainService');
 const notificationService = require('../services/notificationService');
 const pipelineService = require('../services/pipelineService');
 const wsService = require('../services/websocketService');
@@ -101,6 +102,59 @@ router.post(
     });
     const result = await scriptService.testScript(scriptId);
     res.json({ result });
+  })
+);
+
+router.get(
+  '/script-chains',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:settings:script-chains', { reqId: req.reqId });
+    const chains = await scriptChainService.listChains();
+    res.json({ chains });
+  })
+);
+
+router.post(
+  '/script-chains',
+  asyncHandler(async (req, res) => {
+    const payload = req.body || {};
+    logger.info('post:settings:script-chains:create', { reqId: req.reqId, name: payload?.name });
+    const chain = await scriptChainService.createChain(payload);
+    wsService.broadcast('SETTINGS_SCRIPT_CHAINS_UPDATED', { action: 'created', id: chain.id });
+    res.status(201).json({ chain });
+  })
+);
+
+router.get(
+  '/script-chains/:id',
+  asyncHandler(async (req, res) => {
+    const chainId = Number(req.params.id);
+    logger.debug('get:settings:script-chains:one', { reqId: req.reqId, chainId });
+    const chain = await scriptChainService.getChainById(chainId);
+    res.json({ chain });
+  })
+);
+
+router.put(
+  '/script-chains/:id',
+  asyncHandler(async (req, res) => {
+    const chainId = Number(req.params.id);
+    const payload = req.body || {};
+    logger.info('put:settings:script-chains:update', { reqId: req.reqId, chainId, name: payload?.name });
+    const chain = await scriptChainService.updateChain(chainId, payload);
+    wsService.broadcast('SETTINGS_SCRIPT_CHAINS_UPDATED', { action: 'updated', id: chain.id });
+    res.json({ chain });
+  })
+);
+
+router.delete(
+  '/script-chains/:id',
+  asyncHandler(async (req, res) => {
+    const chainId = Number(req.params.id);
+    logger.info('delete:settings:script-chains', { reqId: req.reqId, chainId });
+    const removed = await scriptChainService.deleteChain(chainId);
+    wsService.broadcast('SETTINGS_SCRIPT_CHAINS_UPDATED', { action: 'deleted', id: removed.id });
+    res.json({ removed });
   })
 );
 

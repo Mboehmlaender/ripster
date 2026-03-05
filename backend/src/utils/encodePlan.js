@@ -699,17 +699,24 @@ function resolveAudioEncoderAction(track, encoderToken, copyMask, fallbackEncode
 
     const normalizedMask = Array.isArray(copyMask) ? copyMask : [];
     let canCopy = false;
+    let effectiveCodec = sourceCodec;
     if (explicitCopyCodec) {
       canCopy = Boolean(sourceCodec && sourceCodec === explicitCopyCodec);
     } else if (sourceCodec && normalizedMask.length > 0) {
       canCopy = normalizedMask.includes(sourceCodec);
+      // DTS-HD MA contains an embedded DTS core track. When dtshd is not in
+      // the copy mask but dts is, HandBrake will extract and copy the DTS core.
+      if (!canCopy && sourceCodec === 'dtshd' && normalizedMask.includes('dts')) {
+        canCopy = true;
+        effectiveCodec = 'dts';
+      }
     }
 
     if (canCopy) {
       return {
         type: 'copy',
         encoder: normalizedToken,
-        label: `Copy (${sourceCodec || track?.format || 'Quelle'})`
+        label: `Copy (${effectiveCodec || track?.format || 'Quelle'})`
       };
     }
 
