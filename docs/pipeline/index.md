@@ -28,4 +28,12 @@ Der Pipeline-Abschnitt beschreibt den Kern-Workflow von Ripster.
 
     [:octicons-arrow-right-24: Playlist-Analyse](playlist-analysis.md)
 
+-   :material-script-text: **Post-Encode-Skripte**
+
+    ---
+
+    Automatische Ausführung von Shell-Skripten nach erfolgreichem Encoding – z. B. zum Verschieben oder Benachrichtigen.
+
+    [:octicons-arrow-right-24: Post-Encode-Skripte](post-encode-scripts.md)
+
 </div>

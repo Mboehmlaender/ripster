@@ -8,27 +8,36 @@ Der Ripping-Workflow von Ripster ist als **State Machine** implementiert. Jeder 
 
 ```mermaid
 stateDiagram-v2
-    direction LR
+    direction TB
     [*] --> IDLE
 
-    IDLE --> ANALYZING: Disc erkannt\n(automatisch)
-    ANALYZING --> METADATA_SELECTION: MakeMKV-Analyse\nabgeschlossen
-    METADATA_SELECTION --> READY_TO_START: Benutzer wählt\nMetadaten + Playlist
+    IDLE --> DISC_DETECTED: Disc erkannt
+    DISC_DETECTED --> METADATA_SELECTION: Analyse starten
 
-    READY_TO_START --> RIPPING: Benutzer startet\nden Job
+    METADATA_SELECTION --> READY_TO_START: Kein Obfuskierungsverdacht\n(ein Kandidat)
+    METADATA_SELECTION --> WAITING_FOR_USER_DECISION: Mehrere Playlist-Kandidaten\n→ manuelle Auswahl nötig
 
-    RIPPING --> MEDIAINFO_CHECK: MKV/Backup\nerstellt
-    MEDIAINFO_CHECK --> READY_TO_ENCODE: Track-Analyse\nabgeschlossen
+    WAITING_FOR_USER_DECISION --> READY_TO_START: Playlist bestätigt
 
-    READY_TO_ENCODE --> ENCODING: Benutzer bestätigt\nEncode + Tracks
+    READY_TO_START --> RIPPING: Starten\n(kein Raw vorhanden)
+    READY_TO_START --> MEDIAINFO_CHECK: Starten\n(Raw bereits vorhanden)
 
-    ENCODING --> FINISHED: HandBrake\nfertig
-    FINISHED --> IDLE: Disc auswerfen /\nneue Disc
+    RIPPING --> MEDIAINFO_CHECK: MKV/Backup erstellt
+
+    MEDIAINFO_CHECK --> READY_TO_ENCODE: Track-Scan\nabgeschlossen
+
+    READY_TO_ENCODE --> ENCODING: Tracks + Skripte\nbestätigt
+
+    ENCODING --> POST_ENCODE_SCRIPTS: Erfolg\n(Skripte konfiguriert)
+    ENCODING --> FINISHED: Erfolg\n(keine Skripte)
+    POST_ENCODE_SCRIPTS --> FINISHED: Alle Skripte\nerfolgt
 
     RIPPING --> ERROR: Fehler
     ENCODING --> ERROR: Fehler
-    ANALYZING --> ERROR: Fehler
-    ERROR --> IDLE: cancelPipeline()\noder retryJob()
+    POST_ENCODE_SCRIPTS --> ERROR: Skript-Fehler
+
+    ERROR --> IDLE: Abbrechen / Retry
+    FINISHED --> IDLE: Neue Disc
 ```
 
 ---
@@ -39,51 +48,88 @@ stateDiagram-v2
 
 **Ausgangszustand.** Ripster wartet auf eine Disc.
 
-- `diskDetectionService` pollt das Laufwerk (Intervall konfigurierbar)
-- Bei Disc-Erkennung: Automatischer Übergang zu `ANALYZING`
+- `diskDetectionService` pollt das Laufwerk im konfigurierten Intervall
+- Bei Disc-Erkennung: automatischer Übergang zu `DISC_DETECTED`
 - WebSocket-Event: `DISC_DETECTED`
 
 ---
 
-### ANALYZING
+### DISC_DETECTED
 
-**MakeMKV analysiert die Disc-Struktur.**
+**Disc erkannt, wartet auf Benutzeraktion.**
 
-```bash
-makemkvcon -r info disc:0
-```
+- Dashboard zeigt **"Neue Disc erkannt"**-Badge
+- **"Analyse starten"**-Button wird aktiv
+- Kein Prozess läuft noch
 
-- Liest Titel-Informationen, Playlist-Liste, Track-Details
-- Fortschritt wird über WebSocket übertragen
-- Bei Blu-ray: Playlist-Liste für spätere Analyse gesammelt
-- Dauer: 30 Sekunden bis 5 Minuten
-
-**Ausgabe:** JSON-Struktur mit allen Titeln und Playlists
+**Übergang:** Benutzer klickt "Analyse starten" → `METADATA_SELECTION`
 
 ---
 
 ### METADATA_SELECTION
 
-**Wartet auf Benutzer-Eingabe.**
+**Disc-Info-Scan läuft, danach Benutzer-Eingabe.**
 
-- `MetadataSelectionDialog` wird im Frontend angezeigt
-- Benutzer sucht in OMDb nach dem Filmtitel
-- Benutzer wählt einen Eintrag aus den Suchergebnissen
-- Bei Blu-ray: Playlist-Auswahl (mit Empfehlung durch `playlistAnalysis.js`)
+1. MakeMKV wird im Info-Modus gestartet und liest alle Titel/Playlists
+2. OMDb-Vorsuche mit erkanntem Disc-Label
+3. `MetadataSelectionDialog` öffnet sich mit vorgeladenen Ergebnissen
+4. Benutzer wählt Filmtitel (oder gibt manuell ein)
+5. Nach Bestätigung: **Playlist-Analyse** läuft sofort durch
 
-**Übergang:** `selectMetadata(jobId, omdbData, playlist)` aufrufen
+**Übergang (automatisch nach Playlist-Analyse):**
+
+| Ergebnis der Analyse | Nächster Zustand |
+|--------------------|-----------------|
+| Nur ein Kandidat nach Mindestlänge | `READY_TO_START` |
+| Mehrere Kandidaten nach Mindestlänge | `WAITING_FOR_USER_DECISION` |
+
+---
+
+### WAITING_FOR_USER_DECISION
+
+**Playlist-Obfuskierung erkannt – manuelle Auswahl erforderlich.**
+
+!!! info "Neu seit „Skript Integration + UI Anpassungen""
+    Dieser Zustand wurde eingeführt, um Blu-rays mit mehreren Playlists ähnlicher Länge korrekt zu behandeln.
+
+- Playlist-Auswahl-Dialog wird im Dashboard angezeigt
+- Alle Kandidaten mit Score, Laufzeit und Bewertungslabel
+- Empfohlene Playlist ist vorausgewählt
+- Benutzer bestätigt mit **"Playlist übernehmen"**
+
+**Darstellung im Dashboard:**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Playlist-Auswahl erforderlich                            │
+│ Es wurden mehrere Titel mit ähnlicher Laufzeit gefunden. │
+├──────────┬──────────┬────────┬──────────────────────────┤
+│ Playlist │ Laufzeit │ Score  │ Bewertung                 │
+├──────────┼──────────┼────────┼──────────────────────────┤
+│ ● 00800  │ 2:28:05  │  +18   │ wahrscheinlich korrekt    │
+│ ○ 00801  │ 2:28:12  │   −4   │ Auffällige Segmentfolge   │
+│ ○ 00900  │ 2:28:05  │  −32   │ Fake-Struktur             │
+└──────────┴──────────┴────────┴──────────────────────────┘
+                              [Playlist übernehmen]
+```
+
+**Übergang:** `selectMetadata(jobId, { selectedPlaylist })` → `READY_TO_START`
+
+Mehr Details: [Playlist-Analyse](playlist-analysis.md)
 
 ---
 
 ### READY_TO_START
 
-**Metadaten bestätigt, bereit zum Starten.**
+**Metadaten und Playlist bestätigt, bereit zum Starten.**
 
-- Job-Datensatz in Datenbank mit Metadaten aktualisiert
-- Start-Button im Dashboard aktiv
-- Benutzer kann Metadaten noch mal ändern
+- Job-Datensatz in Datenbank aktualisiert
+- **"Starten"**-Button im Dashboard aktiv
 
-**Übergang:** `startJob(jobId)` aufrufen
+**Sonderfall – Raw-Datei bereits vorhanden:**
+Wenn für diesen Job bereits eine geri rippte Raw-Datei im `raw_dir` existiert (Pfad-Match über Metadaten-Basis), überspringt Ripster den Ripping-Schritt und springt direkt zum HandBrake-Scan.
+
+**Übergang:** `startJob(jobId)` → `RIPPING` oder direkt `MEDIAINFO_CHECK`
 
 ---
 
@@ -94,8 +140,7 @@ makemkvcon -r info disc:0
 === "MKV-Modus (Standard)"
 
     ```bash
-    makemkvcon mkv disc:0 all /path/to/raw/ \
-      --minlength=900
+    makemkvcon mkv disc:0 all /path/to/raw/ --minlength=900 -r
     ```
 
     Erstellt MKV-Datei(en) direkt aus den gewählten Titeln.
@@ -103,45 +148,49 @@ makemkvcon -r info disc:0
 === "Backup-Modus"
 
     ```bash
-    makemkvcon backup disc:0 /path/to/raw/backup/ \
-      --decrypt
+    makemkvcon backup disc:0 /path/to/raw/backup/ --decrypt -r
     ```
 
     Erstellt vollständiges Disc-Backup inkl. Menüs.
 
-**Live-Updates:** Fortschritt wird zeilenweise aus MakeMKV-Ausgabe geparst:
+**Live-Updates** aus MakeMKV-Ausgabe:
 
 ```
-PRGC:5012,0,2048   → Fortschritt: X%
-PRGT:5011,0,"..."  → Aktueller Task
+PRGV:2048,0,65536  → Fortschritt-Berechnung
+PRGT:5011,0,"..."  → Aktueller Task-Name
 ```
+
+**Typische Dauer:** DVD 20–45 min · Blu-ray 45–120 min
 
 ---
 
 ### MEDIAINFO_CHECK
 
-**MediaInfo analysiert die gerippte Datei.**
+**HandBrake-Scan und Encode-Plan-Erstellung.**
 
-```bash
-mediainfo --Output=JSON /path/to/raw/file.mkv
-```
+Dieser Zustand umfasst zwei Phasen:
 
-- Liest alle Audio-, Untertitel- und Video-Tracks
-- Extrahiert Codec-Informationen (DTS, TrueHD, AC-3, ...)
-- Bestimmt Sprachcodes (ISO 639)
-- Erstellt Encode-Plan via `encodePlan.js`
+1. **HandBrake-Scan** (`HandBrakeCLI --scan`) auf Disc oder Raw-Datei
+2. **Encode-Plan-Erstellung** mit automatischer Track-Vorauswahl
+
+Kein Benutzereingriff – läuft automatisch durch.
+
+**Übergang:** → `READY_TO_ENCODE`
 
 ---
 
 ### READY_TO_ENCODE
 
-**Encode-Plan erstellt, wartet auf Bestätigung.**
+**Encode-Plan bereit, wartet auf Benutzer-Bestätigung.**
 
-- `MediaInfoReviewPanel` wird im Frontend angezeigt
-- Benutzer kann Audio- und Untertitel-Tracks de/aktivieren
-- Vorgeschlagene Tracks basierend auf Sprach-Einstellungen
+Das `MediaInfoReviewPanel` zeigt:
 
-**Übergang:** `confirmEncode(jobId, trackSelection)` aufrufen
+- **Titel-Auswahl** (bei Discs mit mehreren langen Titeln)
+- **Audio-Tracks** mit Encoder-Vorschau (Copy/Transcode/Fallback)
+- **Untertitel-Tracks** mit Flags (Einbrennen, Forced, Default)
+- **Post-Encode-Skripte** – Auswahl und Reihenfolge der auszuführenden Skripte
+
+**Übergang:** `confirmEncodeReview(jobId, { tracks, scripts })` → `ENCODING`
 
 ---
 
@@ -151,18 +200,47 @@ mediainfo --Output=JSON /path/to/raw/file.mkv
 
 ```bash
 HandBrakeCLI \
-  --input /path/to/raw.mkv \
-  --output /path/to/movies/Inception\ \(2010\).mkv \
+  -i <quelle> -o <ziel> \
+  -t <titelId> \
   --preset "H.265 MKV 1080p30" \
-  --audio 1,2 \
-  --subtitle 1
+  -a 1,2 -E copy:ac3,av_aac \
+  -s 1 --subtitle-default 1
 ```
 
-**Live-Updates:** Fortschritt wird aus HandBrake-stderr geparst:
+**Live-Updates** aus HandBrake-stderr:
 
 ```
-Encoding: task 1 of 1, 73.50 %
+Encoding: task 1 of 1, 73.50 % (45.23 fps, avg 44.12 fps, ETA 00h12m34s)
 ```
+
+---
+
+### POST_ENCODE_SCRIPTS
+
+**Post-Encode-Skripte werden ausgeführt.**
+
+!!! info "Neu seit „Skript Integration + UI Anpassungen""
+    Post-Encode-Skripte ermöglichen es, nach erfolgreichem Encoding automatisch Aktionen auszuführen.
+
+- Skripte werden **sequenziell** in der konfigurierten Reihenfolge ausgeführt
+- Bei Fehler eines Skripts: restliche Skripte werden **abgebrochen**
+- Ergebnis-Zusammenfassung wird im Job-Datensatz gespeichert:
+
+```json
+{
+  "configured": 2,
+  "succeeded": 2,
+  "failed": 0,
+  "skipped": 0,
+  "aborted": false
+}
+```
+
+Dieser Zustand wird nur erreicht, wenn im Encode-Review mindestens ein Skript ausgewählt wurde.
+
+**Übergang:** → `FINISHED` (alle Skripte erfolgreich) oder `ERROR` (Skript-Fehler)
+
+Details: [Post-Encode-Skripte](post-encode-scripts.md)
 
 ---
 
@@ -171,7 +249,7 @@ Encoding: task 1 of 1, 73.50 %
 **Job erfolgreich abgeschlossen.**
 
 - Ausgabedatei liegt im konfigurierten `movie_dir`
-- Job-Status in Datenbank auf `FINISHED` gesetzt
+- Job-Status in Datenbank: `FINISHED`
 - PushOver-Benachrichtigung (falls konfiguriert)
 - WebSocket-Event: `JOB_COMPLETE`
 
@@ -182,8 +260,8 @@ Encoding: task 1 of 1, 73.50 %
 **Fehler aufgetreten.**
 
 - Fehlerdetails im Job-Datensatz gespeichert
-- Fehler-Logs verfügbar in der History
-- **Retry**: Job kann vom Fehlerzustand neu gestartet werden
+- Fehler-Logs in History abrufbar
+- **Retry**: Neustart vom Fehlerzustand
 - **Abbrechen**: Pipeline zurück zu IDLE
 
 ---
@@ -196,10 +274,8 @@ Encoding: task 1 of 1, 73.50 %
 POST /api/pipeline/cancel
 ```
 
-- Sendet SIGINT an aktiven Prozess
-- Wartet auf graceful exit (Timeout: 10 Sekunden)
-- Falls kein graceful exit: SIGKILL
-- Pipeline-Zustand zurück zu IDLE
+- SIGINT → graceful exit (Timeout: 10 s) → SIGKILL
+- Pipeline zurück zu IDLE
 
 ### Job wiederholen
 
@@ -207,9 +283,8 @@ POST /api/pipeline/cancel
 POST /api/pipeline/retry/:jobId
 ```
 
-- Setzt Job-Status zurück auf `READY_TO_START`
-- Behält Metadaten und Playlist-Auswahl
-- Pipeline neu starten mit vorhandenen Daten
+- Setzt Job zurück auf `READY_TO_START`
+- Metadaten und Playlist-Auswahl bleiben erhalten
 
 ### Re-Encode
 
@@ -218,5 +293,5 @@ POST /api/pipeline/reencode/:jobId
 ```
 
 - Encodiert bestehende Raw-MKV neu
-- Nützlich für geänderte Encoding-Einstellungen
-- Kein neues Ripping erforderlich
+- Ermöglicht neue Track-Auswahl und andere Skripte
+- Kein Ripping erforderlich

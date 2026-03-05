@@ -113,6 +113,139 @@ Sendet eine Test-Benachrichtigung über PushOver.
 
 ---
 
+## Skript-Verwaltung
+
+Post-Encode-Skripte werden über eigene Endpunkte unter `/api/settings/scripts` verwaltet.
+
+### GET /api/settings/scripts
+
+Gibt alle konfigurierten Skripte zurück.
+
+**Response:**
+
+```json
+{
+  "scripts": [
+    {
+      "id": "script-abc123",
+      "name": "Zu Plex verschieben",
+      "command": "/home/michael/scripts/move-to-plex.sh",
+      "description": "Verschiebt die fertige Datei ins Plex-Verzeichnis",
+      "createdAt": "2024-01-15T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### POST /api/settings/scripts
+
+Legt ein neues Post-Encode-Skript an.
+
+**Request:**
+
+```json
+{
+  "name": "Zu Plex verschieben",
+  "command": "/home/michael/scripts/move-to-plex.sh",
+  "description": "Verschiebt die fertige Datei ins Plex-Verzeichnis"
+}
+```
+
+| Feld | Typ | Pflicht | Beschreibung |
+|------|-----|---------|-------------|
+| `name` | string | ✅ | Anzeigename |
+| `command` | string | ✅ | Shell-Befehl oder absoluter Skriptpfad |
+| `description` | string | — | Optionale Beschreibung |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "script": {
+    "id": "script-abc123",
+    "name": "Zu Plex verschieben",
+    "command": "/home/michael/scripts/move-to-plex.sh"
+  }
+}
+```
+
+---
+
+### PUT /api/settings/scripts/:scriptId
+
+Aktualisiert ein vorhandenes Skript.
+
+**URL-Parameter:** `scriptId`
+
+**Request:** Gleiche Felder wie beim Anlegen (alle optional).
+
+```json
+{ "name": "Zu Jellyfin verschieben", "command": "/home/michael/scripts/move-to-jellyfin.sh" }
+```
+
+**Response:** `{ "ok": true }`
+
+---
+
+### DELETE /api/settings/scripts/:scriptId
+
+Löscht ein Skript.
+
+**URL-Parameter:** `scriptId`
+
+**Response:** `{ "ok": true }`
+
+!!! warning "Referenzen in Jobs"
+    Wenn das Skript in laufenden oder abgeschlossenen Jobs referenziert wird, wird es trotzdem gelöscht. In zukünftigen Encode-Reviews erscheint es nicht mehr.
+
+---
+
+### POST /api/settings/scripts/:scriptId/test
+
+Führt ein Skript mit Platzhalter-Umgebungsvariablen aus (Testlauf).
+
+**URL-Parameter:** `scriptId`
+
+**Response (Erfolg):**
+
+```json
+{
+  "ok": true,
+  "exitCode": 0,
+  "stdout": "Testausgabe des Skripts",
+  "stderr": "",
+  "durationMs": 245
+}
+```
+
+**Response (Fehler):**
+
+```json
+{
+  "ok": false,
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "Datei nicht gefunden: /home/michael/scripts/move-to-plex.sh",
+  "durationMs": 12
+}
+```
+
+**Platzhalter-Werte beim Testlauf:**
+
+| Variable | Testwert |
+|---------|---------|
+| `RIPSTER_OUTPUT_PATH` | `/tmp/ripster-test-output.mkv` |
+| `RIPSTER_JOB_ID` | `0` |
+| `RIPSTER_TITLE` | `Test Film` |
+| `RIPSTER_YEAR` | `2024` |
+| `RIPSTER_IMDB_ID` | `tt0000000` |
+| `RIPSTER_RAW_PATH` | `/tmp/ripster-test-raw.mkv` |
+
+---
+
 ## Einstellungs-Schlüssel Referenz
 
 Eine vollständige Liste aller Einstellungs-Schlüssel:

@@ -27,28 +27,49 @@ Gibt den aktuellen Pipeline-Zustand zurück.
 }
 ```
 
-**States:**
+**Pipeline-Zustände:**
 
 | Wert | Beschreibung |
 |------|-------------|
 | `IDLE` | Wartet auf Disc |
-| `ANALYZING` | MakeMKV analysiert |
-| `METADATA_SELECTION` | Wartet auf Benutzer |
+| `DISC_DETECTED` | Disc erkannt, wartet auf Benutzer |
+| `METADATA_SELECTION` | Disc-Scan läuft / Metadaten-Dialog |
+| `WAITING_FOR_USER_DECISION` | Mehrere Playlist-Kandidaten – manuelle Auswahl |
 | `READY_TO_START` | Bereit zum Starten |
-| `RIPPING` | Rippen läuft |
-| `MEDIAINFO_CHECK` | Track-Analyse |
-| `READY_TO_ENCODE` | Wartet auf Bestätigung |
-| `ENCODING` | Encoding läuft |
+| `RIPPING` | MakeMKV-Ripping läuft |
+| `MEDIAINFO_CHECK` | HandBrake-Scan & Encode-Plan-Erstellung |
+| `READY_TO_ENCODE` | Wartet auf Encode-Bestätigung |
+| `ENCODING` | HandBrake encodiert |
+| `POST_ENCODE_SCRIPTS` | Post-Encode-Skripte laufen |
 | `FINISHED` | Abgeschlossen |
 | `ERROR` | Fehler |
+
+**Kontext-Felder (state-abhängig):**
+
+Beim Zustand `WAITING_FOR_USER_DECISION` enthält die Response zusätzlich:
+
+```json
+{
+  "state": "WAITING_FOR_USER_DECISION",
+  "context": {
+    "playlistAnalysis": {
+      "evaluatedCandidates": [...],
+      "recommendation": { "playlistId": "00800", "score": 18 },
+      "manualDecisionRequired": true,
+      "manualDecisionReason": "multiple_candidates_after_min_length"
+    },
+    "playlistCandidates": ["00800", "00801", "00900"]
+  }
+}
+```
 
 ---
 
 ## POST /api/pipeline/analyze
 
-Startet eine manuelle Disc-Analyse (ohne Disc-Detection-Trigger).
+Startet eine manuelle Disc-Analyse.
 
-**Request:** Kein Body erforderlich
+**Request:** Kein Body
 
 **Response:**
 
@@ -65,11 +86,7 @@ Startet eine manuelle Disc-Analyse (ohne Disc-Detection-Trigger).
 
 Erzwingt eine erneute Disc-Erkennung.
 
-**Response:**
-
-```json
-{ "ok": true }
-```
+**Response:** `{ "ok": true }`
 
 ---
 
@@ -81,27 +98,17 @@ Sucht in der OMDb-API nach einem Filmtitel.
 
 | Parameter | Typ | Beschreibung |
 |----------|-----|-------------|
-| `q` | string | Suchbegriff (Filmtitel) |
+| `q` | string | Suchbegriff |
 | `type` | string | `movie` oder `series` (optional) |
 
-**Beispiel:**
-
-```
-GET /api/pipeline/omdb/search?q=Inception&type=movie
-```
+**Beispiel:** `GET /api/pipeline/omdb/search?q=Inception&type=movie`
 
 **Response:**
 
 ```json
 {
   "results": [
-    {
-      "imdbId": "tt1375666",
-      "title": "Inception",
-      "year": "2010",
-      "type": "movie",
-      "poster": "https://m.media-amazon.com/images/..."
-    }
+    { "imdbId": "tt1375666", "title": "Inception", "year": "2010", "type": "movie", "poster": "https://..." }
   ]
 }
 ```
@@ -110,7 +117,7 @@ GET /api/pipeline/omdb/search?q=Inception&type=movie
 
 ## POST /api/pipeline/select-metadata
 
-Bestätigt Metadaten und Playlist-Auswahl für den aktuellen Job.
+Bestätigt Metadaten und optionale Playlist-Auswahl.
 
 **Request:**
 
@@ -124,31 +131,28 @@ Bestätigt Metadaten und Playlist-Auswahl für den aktuellen Job.
     "type": "movie",
     "poster": "https://..."
   },
-  "playlist": "00800.mpls"
+  "selectedPlaylist": "00800"
 }
 ```
 
-`playlist` ist optional und nur bei Blu-rays relevant.
+!!! info "Playlist-Felder"
+    `selectedPlaylist` ist optional. Wird es beim ersten Aufruf weggelassen (kein Obfuskierungsverdacht), wird die Empfehlung automatisch übernommen.
 
-**Response:**
+    Beim zweiten Aufruf aus dem `WAITING_FOR_USER_DECISION`-Dialog reicht es, nur `jobId` + `selectedPlaylist` zu schicken – `omdb` kann dann weggelassen werden.
 
-```json
-{ "ok": true }
-```
+**Response:** `{ "ok": true }`
 
 ---
 
 ## POST /api/pipeline/start/:jobId
 
-Startet den Ripping-Prozess für einen vorbereiteten Job.
+Startet den Ripping-Prozess.
 
-**URL-Parameter:** `jobId` – ID des Jobs
+**URL-Parameter:** `jobId`
 
-**Response:**
+**Response:** `{ "ok": true, "message": "Ripping gestartet" }`
 
-```json
-{ "ok": true, "message": "Ripping gestartet" }
-```
+**Sonderfall:** Falls für den Job bereits eine Raw-Datei vorhanden ist, wird das Ripping übersprungen und direkt der HandBrake-Scan gestartet.
 
 **Fehlerfälle:**
 - `404` – Job nicht gefunden
@@ -158,40 +162,45 @@ Startet den Ripping-Prozess für einen vorbereiteten Job.
 
 ## POST /api/pipeline/confirm-encode/:jobId
 
-Bestätigt die Encode-Konfiguration mit Track-Auswahl.
+Bestätigt die Encode-Konfiguration mit Track-Auswahl und Post-Encode-Skripten.
 
-**URL-Parameter:** `jobId` – ID des Jobs
+**URL-Parameter:** `jobId`
 
 **Request:**
 
 ```json
 {
-  "audioTracks": [1, 2],
-  "subtitleTracks": [1]
+  "selectedEncodeTitleId": 1,
+  "selectedTrackSelection": {
+    "1": {
+      "audioTrackIds": [1, 2],
+      "subtitleTrackIds": [1]
+    }
+  },
+  "selectedPostEncodeScriptIds": ["script-abc123", "script-def456"]
 }
 ```
 
-Track-Indizes entsprechen den 1-basierten Track-Nummern aus dem Encode-Plan.
+| Feld | Typ | Beschreibung |
+|------|-----|-------------|
+| `selectedEncodeTitleId` | number | HandBrake-Titel-ID (aus dem Encode-Plan) |
+| `selectedTrackSelection` | object | Pro Titel: Audio- und Untertitel-Track-IDs |
+| `selectedPostEncodeScriptIds` | string[] | Skript-IDs in Ausführungsreihenfolge (optional) |
 
-**Response:**
+!!! note "Track-IDs"
+    Die Track-IDs entsprechen den `id`-Feldern aus dem Encode-Plan (`encode_plan_json`), nicht den rohen HandBrake-Track-Nummern.
 
-```json
-{ "ok": true, "message": "Encoding gestartet" }
-```
+**Response:** `{ "ok": true, "message": "Encoding gestartet" }`
 
 ---
 
 ## POST /api/pipeline/cancel
 
-Bricht den aktuellen Pipeline-Prozess ab.
+Bricht den aktiven Pipeline-Prozess ab.
 
-**Response:**
+**Response:** `{ "ok": true, "message": "Pipeline abgebrochen" }`
 
-```json
-{ "ok": true, "message": "Pipeline abgebrochen" }
-```
-
-Der laufende Prozess wird mit SIGINT beendet (Fallback: SIGKILL nach Timeout).
+SIGINT → graceful exit (10 s Timeout) → SIGKILL.
 
 ---
 
@@ -199,13 +208,7 @@ Der laufende Prozess wird mit SIGINT beendet (Fallback: SIGKILL nach Timeout).
 
 Wiederholt einen fehlgeschlagenen Job.
 
-**URL-Parameter:** `jobId` – ID des Jobs
-
-**Response:**
-
-```json
-{ "ok": true, "message": "Job wird wiederholt" }
-```
+**Response:** `{ "ok": true, "message": "Job wird wiederholt" }`
 
 **Fehlerfälle:**
 - `404` – Job nicht gefunden
@@ -215,35 +218,28 @@ Wiederholt einen fehlgeschlagenen Job.
 
 ## POST /api/pipeline/resume-ready/:jobId
 
-Setzt einen Job im Status `READY_TO_ENCODE` zurück in die aktive Pipeline.
+Reaktiviert einen Job im Status `READY_TO_ENCODE` in die aktive Pipeline (z. B. nach Neustart).
 
-**URL-Parameter:** `jobId` – ID des Jobs
-
-**Response:**
-
-```json
-{ "ok": true }
-```
+**Response:** `{ "ok": true }`
 
 ---
 
 ## POST /api/pipeline/reencode/:jobId
 
-Startet ein erneutes Encoding für einen abgeschlossenen Job (ohne erneutes Ripping).
-
-**URL-Parameter:** `jobId` – ID des Jobs
+Encodiert eine abgeschlossene Raw-MKV erneut – ohne Ripping.
 
 **Request:**
 
 ```json
 {
-  "audioTracks": [1, 2],
-  "subtitleTracks": [1]
+  "selectedEncodeTitleId": 1,
+  "selectedTrackSelection": {
+    "1": { "audioTrackIds": [1, 2], "subtitleTrackIds": [1] }
+  },
+  "selectedPostEncodeScriptIds": ["script-abc123"]
 }
 ```
 
-**Response:**
+Gleiche Struktur wie `confirm-encode` – ermöglicht andere Track-Auswahl und Skripte als beim ersten Encoding.
 
-```json
-{ "ok": true, "message": "Re-Encoding gestartet" }
-```
+**Response:** `{ "ok": true, "message": "Re-Encoding gestartet" }`

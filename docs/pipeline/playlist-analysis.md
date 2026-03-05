@@ -84,7 +84,6 @@ Alle Titel werden nach **ähnlicher Laufzeit** gruppiert (±90 Sekunden Toleranz
 ```
 8 Titel mit ~148 Minuten Laufzeit → Duplikat-Gruppe
 → obfuscationDetected = true
-→ manualDecisionRequired = true
 ```
 
 ### Schritt 5 – Besten Kandidaten empfehlen (`scoreCandidates`)
@@ -98,19 +97,28 @@ Innerhalb der größten Duplikat-Gruppe werden alle Kandidaten sortiert nach:
 
 Der **erste Kandidat** der sortierten Liste ist die Empfehlung.
 
+### Schritt 6 – Entscheidung erzwingen bei mehreren Kandidaten
+
+Sobald nach `MIN_LENGTH_MINUTES` **mehr als eine** Playlist übrig bleibt, wird immer eine manuelle Auswahl verlangt:
+
+```
+candidateCount > 1  → manualDecisionRequired = true
+candidateCount <= 1 → manualDecisionRequired = false
+```
+
 ---
 
 ## Wann greift der Benutzer ein?
 
 ```
 obfuscationDetected    = duplicateDurationGroups.length > 0
-manualDecisionRequired = obfuscationDetected
+manualDecisionRequired = candidates.length > 1
 ```
 
 | Ergebnis | Nächster Pipeline-Zustand | Aktion |
 |---------|--------------------------|--------|
-| Keine Duplikat-Gruppen | `READY_TO_START` | Empfehlung wird automatisch übernommen |
-| Duplikat-Gruppen gefunden | `WAITING_FOR_USER_DECISION` | Benutzer muss Playlist auswählen |
+| Nur ein Kandidat nach Mindestlänge | `READY_TO_START` | Automatische Übernahme möglich |
+| Mehrere Kandidaten nach Mindestlänge | `WAITING_FOR_USER_DECISION` | Benutzer muss Playlist auswählen |
 
 ---
 

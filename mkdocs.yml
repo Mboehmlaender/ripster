@@ -60,8 +60,9 @@ nav:
   - Pipeline:
     - pipeline/index.md
     - Workflow & Zustände: pipeline/workflow.md
-    - Encode-Planung: pipeline/encoding.md
+    - Encode-Planung & Track-Auswahl: pipeline/encoding.md
     - Playlist-Analyse: pipeline/playlist-analysis.md
+    - Post-Encode-Skripte: pipeline/post-encode-scripts.md
   - API-Referenz:
     - api/index.md
     - Pipeline API: api/pipeline.md
