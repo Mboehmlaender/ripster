@@ -1,6 +1,6 @@
 # WebSocket Events
 
-Ripster verwendet WebSockets für Echtzeit-Updates. Der Endpunkt ist `/ws`.
+Ripster sendet Echtzeit-Updates über WebSocket unter `/ws`.
 
 ---
 
@@ -11,20 +11,21 @@ const ws = new WebSocket('ws://localhost:3001/ws');
 
 ws.onmessage = (event) => {
   const message = JSON.parse(event.data);
-  console.log(message.type, message.data);
+  console.log(message.type, message.payload);
 };
 ```
 
 ---
 
-## Nachrichten-Format
+## Nachrichtenformat
 
-Alle Nachrichten folgen diesem Schema:
+Alle Broadcasts haben dieses Schema:
 
 ```json
 {
   "type": "EVENT_TYPE",
-  "data": { ... }
+  "payload": { },
+  "timestamp": "2026-03-05T10:00:00.000Z"
 }
 ```
 
@@ -32,148 +33,129 @@ Alle Nachrichten folgen diesem Schema:
 
 ## Event-Typen
 
-### PIPELINE_STATE_CHANGE
+### WS_CONNECTED
 
-Wird gesendet, wenn der Pipeline-Zustand wechselt.
+Wird direkt nach Verbindungsaufbau gesendet.
 
 ```json
 {
-  "type": "PIPELINE_STATE_CHANGE",
-  "data": {
+  "type": "WS_CONNECTED",
+  "payload": {
+    "connectedAt": "2026-03-05T10:00:00.000Z"
+  }
+}
+```
+
+### PIPELINE_STATE_CHANGED
+
+Snapshot bei Zustandswechsel.
+
+```json
+{
+  "type": "PIPELINE_STATE_CHANGED",
+  "payload": {
     "state": "ENCODING",
-    "jobId": 42,
-    "job": {
-      "id": 42,
-      "title": "Inception",
-      "status": "ENCODING"
+    "activeJobId": 42,
+    "progress": 73.5,
+    "eta": "00:12:34",
+    "statusText": "Encoding mit HandBrake",
+    "context": {},
+    "queue": {
+      "maxParallelJobs": 1,
+      "runningCount": 1,
+      "queuedCount": 0
     }
   }
 }
 ```
 
----
+### PIPELINE_PROGRESS
 
-### PROGRESS_UPDATE
-
-Wird während aktiver Prozesse (Ripping/Encoding) regelmäßig gesendet.
+Laufende Fortschrittsupdates während aktiver Phasen.
 
 ```json
 {
-  "type": "PROGRESS_UPDATE",
-  "data": {
+  "type": "PIPELINE_PROGRESS",
+  "payload": {
+    "state": "ENCODING",
+    "activeJobId": 42,
     "progress": 73.5,
     "eta": "00:12:34",
-    "speed": "45.2 fps",
-    "phase": "ENCODING"
+    "statusText": "ENCODING 73.50% - task 1 of 1"
   }
 }
 ```
 
-**Felder:**
+### PIPELINE_QUEUE_CHANGED
 
-| Feld | Typ | Beschreibung |
-|-----|-----|-------------|
-| `progress` | number | Fortschritt 0–100 |
-| `eta` | string | Geschätzte Restzeit (`HH:MM:SS`) |
-| `speed` | string | Encoding-Geschwindigkeit (nur beim Encoding) |
-| `phase` | string | Aktuelle Phase (`RIPPING` oder `ENCODING`) |
+Aktualisierung der Job-Queue.
 
----
+```json
+{
+  "type": "PIPELINE_QUEUE_CHANGED",
+  "payload": {
+    "maxParallelJobs": 1,
+    "runningCount": 1,
+    "queuedCount": 2,
+    "runningJobs": [],
+    "queuedJobs": []
+  }
+}
+```
 
 ### DISC_DETECTED
 
-Wird gesendet, wenn eine Disc erkannt wird.
+Disc erkannt.
 
 ```json
 {
   "type": "DISC_DETECTED",
-  "data": {
-    "device": "/dev/sr0"
+  "payload": {
+    "device": {
+      "path": "/dev/sr0",
+      "discLabel": "INCEPTION"
+    }
   }
 }
 ```
 
----
-
 ### DISC_REMOVED
 
-Wird gesendet, wenn eine Disc ausgeworfen wird.
+Disc entfernt.
 
 ```json
 {
   "type": "DISC_REMOVED",
-  "data": {
-    "device": "/dev/sr0"
-  }
-}
-```
-
----
-
-### JOB_COMPLETE
-
-Wird gesendet, wenn ein Job erfolgreich abgeschlossen wurde.
-
-```json
-{
-  "type": "JOB_COMPLETE",
-  "data": {
-    "jobId": 42,
-    "title": "Inception",
-    "outputPath": "/mnt/nas/movies/Inception (2010).mkv"
-  }
-}
-```
-
----
-
-### ERROR
-
-Wird gesendet, wenn ein Fehler aufgetreten ist.
-
-```json
-{
-  "type": "ERROR",
-  "data": {
-    "jobId": 42,
-    "message": "HandBrake ist abgestürzt",
-    "details": "Exit code: 1\nStderr: ..."
-  }
-}
-```
-
----
-
-### METADATA_REQUIRED
-
-Wird gesendet, wenn Benutzer-Eingabe für Metadaten benötigt wird.
-
-```json
-{
-  "type": "METADATA_REQUIRED",
-  "data": {
-    "jobId": 42,
-    "makemkvData": { ... },
-    "playlistAnalysis": { ... }
-  }
-}
-```
-
----
-
-### ENCODE_REVIEW_REQUIRED
-
-Wird gesendet, wenn der Benutzer den Encode-Plan bestätigen soll.
-
-```json
-{
-  "type": "ENCODE_REVIEW_REQUIRED",
-  "data": {
-    "jobId": 42,
-    "encodePlan": {
-      "audioTracks": [ ... ],
-      "subtitleTracks": [ ... ]
+  "payload": {
+    "device": {
+      "path": "/dev/sr0"
     }
+  }
+}
+```
+
+### PIPELINE_ERROR
+
+Fehler bei Pipeline-Disc-Events im Backend.
+
+```json
+{
+  "type": "PIPELINE_ERROR",
+  "payload": {
+    "message": "..."
+  }
+}
+```
+
+### DISK_DETECTION_ERROR
+
+Fehler im Laufwerkserkennungsdienst.
+
+```json
+{
+  "type": "DISK_DETECTION_ERROR",
+  "payload": {
+    "message": "..."
   }
 }
 ```
@@ -182,44 +164,23 @@ Wird gesendet, wenn der Benutzer den Encode-Plan bestätigen soll.
 
 ## Reconnect-Verhalten
 
-Der Frontend-Hook `useWebSocket.js` implementiert automatisches Reconnect:
+`useWebSocket.js` versucht bei Verbindungsabbruch automatisch erneut zu verbinden.
 
-```
-Verbindung verloren
-    ↓
-Warte 1s → Reconnect-Versuch
-    ↓ (Fehlschlag)
-Warte 2s → Reconnect-Versuch
-    ↓ (Fehlschlag)
-Warte 4s → ...
-    ↓
-Max. 30s Wartezeit
-```
+- fester Retry-Intervall: `1500ms`
+- erneuter Versuch bis zum Unmount der Komponente
 
 ---
 
-## Beispiel: React-Hook
+## React-Beispiel
 
 ```js
-import { useEffect, useState } from 'react';
+import { useWebSocket } from './hooks/useWebSocket';
 
-function usePipelineState() {
-  const [state, setState] = useState({ state: 'IDLE' });
-
-  useEffect(() => {
-    const ws = new WebSocket(import.meta.env.VITE_WS_URL + '/ws');
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type === 'PIPELINE_STATE_CHANGE') {
-        setState(msg.data);
-      }
-    };
-
-    return () => ws.close();
-  }, []);
-
-  return state;
-}
+useWebSocket({
+  onMessage: (msg) => {
+    if (msg.type === 'PIPELINE_STATE_CHANGED') {
+      setPipeline(msg.payload);
+    }
+  }
+});
 ```

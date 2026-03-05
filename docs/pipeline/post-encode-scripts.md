@@ -21,7 +21,8 @@ FINISHED
 ```
 
 !!! warning "Abbruch bei Fehler"
-    Schlägt ein Skript fehl (Exit-Code ≠ 0), werden alle nachfolgenden Skripte **nicht mehr ausgeführt**. Der Job wechselt in den Status `ERROR`.
+    Schlägt ein Skript fehl (Exit-Code ≠ 0), werden alle nachfolgenden Skripte **nicht mehr ausgeführt**.
+    Der Job bleibt im Abschlusszustand `FINISHED`; der Fehler wird in Log/Status-Text und im `postEncodeScripts`-Summary festgehalten.
 
 ---
 
@@ -120,26 +121,21 @@ Das Ergebnis der Skript-Ausführung wird im Job-Datensatz gespeichert und in der
 {
   "postEncodeScripts": {
     "configured": 2,
+    "attempted": 2,
     "succeeded": 2,
     "failed": 0,
     "skipped": 0,
     "aborted": false,
     "results": [
       {
-        "scriptId": "script-1",
-        "name": "Zu Plex verschieben",
-        "exitCode": 0,
-        "stdout": "Verschoben: Inception nach /mnt/media/movies",
-        "stderr": "",
-        "durationMs": 342
+        "scriptId": 1,
+        "scriptName": "Zu Plex verschieben",
+        "status": "SUCCESS"
       },
       {
-        "scriptId": "script-2",
-        "name": "Webhook auslösen",
-        "exitCode": 0,
-        "stdout": "",
-        "stderr": "",
-        "durationMs": 128
+        "scriptId": 2,
+        "scriptName": "Webhook auslösen",
+        "status": "SUCCESS"
       }
     ]
   }
@@ -149,6 +145,7 @@ Das Ergebnis der Skript-Ausführung wird im Job-Datensatz gespeichert und in der
 | Feld | Beschreibung |
 |------|-------------|
 | `configured` | Anzahl ausgewählter Skripte |
+| `attempted` | Anzahl tatsächlich gestarteter Skripte |
 | `succeeded` | Erfolgreich ausgeführt (Exit-Code 0) |
 | `failed` | Fehlgeschlagen |
 | `skipped` | Nicht ausgeführt (wegen vorherigem Fehler) |

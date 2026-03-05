@@ -84,7 +84,7 @@ Das Template unterstützt folgende Platzhalter:
 |------------|---------|-------------|
 | `drive_mode` | `auto` | `auto` (automatisch erkennen) oder `explicit` (festes Gerät) |
 | `drive_device` | `/dev/sr0` | Geräte-Pfad (nur bei `explicit`) |
-| `disc_poll_interval_ms` | `5000` | Polling-Intervall in Millisekunden |
+| `disc_poll_interval_ms` | `4000` | Polling-Intervall in Millisekunden |
 
 ---
 

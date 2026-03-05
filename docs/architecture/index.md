@@ -82,7 +82,7 @@ App.jsx (React Router)
 ├── Pages
 │   ├── DashboardPage.jsx     ← Haupt-Interface
 │   ├── SettingsPage.jsx
-│   └── HistoryPage.jsx
+│   └── DatabasePage.jsx      ← Historie/DB-Ansicht
 ├── Components
 │   ├── PipelineStatusCard.jsx
 │   ├── MetadataSelectionDialog.jsx

@@ -15,38 +15,61 @@ flowchart LR
     IDLE -->|Disc erkannt| DD[DISC_DETECTED]
     DD -->|Analyse starten| META[METADATA\nSELECTION]
 
-    META -->|1 Kandidat| RTS[READY_TO\nSTART]
-    META -->|mehrere Kandidaten| WUD[WAITING_FOR\nUSER_DECISION]
-    WUD -->|Playlist bestätigt| RTS
+    META -->|Metadaten übernommen| RTS[READY_TO\nSTART]
+    META -->|vorhandenes RAW +\nPlaylist offen| WUD[WAITING_FOR\nUSER_DECISION]
 
-    RTS -->|Raw vorhanden| MIC[MEDIAINFO\nCHECK]
-    RTS -->|Ripping starten| RIP[RIPPING]
+    RTS -->|Auto-Start| RIP[RIPPING]
+    RTS -->|Auto-Start mit RAW| MIC[MEDIAINFO\nCHECK]
     RIP -->|MKV fertig| MIC
     RIP -->|Fehler| ERR
+    RIP -->|Abbruch| CAN([CANCELLED])
 
+    MIC -->|Playlist offen (Backup)| WUD
+    WUD -->|Playlist bestätigt| MIC
+    WUD -->|Playlist bestätigt,\nnoch kein RAW| RTS
     MIC --> RTE[READY_TO\nENCODE]
-    RTE -->|Tracks + Skripte\nbestätigt| ENC[ENCODING]
+    RTE -->|Encoding starten\n(bestätigt bei Bedarf automatisch)| ENC[ENCODING]
 
-    ENC -->|mit Skripten| PES[POST_ENCODE\nSCRIPTS]
-    ENC -->|ohne Skripte| FIN([FINISHED])
+    ENC -->|inkl. Post-Skripte| FIN([FINISHED])
     ENC -->|Fehler| ERR
-
-    PES -->|Erfolg| FIN
-    PES -->|Fehler| ERR
+    ENC -->|Abbruch| CAN
 
     ERR([ERROR]) -->|Retry / Cancel| IDLE
+    CAN -->|Retry / Neu-Analyse| IDLE
     FIN -->|Neue Disc| IDLE
 
     style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
     style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
+    style CAN fill:#fff3e0,stroke:#fb8c00,color:#e65100
     style WUD fill:#fff8e1,stroke:#ffa726,color:#e65100
-    style PES fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
     style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
     style RIP fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
     style MIC fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
 ```
 
 </div>
+
+---
+
+## UI-Badge-Bezeichnungen
+
+Die Status-Badges im Dashboard verwenden diese Labels:
+
+| State | Badge-Label |
+|------|-------------|
+| `IDLE` | `Bereit` |
+| `DISC_DETECTED` | `Medium erkannt` |
+| `METADATA_SELECTION` | `Metadatenauswahl` |
+| `WAITING_FOR_USER_DECISION` | `Warte auf Auswahl` |
+| `READY_TO_START` | `Startbereit` |
+| `RIPPING` | `Rippen` |
+| `MEDIAINFO_CHECK` | `Mediainfo-Pruefung` |
+| `READY_TO_ENCODE` | `Bereit zum Encodieren` |
+| `ENCODING` | `Encodieren` |
+| `FINISHED` | `Fertig` |
+| `CANCELLED` | `Abgebrochen` |
+| `ERROR` | `Fehler` |
+| Queue (kein eigener State) | `In der Queue` |
 
 ---
 
@@ -66,7 +89,8 @@ flowchart LR
 
 **Disc erkannt, wartet auf Benutzeraktion.**
 
-- Dashboard zeigt **"Neue Disc erkannt"**-Badge
+- Dashboard-Badge: **"Medium erkannt"**
+- Status-Text: **"Neue Disk erkannt"**
 - **"Analyse starten"**-Button wird aktiv
 - Kein Prozess läuft noch
 
@@ -76,20 +100,21 @@ flowchart LR
 
 ### METADATA_SELECTION
 
-**Disc-Info-Scan läuft, danach Benutzer-Eingabe.**
+**Metadaten-Auswahl läuft.**
 
-1. MakeMKV wird im Info-Modus gestartet und liest alle Titel/Playlists
+1. Job wird erstellt (`status = METADATA_SELECTION`)
 2. OMDb-Vorsuche mit erkanntem Disc-Label
 3. `MetadataSelectionDialog` öffnet sich mit vorgeladenen Ergebnissen
 4. Benutzer wählt Filmtitel (oder gibt manuell ein)
-5. Nach Bestätigung: **Playlist-Analyse** läuft sofort durch
+5. Nach Bestätigung wird der Job automatisch für Start/Queue vorbereitet (`selectMetadata` + `startPreparedJob`)
 
-**Übergang (automatisch nach Playlist-Analyse):**
+**Übergang (automatisch nach Metadaten-Bestätigung):**
 
-| Ergebnis der Analyse | Nächster Zustand |
+| Ergebnis | Nächster Zustand |
 |--------------------|-----------------|
-| Nur ein Kandidat nach Mindestlänge | `READY_TO_START` |
-| Mehrere Kandidaten nach Mindestlänge | `WAITING_FOR_USER_DECISION` |
+| Kein verwertbares RAW vorhanden | `READY_TO_START` → automatisch `RIPPING` (oder Queue) |
+| Verwertbares RAW vorhanden | `READY_TO_START` → automatisch `MEDIAINFO_CHECK` (oder Queue) |
+| Vorhandenes RAW + offene Playlist-Entscheidung | `WAITING_FOR_USER_DECISION` |
 
 ---
 
@@ -104,6 +129,7 @@ flowchart LR
 - Alle Kandidaten mit Score, Laufzeit und Bewertungslabel
 - Empfohlene Playlist ist vorausgewählt
 - Benutzer bestätigt mit **"Playlist übernehmen"**
+- Tritt häufig nach `MEDIAINFO_CHECK` auf (Backup-Analyse), seltener direkt nach `METADATA_SELECTION` bei vorhandenem RAW
 
 **Darstellung im Dashboard:**
 
@@ -121,7 +147,10 @@ flowchart LR
                               [Playlist übernehmen]
 ```
 
-**Übergang:** `selectMetadata(jobId, { selectedPlaylist })` → `READY_TO_START`
+**Übergang:** `selectMetadata(jobId, { selectedPlaylist })` setzt die Pipeline automatisch fort:
+
+- mit vorhandenem RAW nach `MEDIAINFO_CHECK`
+- ohne RAW über `READY_TO_START` weiter Richtung `RIPPING`
 
 Mehr Details: [Playlist-Analyse](playlist-analysis.md)
 
@@ -129,15 +158,17 @@ Mehr Details: [Playlist-Analyse](playlist-analysis.md)
 
 ### READY_TO_START
 
-**Metadaten und Playlist bestätigt, bereit zum Starten.**
+**Übergangs-/Fallback-Zustand vor dem eigentlichen Start.**
 
-- Job-Datensatz in Datenbank aktualisiert
-- **"Starten"**-Button im Dashboard aktiv
+- Wird nach Metadaten-Bestätigung kurz gesetzt
+- `startPreparedJob()` wird danach automatisch ausgeführt
+- Wenn Parallel-Limit erreicht ist, wird der Start stattdessen in die Queue eingereiht
+- **"Job starten"** ist primär für Sonderfälle/Fallback sichtbar
 
-**Sonderfall – Raw-Datei bereits vorhanden:**
-Wenn für diesen Job bereits eine geri rippte Raw-Datei im `raw_dir` existiert (Pfad-Match über Metadaten-Basis), überspringt Ripster den Ripping-Schritt und springt direkt zum HandBrake-Scan.
+**Sonderfall – RAW-Datei bereits vorhanden:**
+Wenn für diesen Job bereits ein verwertbares RAW unter `raw_dir` existiert, wird Ripping übersprungen und direkt `MEDIAINFO_CHECK` gestartet.
 
-**Übergang:** `startJob(jobId)` → `RIPPING` oder direkt `MEDIAINFO_CHECK`
+**Übergang:** `startPreparedJob(jobId)` → `RIPPING` oder direkt `MEDIAINFO_CHECK`
 
 ---
 
@@ -176,20 +207,24 @@ PRGT:5011,0,"..."  → Aktueller Task-Name
 
 **HandBrake-Scan und Encode-Plan-Erstellung.**
 
-Dieser Zustand umfasst zwei Phasen:
+Dieser Zustand umfasst je nach Quelle mehrere Phasen:
 
-1. **HandBrake-Scan** (`HandBrakeCLI --scan`) auf Disc oder Raw-Datei
-2. **Encode-Plan-Erstellung** mit automatischer Track-Vorauswahl
+1. Optional: Playlist-Auflösung bei Blu-ray-Backup (inkl. MakeMKV/HandBrake-Zuordnung)
+2. **HandBrake-Scan** (`HandBrakeCLI --scan`) auf RAW-Input
+3. **Encode-Plan-Erstellung** mit automatischer Track-Vorauswahl
 
 Kein Benutzereingriff – läuft automatisch durch.
 
-**Übergang:** → `READY_TO_ENCODE`
+**Übergänge:**
+
+- Eindeutige Quelle/Titelwahl möglich → `READY_TO_ENCODE`
+- Mehrdeutige Playlist erkannt → `WAITING_FOR_USER_DECISION`
 
 ---
 
 ### READY_TO_ENCODE
 
-**Encode-Plan bereit, wartet auf Benutzer-Bestätigung.**
+**Encode-Plan bereit.**
 
 Das `MediaInfoReviewPanel` zeigt:
 
@@ -198,7 +233,10 @@ Das `MediaInfoReviewPanel` zeigt:
 - **Untertitel-Tracks** mit Flags (Einbrennen, Forced, Default)
 - **Post-Encode-Skripte** – Auswahl und Reihenfolge der auszuführenden Skripte
 
-**Übergang:** `confirmEncodeReview(jobId, { tracks, scripts })` → `ENCODING`
+Im Frontend startet **"Encoding starten"** (bzw. **"Backup + Encoding starten"** im Pre-Rip-Modus) den nächsten Schritt.
+Falls die Review noch nicht bestätigt wurde, wird `confirmEncodeReview(...)` automatisch vor dem Start aufgerufen.
+
+**Übergang:** `startPreparedJob(jobId)` → `ENCODING` (oder im Pre-Rip-Fall zuerst `RIPPING`)
 
 ---
 
@@ -221,34 +259,10 @@ HandBrakeCLI \
 Encoding: task 1 of 1, 73.50 % (45.23 fps, avg 44.12 fps, ETA 00h12m34s)
 ```
 
----
+Post-Encode-Skripte werden innerhalb dieses Zustands sequenziell ausgeführt (kein separater Pipeline-State).
 
-### POST_ENCODE_SCRIPTS
-
-**Post-Encode-Skripte werden ausgeführt.**
-
-!!! info "Neu seit „Skript Integration + UI Anpassungen""
-    Post-Encode-Skripte ermöglichen es, nach erfolgreichem Encoding automatisch Aktionen auszuführen.
-
-- Skripte werden **sequenziell** in der konfigurierten Reihenfolge ausgeführt
-- Bei Fehler eines Skripts: restliche Skripte werden **abgebrochen**
-- Ergebnis-Zusammenfassung wird im Job-Datensatz gespeichert:
-
-```json
-{
-  "configured": 2,
-  "succeeded": 2,
-  "failed": 0,
-  "skipped": 0,
-  "aborted": false
-}
-```
-
-Dieser Zustand wird nur erreicht, wenn im Encode-Review mindestens ein Skript ausgewählt wurde.
-
-**Übergang:** → `FINISHED` (alle Skripte erfolgreich) oder `ERROR` (Skript-Fehler)
-
-Details: [Post-Encode-Skripte](post-encode-scripts.md)
+!!! note "Skriptfehler"
+    Skriptfehler führen zum Abbruch der Skriptkette, der Job bleibt jedoch im Abschlusszustand `FINISHED` mit entsprechendem Hinweis im Status-Text/Log.
 
 ---
 
@@ -259,7 +273,17 @@ Details: [Post-Encode-Skripte](post-encode-scripts.md)
 - Ausgabedatei liegt im konfigurierten `movie_dir`
 - Job-Status in Datenbank: `FINISHED`
 - PushOver-Benachrichtigung (falls konfiguriert)
-- WebSocket-Event: `JOB_COMPLETE`
+- WebSocket-Event: `PIPELINE_STATE_CHANGED` (State `FINISHED`)
+
+---
+
+### CANCELLED
+
+**Job wurde vom Benutzer abgebrochen.**
+
+- Entsteht bei aktivem Abbruch (`/api/pipeline/cancel`) während laufender Phase
+- Job-Status in Datenbank: `CANCELLED`
+- Im Dashboard stehen danach u. a. `Retry Rippen`, `Review neu starten` oder `Encode neu starten` (kontextabhängig) zur Verfügung
 
 ---
 
@@ -270,7 +294,7 @@ Details: [Post-Encode-Skripte](post-encode-scripts.md)
 - Fehlerdetails im Job-Datensatz gespeichert
 - Fehler-Logs in History abrufbar
 - **Retry**: Neustart vom Fehlerzustand
-- **Abbrechen**: Pipeline zurück zu IDLE
+- **Neu analysieren**: Disc erneut als neuer Job starten
 
 ---
 
@@ -283,7 +307,7 @@ POST /api/pipeline/cancel
 ```
 
 - SIGINT → graceful exit (Timeout: 10 s) → SIGKILL
-- Pipeline zurück zu IDLE
+- Laufender Job landet in `CANCELLED` (oder Queue-Eintrag wird entfernt, falls noch nicht gestartet)
 
 ### Job wiederholen
 
@@ -291,8 +315,8 @@ POST /api/pipeline/cancel
 POST /api/pipeline/retry/:jobId
 ```
 
-- Setzt Job zurück auf `READY_TO_START`
-- Metadaten und Playlist-Auswahl bleiben erhalten
+- Startet den Job neu in `RIPPING` (oder reiht den Retry in die Queue ein)
+- Metadaten bleiben erhalten; Encode-/Scan-Daten werden neu erzeugt
 
 ### Re-Encode
 

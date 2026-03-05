@@ -11,18 +11,18 @@ Das Frontend ist mit **React 18** und **PrimeReact** gebaut und kommuniziert üb
 Die Hauptseite von Ripster – zeigt den aktuellen Pipeline-Status und ermöglicht alle Workflow-Aktionen.
 
 **Funktionen:**
-- Anzeige des aktuellen Pipeline-Zustands (IDLE, ANALYZING, RIPPING, ENCODING, ...)
+- Anzeige des aktuellen Pipeline-Zustands (IDLE, DISC_DETECTED, METADATA_SELECTION, RIPPING, MEDIAINFO_CHECK, READY_TO_ENCODE, ENCODING, ...)
 - Live-Fortschrittsbalken mit ETA
 - Trigger für Metadaten-Dialog
 - Playlist-Entscheidungs-UI (bei Blu-ray Obfuskierung)
 - Encode-Review mit Track-Auswahl
-- Job-Steuerung (Start, Abbruch, Retry)
+- Job-Steuerung (Start, Abbruch, Retry, Queue-Interaktion)
 
 **Zugehörige Komponenten:**
 - `PipelineStatusCard` – Status-Widget
 - `MetadataSelectionDialog` – OMDb-Suche und Playlist-Auswahl
 - `MediaInfoReviewPanel` – Track-Auswahl vor dem Encoding
-- `DiscDetectedDialog` – Benachrichtigung bei Disc-Erkennung
+- Queue- und Job-Karten-UI direkt in `DashboardPage`
 
 ### SettingsPage.jsx
 
@@ -34,9 +34,9 @@ Konfigurationsoberfläche für alle Ripster-Einstellungen.
 - PushOver-Verbindungstest
 - Automatische Aktualisierung des Encode-Reviews bei relevanten Änderungen
 
-### HistoryPage.jsx
+### DatabasePage.jsx (`/history`)
 
-Job-Historie mit vollständigem Audit-Trail.
+Job-Historie und Datenbankansicht mit vollständigem Audit-Trail.
 
 **Funktionen:**
 - Sortier- und filterbares Job-Verzeichnis
@@ -88,7 +88,7 @@ Track-Auswahl-Panel vor dem Encoding.
 │ ☑ Track 1: Deutsch                  │
 │ ☐ Track 2: English                  │
 ├─────────────────────────────────────┤
-│              [Encodierung starten]  │
+│                [Encoding starten]   │
 └─────────────────────────────────────┘
 ```
 
@@ -123,10 +123,10 @@ Vollständiger Job-Detail-Dialog mit Logs-Viewer.
 Zentraler Custom-Hook für die WebSocket-Verbindung.
 
 ```js
-const { status, lastMessage } = useWebSocket({
+useWebSocket({
   onMessage: (msg) => {
-    if (msg.type === 'PIPELINE_STATE_CHANGE') {
-      setPipelineState(msg.data);
+    if (msg.type === 'PIPELINE_STATE_CHANGED') {
+      setPipelineState(msg.payload);
     }
   }
 });
@@ -134,9 +134,8 @@ const { status, lastMessage } = useWebSocket({
 
 **Features:**
 - Automatische Verbindung zu `/ws`
-- Reconnect mit exponential backoff
+- Reconnect mit festem Intervall (`1500ms`)
 - Message-Parsing (JSON)
-- Status-Tracking (connecting, connected, disconnected)
 
 ---
 
@@ -148,8 +147,11 @@ Zentraler HTTP-Client für alle Backend-Anfragen.
 // Beispiel-Aufrufe
 const state = await api.getPipelineState();
 const results = await api.searchOmdb('Inception');
-await api.selectMetadata(jobId, omdbData, playlist);
-await api.confirmEncode(jobId, { audioTracks: [0, 1], subtitleTracks: [0] });
+await api.selectMetadata({ jobId, title, year, imdbId, selectedPlaylist });
+await api.confirmEncodeReview(jobId, {
+  selectedEncodeTitleId: 1,
+  selectedTrackSelection: { 1: { audioTrackIds: [1], subtitleTrackIds: [3] } }
+});
 ```
 
 **Features:**

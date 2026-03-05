@@ -243,7 +243,7 @@ Das Review-Panel zeigt:
 │ [✓]  │ Track 1: Deutsch         │Einbr.[ ]│Forced[ ]│Default[✓]│
 │ [ ]  │ Track 2: English         │Einbr.[ ]│Forced[ ]│Default[ ]│
 ├──────┴──────────────────────────┴────────┴────────┴────────────┤
-│                              [Encode bestätigen]               │
+│                               [Encoding starten]               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -256,7 +256,7 @@ Der Benutzer kann:
 
 ## Phase 7: Benutzer-Auswahl anwenden (`applyManualTrackSelectionToPlan`)
 
-Nach "Encode bestätigen" wird die Benutzer-Auswahl auf den Plan angewendet:
+Im Frontend wird die Benutzer-Auswahl beim Klick auf **"Encoding starten"** (ggf. automatisch) bestätigt und dann auf den Plan angewendet:
 
 ```json
 Payload: {

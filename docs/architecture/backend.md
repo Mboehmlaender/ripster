@@ -19,13 +19,16 @@ Das Backend ist in Node.js/Express geschrieben und in **Services** aufgeteilt, d
 
 | Methode | Beschreibung |
 |---------|-------------|
-| `analyzeDisc()` | Startet MakeMKV-Analyse der eingelegten Disc |
-| `selectMetadata(jobId, omdbData, playlist)` | Setzt Metadaten und Playlist für einen Job |
-| `startJob(jobId)` | Startet den Ripping-Prozess |
-| `confirmEncode(jobId, trackSelection)` | Bestätigt Encode mit Track-Auswahl |
-| `cancelPipeline()` | Bricht aktiven Prozess ab |
-| `retryJob(jobId)` | Wiederholt fehlgeschlagenen Job |
-| `reencodeJob(jobId)` | Encodiert bestehende Raw-MKV neu |
+| `analyzeDisc()` | Legt Job an und öffnet Metadaten-Auswahl |
+| `selectMetadata({...})` | Setzt Metadaten/Playlist und triggert Auto-Start |
+| `startPreparedJob(jobId)` | Startet vorbereiteten Job (oder Queue) |
+| `confirmEncodeReview(jobId, options)` | Bestätigt Review inkl. Track/Skript-Auswahl |
+| `cancel(jobId)` | Bricht laufenden Job ab oder entfernt Queue-Eintrag |
+| `retry(jobId)` | Startet fehlgeschlagenen/abgebrochenen Job neu |
+| `reencodeFromRaw(jobId)` | Encodiert aus vorhandenem RAW neu |
+| `restartReviewFromRaw(jobId)` | Berechnet Review aus RAW neu |
+| `restartEncodeWithLastSettings(jobId)` | Neustart mit letzter bestätigter Auswahl |
+| `resumeReadyToEncodeJob(jobId)` | Lädt READY_TO_ENCODE nach Neustart in die Session |
 
 ### Zustandsübergänge
 
@@ -34,20 +37,26 @@ Das Backend ist in Node.js/Express geschrieben und in **Services** aufgeteilt, d
 ```mermaid
 flowchart LR
     START(( )) --> IDLE
-    IDLE -->|analyzeDisc()| ANALYZING[ANALYZING]
-    ANALYZING -->|MakeMKV fertig| META[METADATA\nSELECTION]
+    IDLE -->|analyzeDisc()| META[METADATA\nSELECTION]
     META -->|selectMetadata()| RTS[READY_TO\nSTART]
-    RTS -->|startJob()| RIP[RIPPING]
+    RTS -->|Auto-Start/Queue| RIP[RIPPING]
+    RTS -->|Auto-Start mit RAW| MIC[MEDIAINFO\nCHECK]
     RIP -->|MKV erstellt| MIC[MEDIAINFO\nCHECK]
+    MIC -->|Playlist offen| WUD[WAITING_FOR\nUSER_DECISION]
+    WUD -->|selectMetadata(selectedPlaylist)| MIC
     MIC -->|Tracks analysiert| RTE[READY_TO\nENCODE]
-    RTE -->|confirmEncode()| ENC[ENCODING]
-    ENC -->|HandBrake fertig| FIN([FINISHED])
+    RTE -->|confirmEncodeReview() + startPreparedJob()| ENC[ENCODING]
+    ENC -->|HandBrake + Post-Skripte fertig| FIN([FINISHED])
+    ENC -->|Abbruch| CAN([CANCELLED])
     ENC -->|Fehler| ERR([ERROR])
     RIP -->|Fehler| ERR
-    ERR -->|retryJob() / cancel| IDLE
+    RIP -->|Abbruch| CAN
+    ERR -->|retry() / cancel()| IDLE
+    CAN -->|retry() / analyzeDisc()| IDLE
     FIN -->|cancel / neue Disc| IDLE
 
     style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
+    style CAN fill:#fff3e0,stroke:#fb8c00,color:#e65100
     style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
     style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
     style RIP fill:#e3f2fd,stroke:#42a5f5,color:#1565c0
@@ -71,12 +80,12 @@ flowchart LR
 
 ### Polling
 
-Der Service pollt das Laufwerk im konfigurierten Intervall (`disc_poll_interval_ms`, Standard: 5000ms) und emittiert Events:
+Der Service pollt das Laufwerk im konfigurierten Intervall (`disc_poll_interval_ms`, Standard: 4000ms) und emittiert Events:
 
 ```js
 // Ereignisse
-emit('disc-detected', { device: '/dev/sr0' })
-emit('disc-removed', { device: '/dev/sr0' })
+emit('discInserted', { path: '/dev/sr0' })
+emit('discRemoved', { path: '/dev/sr0' })
 ```
 
 ---
@@ -120,8 +129,9 @@ WebSocket-Server für Echtzeit-Client-Kommunikation.
 ### API
 
 ```js
-broadcast({ type: 'PIPELINE_STATE_CHANGE', data: { state, jobId } });
-broadcast({ type: 'PROGRESS_UPDATE', data: { progress, eta } });
+broadcast('PIPELINE_STATE_CHANGED', { state, activeJobId });
+broadcast('PIPELINE_PROGRESS', { state, progress, eta, statusText });
+broadcast('PIPELINE_QUEUE_CHANGED', queueSnapshot);
 ```
 
 ---
@@ -168,13 +178,12 @@ Verwaltet alle Anwendungseinstellungen.
 
 | Kategorie | Einstellungen |
 |-----------|--------------|
-| `paths` | `raw_dir`, `movie_dir`, `log_dir` |
-| `tools` | `makemkv_command`, `handbrake_command`, `mediainfo_command` |
-| `encoding` | `handbrake_preset`, `handbrake_extra_args`, `output_extension`, `filename_template` |
-| `drive` | `drive_mode`, `drive_device`, `disc_poll_interval_ms` |
-| `makemkv` | `makemkv_min_length_minutes`, `makemkv_backup_mode` |
-| `omdb` | `omdb_api_key`, `omdb_default_type` |
-| `notifications` | `pushover_user_key`, `pushover_api_token` |
+| `Pfade` | `raw_dir`, `movie_dir`, `log_dir` |
+| `Laufwerk` | `drive_mode`, `drive_device`, `disc_poll_interval_ms`, `makemkv_source_index` |
+| `Monitoring` | `hardware_monitoring_enabled`, `hardware_monitoring_interval_ms` |
+| `Tools` | `makemkv_command`, `handbrake_command`, `mediainfo_command`, `pipeline_max_parallel_jobs` |
+| `Metadaten` | `omdb_api_key`, `omdb_default_type` |
+| `Benachrichtigungen` | `pushover_user_key`, `pushover_api_token` |
 
 ---
 

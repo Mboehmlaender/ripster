@@ -4,7 +4,7 @@ Nach der [Installation](installation.md) und [Konfiguration](configuration.md) f
 
 ---
 
-## Übersicht: Pipeline-Zustände
+## Übersicht: Pipeline-Ablauf
 
 <div class="pipeline-steps">
   <div class="pipeline-step">
@@ -20,7 +20,7 @@ Nach der [Installation](installation.md) und [Konfiguration](configuration.md) f
   <div class="pipeline-step">
     <div class="pipeline-step-badge step-running">2</div>
     <div class="pipeline-step-label">METADATA_SELECTION</div>
-    <div class="pipeline-step-sub">Scan &amp; Metadaten</div>
+    <div class="pipeline-step-sub">OMDb &amp; Dialog</div>
   </div>
   <div class="pipeline-step">
     <div class="pipeline-step-badge step-wait">⚠</div>
@@ -53,9 +53,9 @@ Nach der [Installation](installation.md) und [Konfiguration](configuration.md) f
     <div class="pipeline-step-sub">HandBrake</div>
   </div>
   <div class="pipeline-step">
-    <div class="pipeline-step-badge step-encode">8</div>
-    <div class="pipeline-step-label">POST_ENCODE_SCRIPTS</div>
-    <div class="pipeline-step-sub">Skripte<br><em>(optional)</em></div>
+    <div class="pipeline-step-badge step-encode">8*</div>
+    <div class="pipeline-step-label">POST-ENCODE</div>
+    <div class="pipeline-step-sub">Skripte<br><em>(innerhalb ENCODING)</em></div>
   </div>
   <div class="pipeline-step">
     <div class="pipeline-step-badge step-done">✓</div>
@@ -77,31 +77,29 @@ Nach der [Installation](installation.md) und [Konfiguration](configuration.md) f
         IDLE -->|Disc erkannt| DD[DISC_DETECTED]
         DD -->|Analyse starten| META[METADATA\nSELECTION]
 
-        META -->|1 Kandidat| RTS[READY_TO\nSTART]
-        META -->|mehrere Kandidaten| WUD[WAITING_FOR\nUSER_DECISION]
-        WUD -->|Playlist bestätigt| RTS
+        META -->|Metadaten übernommen| RTS[READY_TO\nSTART]
+        META -->|vorhandenes RAW +\nPlaylist offen| WUD[WAITING_FOR\nUSER_DECISION]
+        RTS -->|Auto-Start| RIP[RIPPING]
+        RTS -->|Auto-Start mit RAW| MIC[MEDIAINFO\nCHECK]
 
-        RTS -->|Raw vorhanden| MIC[MEDIAINFO\nCHECK]
-        RTS -->|Ripping starten| RIP[RIPPING]
         RIP -->|MKV fertig| MIC
         RIP -->|Fehler| ERR
 
+        MIC -->|Playlist offen (Backup)| WUD
+        WUD -->|Playlist bestätigt| MIC
+        WUD -->|Playlist bestätigt,\nnoch kein RAW| RTS
+
         MIC --> RTE[READY_TO\nENCODE]
-        RTE -->|bestätigt| ENC[ENCODING]
+        RTE -->|Encoding starten| ENC[ENCODING]
 
-        ENC -->|mit Skripten| PES[POST_ENCODE\nSCRIPTS]
-        ENC -->|ohne Skripte| FIN([FINISHED])
+        ENC -->|inkl. Post-Skripte| FIN([FINISHED])
         ENC -->|Fehler| ERR
-
-        PES -->|Erfolg| FIN
-        PES -->|Fehler| ERR
 
         ERR([ERROR]) -->|Retry / Cancel| IDLE
 
         style FIN fill:#e8f5e9,stroke:#66bb6a,color:#2e7d32
         style ERR fill:#ffebee,stroke:#ef5350,color:#c62828
         style WUD fill:#fff8e1,stroke:#ffa726,color:#e65100
-        style PES fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
         style ENC fill:#f3e5f5,stroke:#ab47bc,color:#6a1b9a
     ```
 
@@ -122,13 +120,14 @@ cd ripster
 
 ## Schritt 2 – Disc einlegen → `DISC_DETECTED`
 
-Lege eine DVD oder Blu-ray ein. Der `diskDetectionService` pollt das Laufwerk alle `disc_poll_interval_ms` Millisekunden (Standard: 5 Sekunden).
+Lege eine DVD oder Blu-ray ein. Der `diskDetectionService` pollt das Laufwerk alle `disc_poll_interval_ms` Millisekunden (Standard: 4 Sekunden).
 
 **Was passiert im Code:**
 
-- `diskDetectionService` emittiert `disc:inserted` mit Geräteinformationen
+- `diskDetectionService` emittiert `discInserted` mit Geräteinformationen
 - `pipelineService.onDiscInserted()` wird aufgerufen
-- Dashboard zeigt Badge **"Neue Disc erkannt"**
+- Dashboard-Status-Badge zeigt **"Medium erkannt"**
+- Status-Text zeigt **"Neue Disk erkannt"**
 - Der **"Analyse starten"**-Button wird aktiv
 
 !!! tip "Manuelle Auslösung"
@@ -141,7 +140,7 @@ Lege eine DVD oder Blu-ray ein. Der `diskDetectionService` pollt das Laufwerk al
 
 ## Schritt 3 – Analyse starten → `METADATA_SELECTION`
 
-Klicke auf **"Analyse starten"** oder warte auf automatischen Start.
+Klicke auf **"Analyse starten"**.
 
 **Was passiert im Code:**
 
@@ -183,21 +182,18 @@ Falls kein passendes Ergebnis gefunden wird:
 
 **Was passiert nach Bestätigung:**
 
-Ripster ruft `pipelineService.selectMetadata()` auf und führt sofort eine **Playlist-Analyse** durch:
+Ripster ruft `pipelineService.selectMetadata()` auf und startet den nächsten Schritt automatisch:
 
-- MakeMKV wird im Info-Modus gestartet
-- Alle Titel und deren Segment-Reihenfolgen werden analysiert
-- Das Ergebnis entscheidet über den nächsten Zustand (→ Schritt 5)
+- Job wird auf `READY_TO_START` gesetzt (kurzer Übergangszustand)
+- Falls bereits RAW vorhanden: direkter Sprung zu `MEDIAINFO_CHECK`
+- Falls kein RAW vorhanden: automatischer Start von `RIPPING`
+- Wenn bereits andere Jobs laufen, landet der Start stattdessen in der Queue
 
 ---
 
-## Schritt 5 – Playlist-Situation (zwei Wege)
+## Schritt 5 – Optional: Playlist-Auswahl → `WAITING_FOR_USER_DECISION`
 
-### 5a) Keine Obfuskierung → `READY_TO_START`
-
-Der Dialog schließt sich automatisch. Die empfohlene Playlist wird still übernommen. Weiter zu **Schritt 6**.
-
-### 5b) Obfuskierung erkannt → `WAITING_FOR_USER_DECISION`
+Dieser Zustand erscheint nur bei mehrdeutigen Blu-ray-Playlists (typisch nach RAW-Analyse im Backup-Modus).
 
 Der **Playlist-Auswahl-Dialog** erscheint **zusätzlich** (nach dem Metadaten-Dialog):
 
@@ -219,26 +215,29 @@ Der **Playlist-Auswahl-Dialog** erscheint **zusätzlich** (nach dem Metadaten-Di
 └───────────┴──────────┴────────┴──────────────────────────────┘
   847 Playlists insgesamt · 3 relevante Kandidaten (≥ 15 min)
   Empfehlung: 00800 (vorausgewählt)
-                                           [Playlist bestätigen]
+                                           [Playlist übernehmen]
 ```
 
-- Die empfohlene Playlist ist **vorausgewählt** (Radio-Button)
+- Die empfohlene Playlist ist **vorausgewählt** (Checkbox)
 - Score und Bewertungslabel helfen bei der Entscheidung
-- Nach Bestätigung: Pipeline wechselt zu `READY_TO_START`
+- Nach **"Playlist übernehmen"** setzt Ripster automatisch fort:
+  - mit vorhandenem RAW in `MEDIAINFO_CHECK`
+  - ohne RAW über `READY_TO_START` weiter Richtung `RIPPING`
 
 !!! info "Scoring-Details"
     Wie die Scores berechnet werden, erklärt die [Playlist-Analyse](../pipeline/playlist-analysis.md)-Seite.
 
 ---
 
-## Schritt 6 – Ripping starten → `RIPPING`
+## Schritt 6 – Ripping → `RIPPING`
 
 **Vorher prüft Ripster:** Existiert bereits eine Raw-Datei für diesen Job?
 
 - **Ja, Raw-Datei vorhanden** → Direkt zu Schritt 7 (Track-Review), kein erneutes Ripping
 - **Nein** → MakeMKV-Ripping startet
 
-Klicke auf **"Starten"** im Dashboard.
+Im Standardfall startet Ripster diesen Schritt automatisch nach der Metadaten-Auswahl.
+Der Button **"Job starten"** ist hauptsächlich für Sonderfälle sichtbar (z. B. Fallback/Queue).
 
 **Was MakeMKV ausführt (MKV-Modus):**
 
@@ -269,7 +268,7 @@ PRGT:5011,0,"Sichern..."  → Aktueller Task-Name
 
 ## Schritt 7 – Track-Review → `READY_TO_ENCODE`
 
-Nach dem Ripping (oder direkt bei vorhandener Raw-Datei) startet der **HandBrake-Scan**:
+Nach dem Ripping, nach Playlist-Übernahme oder direkt bei vorhandenem RAW startet der **HandBrake-Scan**:
 
 ```bash
 HandBrakeCLI --scan -i <quelle> -t 0
@@ -297,7 +296,7 @@ Danach öffnet sich das **Encode-Review-Panel** (`READY_TO_ENCODE`):
 │  ☑  │ Track 1: Deutsch             │ Einbr.☐ │Forc.☐│Default☑ │
 │  ☐  │ Track 2: English             │ Einbr.☐ │Forc.☐│Default☐ │
 ├──────┴─────────────────────────────┴────────┴──────┴──────────┤
-│                                  [Encode bestätigen]           │
+│                                  [Encoding starten]            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -324,7 +323,8 @@ Danach öffnet sich das **Encode-Review-Panel** (`READY_TO_ENCODE`):
 
 Die Tracks mit `☑` wurden nach der Regel aus den Einstellungen automatisch vorausgewählt (`selectedByRule: true`). Die Auswahl kann frei geändert werden.
 
-Klicke **"Encode bestätigen"** um fortzufahren.
+Klicke **"Encoding starten"** (bzw. im Pre-Rip-Modus **"Backup + Encoding starten"**), um fortzufahren.
+Falls die Auswahl noch nicht bestätigt wurde, übernimmt das Frontend die Bestätigung automatisch beim Start.
 
 ---
 
@@ -401,12 +401,11 @@ Das Dashboard zeigt:
 |--|--------|---------------|----------------|
 | 1 | `IDLE` | Disc einlegen | Disc-Polling erkennt Disc |
 | 2 | `DISC_DETECTED` | "Analyse starten" klicken | Job anlegen, OMDb vorsuchen |
-| 3 | `METADATA_SELECTION` | Film im Dialog auswählen | Playlist-Analyse durchführen |
-| 4a | `READY_TO_START` | — | Empfehlung automatisch übernommen |
-| 4b | `WAITING_FOR_USER_DECISION` | Playlist manuell wählen | Auf Bestätigung warten |
-| 5 | `READY_TO_START` | "Starten" klicken | MakeMKV-Ripping starten |
-| 6 | `RIPPING` | Warten | MakeMKV rippt, Fortschritt streamen |
-| 7 | `MEDIAINFO_CHECK` | Warten | HandBrake-Scan, Encode-Plan bauen |
-| 8 | `READY_TO_ENCODE` | Tracks prüfen + bestätigen | Auswahl in Plan übernehmen |
-| 9 | `ENCODING` | Warten | HandBrake encodiert, Fortschritt streamen |
+| 3 | `METADATA_SELECTION` | Film im Dialog auswählen | Start automatisch einplanen/auslösen |
+| 4 | `READY_TO_START` | meist keine | Übergangszustand vor Auto-Start |
+| 5 | `RIPPING` | Warten | MakeMKV rippt, Fortschritt streamen |
+| 6 | `MEDIAINFO_CHECK` | Warten | HandBrake-Scan, Encode-Plan bauen |
+| 7 | `WAITING_FOR_USER_DECISION` (optional) | Playlist manuell wählen | Auf Bestätigung warten |
+| 8 | `READY_TO_ENCODE` | Tracks prüfen + "Encoding starten" | Auswahl übernehmen, Start auslösen |
+| 9 | `ENCODING` | Warten | HandBrake encodiert, inkl. Post-Skripte |
 | 10 | `FINISHED` | — | Datei fertig, Benachrichtigung senden |

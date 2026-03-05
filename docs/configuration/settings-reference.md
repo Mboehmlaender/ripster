@@ -82,7 +82,7 @@ Häufig verwendete Presets:
 |---------|-----|---------|---------|-------------|
 | `drive_mode` | select | `auto` | `auto`, `explicit` | Laufwerk-Erkennungsmodus |
 | `drive_device` | string | `/dev/sr0` | — | Geräte-Pfad (nur bei `explicit`) |
-| `disc_poll_interval_ms` | number | `5000` | 1000–60000 | Polling-Intervall in Millisekunden |
+| `disc_poll_interval_ms` | number | `4000` | 1000–60000 | Polling-Intervall in Millisekunden |
 
 **`drive_mode` Optionen:**
 

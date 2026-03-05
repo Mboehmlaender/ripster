@@ -34,10 +34,10 @@ Der WebSocket-Server läuft unter dem Pfad `/ws`. Nachrichten werden als JSON ü
 
 ```json
 {
-  "type": "PIPELINE_STATE_CHANGE",
-  "data": {
+  "type": "PIPELINE_STATE_CHANGED",
+  "payload": {
     "state": "ENCODING",
-    "jobId": 42,
+    "activeJobId": 42,
     "progress": 73.5,
     "eta": "00:12:34"
   }
@@ -48,16 +48,17 @@ Der WebSocket-Server läuft unter dem Pfad `/ws`. Nachrichten werden als JSON ü
 
 | Typ | Beschreibung |
 |----|-------------|
-| `PIPELINE_STATE_CHANGE` | Pipeline-Zustand hat gewechselt |
-| `PROGRESS_UPDATE` | Fortschritt (% und ETA) |
+| `PIPELINE_STATE_CHANGED` | Pipeline-Zustand hat gewechselt |
+| `PIPELINE_PROGRESS` | Fortschritt (% und ETA) |
+| `PIPELINE_QUEUE_CHANGED` | Queue-Status geändert |
 | `DISC_DETECTED` | Disc wurde erkannt |
 | `DISC_REMOVED` | Disc wurde entfernt |
-| `ERROR` | Fehler aufgetreten |
-| `JOB_COMPLETE` | Job abgeschlossen |
+| `PIPELINE_ERROR` | Pipeline-Fehler aufgetreten |
+| `DISK_DETECTION_ERROR` | Laufwerkserkennung-Fehler |
 
 ### Reconnect-Logik
 
-Der Frontend-Hook `useWebSocket.js` implementiert automatisches Reconnect mit exponential backoff bei Verbindungsabbrüchen.
+Der Frontend-Hook `useWebSocket.js` implementiert automatisches Reconnect mit festem Intervall von 1500ms bei Verbindungsabbrüchen.
 
 ---
 
