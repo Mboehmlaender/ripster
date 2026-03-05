@@ -147,6 +147,18 @@ const defaultSchema = [
     orderIndex: 210
   },
   {
+    key: 'pipeline_max_parallel_jobs',
+    category: 'Tools',
+    label: 'Parallele Jobs',
+    type: 'number',
+    required: 1,
+    description: 'Maximale Anzahl parallel laufender Jobs. Weitere Starts landen in der Queue.',
+    defaultValue: '1',
+    options: [],
+    validation: { min: 1, max: 12 },
+    orderIndex: 211
+  },
+  {
     key: 'makemkv_rip_mode',
     category: 'Tools',
     label: 'MakeMKV Rip Modus',
@@ -279,7 +291,7 @@ const defaultSchema = [
     type: 'string',
     required: 0,
     description: 'API Key für Metadatensuche.',
-    defaultValue: '186322c4',
+    defaultValue: '',
     options: [],
     validation: {},
     orderIndex: 400
@@ -319,7 +331,7 @@ const defaultSchema = [
     type: 'string',
     required: 0,
     description: 'Application Token für PushOver.',
-    defaultValue: 'a476diddeew53w8fi4kv88n6ghbfqq',
+    defaultValue: '',
     options: [],
     validation: {},
     orderIndex: 510
@@ -331,7 +343,7 @@ const defaultSchema = [
     type: 'string',
     required: 0,
     description: 'User-Key für PushOver.',
-    defaultValue: 'u47227hupodan28a629az1k43644jg',
+    defaultValue: '',
     options: [],
     validation: {},
     orderIndex: 520
