@@ -5,6 +5,7 @@ const scriptService = require('../services/scriptService');
 const notificationService = require('../services/notificationService');
 const pipelineService = require('../services/pipelineService');
 const wsService = require('../services/websocketService');
+const hardwareMonitorService = require('../services/hardwareMonitorService');
 const logger = require('../services/logger').child('SETTINGS_ROUTE');
 
 const router = express.Router();
@@ -140,6 +141,18 @@ router.put(
         message: error?.message || 'unknown'
       };
     }
+    try {
+      await hardwareMonitorService.handleSettingsChanged([key]);
+    } catch (error) {
+      logger.warn('put:setting:hardware-monitor-refresh-failed', {
+        reqId: req.reqId,
+        key,
+        error: {
+          name: error?.name,
+          message: error?.message
+        }
+      });
+    }
     wsService.broadcast('SETTINGS_UPDATED', updated);
 
     res.json({ setting: updated, reviewRefresh });
@@ -181,6 +194,17 @@ router.put(
         reason: 'refresh_error',
         message: error?.message || 'unknown'
       };
+    }
+    try {
+      await hardwareMonitorService.handleSettingsChanged(changes.map((item) => item.key));
+    } catch (error) {
+      logger.warn('put:settings:bulk:hardware-monitor-refresh-failed', {
+        reqId: req.reqId,
+        error: {
+          name: error?.name,
+          message: error?.message
+        }
+      });
     }
     wsService.broadcast('SETTINGS_BULK_UPDATED', { count: changes.length, keys: changes.map((item) => item.key) });
 

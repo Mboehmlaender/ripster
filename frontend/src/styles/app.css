@@ -217,6 +217,266 @@ body {
   flex-wrap: wrap;
 }
 
+.hardware-monitor-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.7rem;
+}
+
+.hardware-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.hardware-monitor-block {
+  border: 1px solid var(--rip-border);
+  border-radius: 0.5rem;
+  background: var(--rip-panel-soft);
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+}
+
+.hardware-monitor-block h4 {
+  margin: 0;
+}
+
+.hardware-monitor-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.55rem;
+}
+
+.hardware-cpu-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: stretch;
+}
+
+.hardware-cpu-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 999px;
+  background: var(--rip-panel);
+  padding: 0.22rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-height: 2rem;
+  height: 2rem;
+  white-space: nowrap;
+}
+
+.hardware-cpu-chip span {
+  line-height: 1;
+}
+
+.hardware-cpu-chip .pi {
+  font-size: 0.82rem;
+  color: var(--rip-brown-700);
+}
+
+.hardware-cpu-load-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.hardware-cpu-core-toggle-btn {
+  border: 1px solid var(--rip-border);
+  background: var(--rip-panel);
+  color: var(--rip-brown-700);
+  width: 2rem;
+  min-width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.hardware-cpu-core-toggle-btn:hover {
+  background: #f1e1c8;
+}
+
+.hardware-cpu-core-toggle-btn .pi {
+  font-size: 0.78rem;
+}
+
+.hardware-monitor-meta > div,
+.hardware-core-item,
+.hardware-gpu-item,
+.hardware-storage-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.hardware-core-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.45rem;
+}
+
+.hardware-core-item {
+  border: 1px dashed var(--rip-border);
+  border-radius: 0.4rem;
+  padding: 0.42rem 0.5rem;
+  background: var(--rip-panel);
+  display: grid;
+  gap: 0.12rem;
+}
+
+.hardware-core-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.32rem;
+}
+
+.hardware-core-item.compact {
+  grid-template-columns: auto auto auto;
+  align-items: center;
+  justify-content: start;
+  gap: 0.35rem;
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+}
+
+.hardware-core-title {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--rip-brown-700);
+  min-width: 2.2rem;
+}
+
+.hardware-core-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  justify-self: start;
+}
+
+.hardware-core-metric .pi {
+  font-size: 0.72rem;
+  color: var(--rip-muted);
+}
+
+.hardware-gpu-list,
+.hardware-storage-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.hardware-gpu-item,
+.hardware-storage-item {
+  border: 1px dashed var(--rip-border);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  background: var(--rip-panel);
+  display: grid;
+  gap: 0.15rem;
+}
+
+.hardware-storage-item.compact {
+  gap: 0.3rem;
+}
+
+.hardware-storage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.hardware-storage-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hardware-storage-percent {
+  font-size: 0.74rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.hardware-storage-percent.tone-ok {
+  color: #18643a;
+  background: #d8f1df;
+  border-color: #9ed5ad;
+}
+
+.hardware-storage-percent.tone-warn {
+  color: #7d4f00;
+  background: #f8ebc4;
+  border-color: #d7b46a;
+}
+
+.hardware-storage-percent.tone-high {
+  color: #8e3d00;
+  background: #f5dcc9;
+  border-color: #d9a578;
+}
+
+.hardware-storage-percent.tone-critical {
+  color: #8f1f17;
+  background: #f6d6d5;
+  border-color: #d89a97;
+}
+
+.hardware-storage-percent.tone-unknown {
+  color: #5b4636;
+  background: #eadfcc;
+  border-color: #c8ad88;
+}
+
+.hardware-storage-bar .p-progressbar {
+  height: 0.5rem;
+  background: #eadbc1;
+}
+
+.hardware-storage-bar.tone-ok .p-progressbar-value {
+  background: #2d9c4e;
+}
+
+.hardware-storage-bar.tone-warn .p-progressbar-value {
+  background: #c58f00;
+}
+
+.hardware-storage-bar.tone-high .p-progressbar-value {
+  background: #d6761f;
+}
+
+.hardware-storage-bar.tone-critical .p-progressbar-value {
+  background: #c43c2e;
+}
+
+.hardware-storage-bar.tone-unknown .p-progressbar-value {
+  background: #8a6a53;
+}
+
+.hardware-storage-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.hardware-storage-path {
+  color: var(--rip-muted);
+}
+
 .pipeline-queue-meta {
   display: flex;
   gap: 0.45rem;
@@ -312,7 +572,7 @@ body {
   padding: 0.6rem 0.7rem;
   background: var(--rip-panel-soft);
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto auto;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
   gap: 0.7rem;
   align-items: center;
   text-align: left;
@@ -323,6 +583,14 @@ body {
 .dashboard-job-row:hover {
   border-color: var(--rip-brown-600);
   background: #fbf0df;
+}
+
+.dashboard-job-row-content {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.3rem 0.7rem;
+  align-items: start;
 }
 
 .dashboard-job-row-main {
@@ -360,6 +628,7 @@ body {
 }
 
 .dashboard-job-row-progress {
+  grid-column: 1 / -1;
   display: grid;
   gap: 0.2rem;
 }
@@ -377,7 +646,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
@@ -1289,6 +1558,8 @@ body {
 
   .metadata-grid,
   .device-meta,
+  .hardware-monitor-grid,
+  .hardware-monitor-meta,
   .pipeline-queue-grid,
   .media-review-meta,
   .media-track-grid,
@@ -1303,11 +1574,10 @@ body {
   }
 
   .dashboard-job-row {
-    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-columns: 48px minmax(0, 1fr) auto;
   }
 
   .dashboard-job-badges {
-    grid-column: 1 / -1;
     justify-content: flex-start;
   }
 
@@ -1337,6 +1607,26 @@ body {
 
   .metadata-selection-dialog .p-datatable-wrapper {
     max-height: 16rem !important;
+  }
+
+  .hardware-core-item.compact {
+    grid-template-columns: auto auto auto;
+    align-items: center;
+    justify-content: start;
+    gap: 0.3rem;
+    text-align: left;
+  }
+
+  .hardware-core-grid.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hardware-core-title {
+    min-width: 2rem;
+  }
+
+  .hardware-core-metric {
+    justify-self: start;
   }
 }
 

@@ -13,6 +13,7 @@ const historyRoutes = require('./routes/historyRoutes');
 const wsService = require('./services/websocketService');
 const pipelineService = require('./services/pipelineService');
 const diskDetectionService = require('./services/diskDetectionService');
+const hardwareMonitorService = require('./services/hardwareMonitorService');
 const logger = require('./services/logger').child('BOOT');
 const { errorToMeta } = require('./utils/errorMeta');
 
@@ -38,6 +39,7 @@ async function start() {
 
   const server = http.createServer(app);
   wsService.init(server);
+  await hardwareMonitorService.init();
 
   diskDetectionService.on('discInserted', (device) => {
     logger.info('disk:inserted:event', { device });
@@ -69,6 +71,7 @@ async function start() {
   const shutdown = () => {
     logger.warn('backend:shutdown:received');
     diskDetectionService.stop();
+    hardwareMonitorService.stop();
     server.close(() => {
       logger.warn('backend:shutdown:completed');
       process.exit(0);

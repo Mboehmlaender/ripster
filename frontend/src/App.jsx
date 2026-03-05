@@ -9,6 +9,7 @@ import DatabasePage from './pages/DatabasePage';
 
 function App() {
   const [pipeline, setPipeline] = useState({ state: 'IDLE', progress: 0, context: {} });
+  const [hardwareMonitoring, setHardwareMonitoring] = useState(null);
   const [lastDiscEvent, setLastDiscEvent] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ function App() {
   const refreshPipeline = async () => {
     const response = await api.getPipelineState();
     setPipeline(response.pipeline);
+    setHardwareMonitoring(response?.hardwareMonitoring || null);
   };
 
   useEffect(() => {
@@ -48,6 +50,10 @@ function App() {
 
       if (message.type === 'DISC_REMOVED') {
         setLastDiscEvent(null);
+      }
+
+      if (message.type === 'HARDWARE_MONITOR_UPDATE') {
+        setHardwareMonitoring(message.payload || null);
       }
     }
   });
@@ -88,6 +94,7 @@ function App() {
             element={
               <DashboardPage
                 pipeline={pipeline}
+                hardwareMonitoring={hardwareMonitoring}
                 lastDiscEvent={lastDiscEvent}
                 refreshPipeline={refreshPipeline}
               />

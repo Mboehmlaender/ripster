@@ -25,12 +25,87 @@ const dashboardStatuses = new Set([
   'CANCELLED',
   'ERROR'
 ]);
+
 function normalizeJobId(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return null;
   }
   return Math.trunc(parsed);
+}
+
+function formatPercent(value, digits = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 'n/a';
+  }
+  return `${parsed.toFixed(digits)}%`;
+}
+
+function formatTemperature(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 'n/a';
+  }
+  return `${parsed.toFixed(1)}°C`;
+}
+
+function formatBytes(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 'n/a';
+  }
+  if (parsed === 0) {
+    return '0 B';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let unitIndex = 0;
+  let current = parsed;
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex <= 1 ? 0 : 2;
+  return `${current.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatUpdatedAt(value) {
+  if (!value) {
+    return '-';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '-';
+  }
+  return date.toLocaleString('de-DE');
+}
+
+function normalizeHardwareMonitoringPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
+  return {
+    enabled: Boolean(payload.enabled),
+    intervalMs: Number(payload.intervalMs || 0),
+    updatedAt: payload.updatedAt || null,
+    sample: payload.sample && typeof payload.sample === 'object' ? payload.sample : null,
+    error: payload.error ? String(payload.error) : null
+  };
+}
+
+function getStorageUsageTone(usagePercent) {
+  const value = Number(usagePercent);
+  if (!Number.isFinite(value)) {
+    return 'unknown';
+  }
+  if (value >= 95) {
+    return 'critical';
+  }
+  if (value >= 85) {
+    return 'high';
+  }
+  if (value >= 70) {
+    return 'warn';
+  }
+  return 'ok';
 }
 
 function normalizeQueue(queue) {
@@ -240,7 +315,12 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   };
 }
 
-export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline }) {
+export default function DashboardPage({
+  pipeline,
+  hardwareMonitoring,
+  lastDiscEvent,
+  refreshPipeline
+}) {
   const [busy, setBusy] = useState(false);
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
@@ -258,11 +338,23 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
+  const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const toastRef = useRef(null);
 
   const state = String(pipeline?.state || 'IDLE').trim().toUpperCase();
   const currentPipelineJobId = normalizeJobId(pipeline?.activeJobId || pipeline?.context?.jobId);
   const isProcessing = processingStates.includes(state);
+  const monitoringState = useMemo(
+    () => normalizeHardwareMonitoringPayload(hardwareMonitoring),
+    [hardwareMonitoring]
+  );
+  const monitoringSample = monitoringState.sample;
+  const cpuMetrics = monitoringSample?.cpu || null;
+  const memoryMetrics = monitoringSample?.memory || null;
+  const gpuMetrics = monitoringSample?.gpu || null;
+  const storageMetrics = Array.isArray(monitoringSample?.storage) ? monitoringSample.storage : [];
+  const cpuPerCoreMetrics = Array.isArray(cpuMetrics?.perCore) ? cpuMetrics.perCore : [];
+  const gpuDevices = Array.isArray(gpuMetrics?.devices) ? gpuMetrics.devices : [];
 
   const loadDashboardJobs = async () => {
     setJobsLoading(true);
@@ -881,6 +973,175 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     <div className="page-grid">
       <Toast ref={toastRef} />
 
+      <Card title="Hardware Monitoring" subTitle="CPU (inkl. Temperatur), RAM, GPU und freier Speicher in den konfigurierten Pfaden.">
+        <div className="hardware-monitor-head">
+          <Tag
+            value={monitoringState.enabled ? 'Aktiv' : 'Deaktiviert'}
+            severity={monitoringState.enabled ? 'success' : 'secondary'}
+          />
+          <Tag value={`Intervall: ${monitoringState.intervalMs || 0} ms`} severity="info" />
+          <Tag value={`Letztes Update: ${formatUpdatedAt(monitoringState.updatedAt)}`} severity="warning" />
+        </div>
+
+        {monitoringState.error ? (
+          <small className="error-text">{monitoringState.error}</small>
+        ) : null}
+
+        {!monitoringState.enabled ? (
+          <p>Monitoring ist deaktiviert. Aktivierung in den Settings unter Kategorie "Monitoring".</p>
+        ) : !monitoringSample ? (
+          <p>Monitoring ist aktiv. Erste Messwerte werden gesammelt ...</p>
+        ) : (
+          <div className="hardware-monitor-grid">
+            <section className="hardware-monitor-block">
+              <h4>CPU</h4>
+              <div className="hardware-cpu-summary">
+                <div className="hardware-cpu-chip" title="CPU Gesamtauslastung">
+                  <i className="pi pi-chart-line" />
+                  <span>{formatPercent(cpuMetrics?.overallUsagePercent)}</span>
+                </div>
+                <div className="hardware-cpu-chip" title="CPU Gesamttemperatur">
+                  <i className="pi pi-bolt" />
+                  <span>{formatTemperature(cpuMetrics?.overallTemperatureC)}</span>
+                </div>
+                <div className="hardware-cpu-load-group">
+                  <div className="hardware-cpu-chip" title="CPU Load Average">
+                    <i className="pi pi-chart-bar" />
+                    <span>{Array.isArray(cpuMetrics?.loadAverage) ? cpuMetrics.loadAverage.join(' / ') : '-'}</span>
+                  </div>
+                  {cpuPerCoreMetrics.length > 0 ? (
+                    <button
+                      type="button"
+                      className="hardware-cpu-core-toggle-btn"
+                      onClick={() => setCpuCoresExpanded((prev) => !prev)}
+                      aria-label={cpuCoresExpanded ? 'CPU-Kerne ausblenden' : 'CPU-Kerne einblenden'}
+                      aria-expanded={cpuCoresExpanded}
+                    >
+                      <i className={`pi ${cpuCoresExpanded ? 'pi-angle-up' : 'pi-angle-down'}`} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {cpuPerCoreMetrics.length === 0 ? (
+                <small>Pro-Core-Daten sind noch nicht verfuegbar.</small>
+              ) : null}
+              {cpuPerCoreMetrics.length > 0 && cpuCoresExpanded ? (
+                <div className="hardware-core-grid compact">
+                  {cpuPerCoreMetrics.map((core) => (
+                    <div key={`core-${core.index}`} className="hardware-core-item compact">
+                      <div className="hardware-core-title">C{core.index}</div>
+                      <div className="hardware-core-metric" title="Auslastung">
+                        <i className="pi pi-chart-line" />
+                        <small>{formatPercent(core.usagePercent)}</small>
+                      </div>
+                      <div className="hardware-core-metric" title="Temperatur">
+                        <i className="pi pi-bolt" />
+                        <small>{formatTemperature(core.temperatureC)}</small>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="hardware-monitor-block">
+              <h4>RAM</h4>
+              <div className="hardware-cpu-summary">
+                <div className="hardware-cpu-chip" title="RAM Auslastung">
+                  <i className="pi pi-chart-pie" />
+                  <span>{formatPercent(memoryMetrics?.usagePercent)}</span>
+                </div>
+                <div className="hardware-cpu-chip" title="RAM Belegt">
+                  <i className="pi pi-arrow-up" />
+                  <span>{formatBytes(memoryMetrics?.usedBytes)}</span>
+                </div>
+                <div className="hardware-cpu-chip" title="RAM Frei">
+                  <i className="pi pi-arrow-down" />
+                  <span>{formatBytes(memoryMetrics?.freeBytes)}</span>
+                </div>
+                <div className="hardware-cpu-chip" title="RAM Gesamt">
+                  <i className="pi pi-database" />
+                  <span>{formatBytes(memoryMetrics?.totalBytes)}</span>
+                </div>
+              </div>
+            </section>
+
+            <section className="hardware-monitor-block">
+              <h4>GPU</h4>
+              {!gpuMetrics?.available ? (
+                <small>{gpuMetrics?.message || 'Keine GPU-Metriken verfuegbar.'}</small>
+              ) : (
+                <div className="hardware-gpu-list">
+                  {gpuDevices.map((gpu, index) => (
+                    <div key={`gpu-${gpu?.index ?? index}`} className="hardware-gpu-item">
+                      <strong>
+                        GPU {gpu?.index ?? index}
+                        {gpu?.name ? ` | ${gpu.name}` : ''}
+                      </strong>
+                      <small>Load: {formatPercent(gpu?.utilizationPercent)}</small>
+                      <small>Mem-Load: {formatPercent(gpu?.memoryUtilizationPercent)}</small>
+                      <small>Temp: {formatTemperature(gpu?.temperatureC)}</small>
+                      <small>VRAM: {formatBytes(gpu?.memoryUsedBytes)} / {formatBytes(gpu?.memoryTotalBytes)}</small>
+                      <small>Power: {Number.isFinite(Number(gpu?.powerDrawW)) ? `${gpu.powerDrawW} W` : 'n/a'} / {Number.isFinite(Number(gpu?.powerLimitW)) ? `${gpu.powerLimitW} W` : 'n/a'}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="hardware-monitor-block">
+              <h4>Freier Speicher in Pfaden</h4>
+              <div className="hardware-storage-list">
+                {storageMetrics.map((entry) => {
+                  const tone = getStorageUsageTone(entry?.usagePercent);
+                  const usagePercent = Number(entry?.usagePercent);
+                  const barValue = Number.isFinite(usagePercent)
+                    ? Math.max(0, Math.min(100, usagePercent))
+                    : 0;
+                  return (
+                    <div
+                      key={`storage-${entry?.key || entry?.label || 'path'}`}
+                      className={`hardware-storage-item compact${entry?.error ? ' has-error' : ''}`}
+                    >
+                      <div className="hardware-storage-head">
+                        <strong>{entry?.label || entry?.key || 'Pfad'}</strong>
+                        <span className={`hardware-storage-percent tone-${tone}`}>
+                          {entry?.error ? 'Fehler' : formatPercent(entry?.usagePercent)}
+                        </span>
+                      </div>
+
+                      {entry?.error ? (
+                        <small className="error-text">{entry.error}</small>
+                      ) : (
+                        <>
+                          <div className={`hardware-storage-bar tone-${tone}`}>
+                            <ProgressBar value={barValue} showValue={false} />
+                          </div>
+                          <div className="hardware-storage-summary">
+                            <small>Frei: {formatBytes(entry?.freeBytes)}</small>
+                            <small>Gesamt: {formatBytes(entry?.totalBytes)}</small>
+                          </div>
+                        </>
+                      )}
+
+                      <small className="hardware-storage-path" title={entry?.path || '-'}>
+                        Pfad: {entry?.path || '-'}
+                      </small>
+                      {entry?.queryPath && entry.queryPath !== entry.path ? (
+                        <small className="hardware-storage-path" title={entry.queryPath}>
+                          Parent: {entry.queryPath}
+                        </small>
+                      ) : null}
+                      {entry?.note ? <small className="hardware-storage-path">{entry.note}</small> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        )}
+      </Card>
+
       <Card title="Job Queue" subTitle="Starts werden nach Parallel-Limit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">
         <div className="pipeline-queue-meta">
           <Tag value={`Parallel: ${queueState?.maxParallelJobs || 1}`} severity="info" />
@@ -1052,34 +1313,36 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                   ) : (
                     <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
                   )}
-                  <div className="dashboard-job-row-main">
-                    <strong className="dashboard-job-title-line">
-                      <img
-                        src={mediaIndicator.src}
-                        alt={mediaIndicator.alt}
-                        title={mediaIndicator.title}
-                        className="media-indicator-icon"
-                      />
-                      <span>{jobTitle}</span>
-                    </strong>
-                    <small>
-                      #{jobId}
-                      {job?.year ? ` | ${job.year}` : ''}
-                      {job?.imdb_id ? ` | ${job.imdb_id}` : ''}
-                    </small>
+                  <div className="dashboard-job-row-content">
+                    <div className="dashboard-job-row-main">
+                      <strong className="dashboard-job-title-line">
+                        <img
+                          src={mediaIndicator.src}
+                          alt={mediaIndicator.alt}
+                          title={mediaIndicator.title}
+                          className="media-indicator-icon"
+                        />
+                        <span>{jobTitle}</span>
+                      </strong>
+                      <small>
+                        #{jobId}
+                        {job?.year ? ` | ${job.year}` : ''}
+                        {job?.imdb_id ? ` | ${job.imdb_id}` : ''}
+                      </small>
+                    </div>
+                    <div className="dashboard-job-badges">
+                      <Tag value={statusBadgeValue} severity={statusBadgeSeverity} />
+                      {isCurrentSession ? <Tag value="Aktive Session" severity="info" /> : null}
+                      {isResumable ? <Tag value="Fortsetzbar" severity="success" /> : null}
+                      {normalizedStatus === 'READY_TO_ENCODE'
+                        ? <Tag value={reviewConfirmed ? 'Bestätigt' : 'Unbestätigt'} severity={reviewConfirmed ? 'success' : 'warning'} />
+                        : null}
+                      <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
+                    </div>
                     <div className="dashboard-job-row-progress" aria-label={`Job Fortschritt ${progressLabel}`}>
                       <ProgressBar value={clampedProgress} showValue={false} />
                       <small>{etaLabel ? `${progressLabel} | ETA ${etaLabel}` : progressLabel}</small>
                     </div>
-                  </div>
-                  <div className="dashboard-job-badges">
-                    <Tag value={statusBadgeValue} severity={statusBadgeSeverity} />
-                    {isCurrentSession ? <Tag value="Aktive Session" severity="info" /> : null}
-                    {isResumable ? <Tag value="Fortsetzbar" severity="success" /> : null}
-                    {normalizedStatus === 'READY_TO_ENCODE'
-                      ? <Tag value={reviewConfirmed ? 'Bestätigt' : 'Unbestätigt'} severity={reviewConfirmed ? 'success' : 'warning'} />
-                      : null}
-                    <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
                   </div>
                   <i className="pi pi-angle-down" aria-hidden="true" />
                 </button>

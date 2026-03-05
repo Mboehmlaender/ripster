@@ -2,6 +2,7 @@ const express = require('express');
 const asyncHandler = require('../middleware/asyncHandler');
 const pipelineService = require('../services/pipelineService');
 const diskDetectionService = require('../services/diskDetectionService');
+const hardwareMonitorService = require('../services/hardwareMonitorService');
 const logger = require('../services/logger').child('PIPELINE_ROUTE');
 
 const router = express.Router();
@@ -10,7 +11,10 @@ router.get(
   '/state',
   asyncHandler(async (req, res) => {
     logger.debug('get:state', { reqId: req.reqId });
-    res.json({ pipeline: pipelineService.getSnapshot() });
+    res.json({
+      pipeline: pipelineService.getSnapshot(),
+      hardwareMonitoring: hardwareMonitorService.getSnapshot()
+    });
   })
 );
 

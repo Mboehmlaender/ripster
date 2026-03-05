@@ -87,6 +87,30 @@ const defaultSchema = [
     orderIndex: 120
   },
   {
+    key: 'hardware_monitoring_enabled',
+    category: 'Monitoring',
+    label: 'Hardware Monitoring aktiviert',
+    type: 'boolean',
+    required: 1,
+    description: 'Master-Schalter: aktiviert/deaktiviert das komplette Hardware-Monitoring (Polling + Berechnung + WebSocket-Updates).',
+    defaultValue: 'true',
+    options: [],
+    validation: {},
+    orderIndex: 130
+  },
+  {
+    key: 'hardware_monitoring_interval_ms',
+    category: 'Monitoring',
+    label: 'Hardware Monitoring Intervall (ms)',
+    type: 'number',
+    required: 1,
+    description: 'Polling-Intervall für CPU/RAM/GPU/Storage-Metriken.',
+    defaultValue: '5000',
+    options: [],
+    validation: { min: 1000, max: 60000 },
+    orderIndex: 140
+  },
+  {
     key: 'makemkv_command',
     category: 'Tools',
     label: 'MakeMKV Kommando',
