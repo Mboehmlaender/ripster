@@ -20,6 +20,20 @@ const { errorToMeta } = require('../utils/errorMeta');
 const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK']);
 const REVIEW_REFRESH_SETTING_PREFIXES = ['handbrake_', 'mediainfo_'];
 const REVIEW_REFRESH_SETTING_KEYS = new Set(['makemkv_min_length_minutes']);
+const QUEUE_ACTIONS = {
+  START_PREPARED: 'START_PREPARED',
+  RETRY: 'RETRY',
+  REENCODE: 'REENCODE',
+  RESTART_ENCODE: 'RESTART_ENCODE',
+  RESTART_REVIEW: 'RESTART_REVIEW'
+};
+const QUEUE_ACTION_LABELS = {
+  [QUEUE_ACTIONS.START_PREPARED]: 'Start',
+  [QUEUE_ACTIONS.RETRY]: 'Retry Rippen',
+  [QUEUE_ACTIONS.REENCODE]: 'RAW neu encodieren',
+  [QUEUE_ACTIONS.RESTART_ENCODE]: 'Encode neu starten',
+  [QUEUE_ACTIONS.RESTART_REVIEW]: 'Review neu berechnen'
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -214,6 +228,20 @@ function composeStatusText(stage, percent, detail) {
 
 function shouldKeepHighlight(line) {
   return /error|fail|warn|title\s+#|saving|encoding:|muxing|copying|decrypt/i.test(line);
+}
+
+function normalizeNonNegativeInteger(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return null;
+  }
+  if (typeof rawValue === 'string' && rawValue.trim() === '') {
+    return null;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
 }
 
 function parseDetectedTitle(lines) {
@@ -600,7 +628,7 @@ function buildSyntheticMediaInfoFromMakeMkvTitle(titleInfo) {
       Language: track?.language || 'und',
       Language_String3: track?.language || 'und',
       Title: track?.title || null,
-      Format: track?.format || null,
+      Format: track?.codecName || track?.format || null,
       Channels: track?.channels || null
     });
   }
@@ -914,9 +942,9 @@ function parseHandBrakeSelectedTitleInfo(scanJson, options = {}) {
 }
 
 function pickTitleIdForTrackReview(playlistAnalysis, selectedTitleId = null) {
-  const explicit = Number(selectedTitleId);
-  if (Number.isFinite(explicit) && explicit >= 0) {
-    return Math.trunc(explicit);
+  const explicit = normalizeNonNegativeInteger(selectedTitleId);
+  if (explicit !== null) {
+    return explicit;
   }
 
   const recommendationTitleId = Number(playlistAnalysis?.recommendation?.titleId);
@@ -951,6 +979,15 @@ function pickTitleIdForTrackReview(playlistAnalysis, selectedTitleId = null) {
   }
 
   return null;
+}
+
+function isCandidateTitleId(playlistAnalysis, titleId) {
+  const normalizedTitleId = normalizeNonNegativeInteger(titleId);
+  if (normalizedTitleId === null) {
+    return false;
+  }
+  const candidates = Array.isArray(playlistAnalysis?.candidates) ? playlistAnalysis.candidates : [];
+  return candidates.some((item) => Number(item?.titleId) === normalizedTitleId);
 }
 
 function buildDiscScanReview({
@@ -1213,6 +1250,31 @@ function findExistingRawDirectory(rawBaseDir, metadataBase) {
 function toPlaylistFile(playlistId) {
   const normalized = normalizePlaylistId(playlistId);
   return normalized ? `${normalized}.mpls` : null;
+}
+
+function describePlaylistManualDecision(playlistAnalysis) {
+  const obfuscationDetected = Boolean(playlistAnalysis?.obfuscationDetected);
+  const candidateCount = Array.isArray(playlistAnalysis?.candidates)
+    ? playlistAnalysis.candidates.length
+    : 0;
+  const reasonCodeRaw = String(playlistAnalysis?.manualDecisionReason || '').trim();
+  const reasonCode = reasonCodeRaw || (
+    obfuscationDetected
+      ? 'multiple_similar_candidates'
+      : (candidateCount > 1 ? 'multiple_candidates_after_min_length' : 'manual_selection_required')
+  );
+  const detailText = obfuscationDetected
+    ? 'Blu-ray verwendet Playlist-Obfuscation (mehrere gleichlange Kandidaten).'
+    : (candidateCount > 1
+      ? `Mehrere Playlists erfüllen MIN_LENGTH_MINUTES (${candidateCount} Kandidaten).`
+      : 'Manuelle Playlist-Auswahl erforderlich.');
+
+  return {
+    obfuscationDetected,
+    candidateCount,
+    reasonCode,
+    detailText
+  };
 }
 
 function buildPlaylistCandidates(playlistAnalysis) {
@@ -1633,6 +1695,20 @@ function normalizeTrackIdList(rawList) {
   return output;
 }
 
+function isBurnedSubtitleTrack(track) {
+  const previewFlags = Array.isArray(track?.subtitlePreviewFlags)
+    ? track.subtitlePreviewFlags
+    : (Array.isArray(track?.flags) ? track.flags : []);
+  const hasBurnedFlag = previewFlags.some((flag) => String(flag || '').trim().toLowerCase() === 'burned');
+  const summary = `${track?.subtitlePreviewSummary || ''} ${track?.subtitleActionSummary || ''}`;
+  return Boolean(
+    track?.subtitlePreviewBurnIn
+    || track?.burnIn
+    || hasBurnedFlag
+    || /burned/i.test(summary)
+  );
+}
+
 function normalizeScriptIdList(rawList) {
   const list = Array.isArray(rawList) ? rawList : [];
   const seen = new Set();
@@ -1716,6 +1792,7 @@ function applyManualTrackSelectionToPlan(encodePlan, selectedTrackSelection) {
   );
   const validSubtitleTrackIds = new Set(
     (Array.isArray(encodeTitle.subtitleTracks) ? encodeTitle.subtitleTracks : [])
+      .filter((track) => !isBurnedSubtitleTrack(track))
       .map((track) => Number(track?.id))
       .filter((id) => Number.isFinite(id))
       .map((id) => Math.trunc(id))
@@ -1966,9 +2043,21 @@ class PipelineService extends EventEmitter {
     };
     this.detectedDisc = null;
     this.activeProcess = null;
-    this.cancelRequested = false;
+    this.activeProcesses = new Map();
+    this.cancelRequestedByJob = new Set();
     this.lastPersistAt = 0;
     this.lastProgressKey = null;
+    this.queueEntries = [];
+    this.queuePumpRunning = false;
+    this.queueEntrySeq = 1;
+    this.lastQueueSnapshot = {
+      maxParallelJobs: 1,
+      runningCount: 0,
+      runningJobs: [],
+      queuedJobs: [],
+      queuedCount: 0,
+      updatedAt: nowIso()
+    };
   }
 
   async init() {
@@ -2019,6 +2108,8 @@ class PipelineService extends EventEmitter {
         keepDetectedDevice: false
       });
     }
+    await this.emitQueueChanged();
+    void this.pumpQueue();
   }
 
   safeParseJson(raw) {
@@ -2036,15 +2127,271 @@ class PipelineService extends EventEmitter {
 
   getSnapshot() {
     return {
-      ...this.snapshot
+      ...this.snapshot,
+      queue: this.lastQueueSnapshot
     };
+  }
+
+  normalizeParallelJobsLimit(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value < 1) {
+      return 1;
+    }
+    return Math.max(1, Math.min(12, Math.trunc(value)));
+  }
+
+  normalizeQueueJobId(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+    return Math.trunc(value);
+  }
+
+  isJobRunningStatus(status) {
+    return RUNNING_STATES.has(String(status || '').trim().toUpperCase());
+  }
+
+  syncPrimaryActiveProcess() {
+    if (this.activeProcesses.size === 0) {
+      this.activeProcess = null;
+      return;
+    }
+    const first = Array.from(this.activeProcesses.values())[0] || null;
+    this.activeProcess = first;
+  }
+
+  async getMaxParallelJobs() {
+    const settings = await settingsService.getSettingsMap();
+    return this.normalizeParallelJobsLimit(settings?.pipeline_max_parallel_jobs);
+  }
+
+  findQueueEntryIndexByJobId(jobId) {
+    return this.queueEntries.findIndex((entry) => Number(entry?.jobId) === Number(jobId));
+  }
+
+  async getQueueSnapshot() {
+    const maxParallelJobs = await this.getMaxParallelJobs();
+    const runningJobs = await historyService.getRunningJobs();
+    const queuedJobIds = this.queueEntries.map((entry) => Number(entry.jobId)).filter((id) => Number.isFinite(id) && id > 0);
+    const queuedRows = queuedJobIds.length > 0
+      ? await historyService.getJobsByIds(queuedJobIds)
+      : [];
+    const queuedById = new Map(queuedRows.map((row) => [Number(row.id), row]));
+
+    const queue = {
+      maxParallelJobs,
+      runningCount: runningJobs.length,
+      runningJobs: runningJobs.map((job) => ({
+        jobId: Number(job.id),
+        title: job.title || job.detected_title || `Job #${job.id}`,
+        status: job.status,
+        lastState: job.last_state || null
+      })),
+      queuedJobs: this.queueEntries.map((entry, index) => {
+        const row = queuedById.get(Number(entry.jobId));
+        return {
+          position: index + 1,
+          jobId: Number(entry.jobId),
+          action: entry.action,
+          actionLabel: QUEUE_ACTION_LABELS[entry.action] || entry.action,
+          enqueuedAt: entry.enqueuedAt,
+          title: row?.title || row?.detected_title || `Job #${entry.jobId}`,
+          status: row?.status || null,
+          lastState: row?.last_state || null
+        };
+      }),
+      queuedCount: this.queueEntries.length,
+      updatedAt: nowIso()
+    };
+
+    return queue;
+  }
+
+  async emitQueueChanged() {
+    try {
+      this.lastQueueSnapshot = await this.getQueueSnapshot();
+      wsService.broadcast('PIPELINE_QUEUE_CHANGED', this.lastQueueSnapshot);
+    } catch (error) {
+      logger.warn('queue:emit:failed', { error: errorToMeta(error) });
+    }
+  }
+
+  async reorderQueue(orderedJobIds = []) {
+    const incoming = Array.isArray(orderedJobIds)
+      ? orderedJobIds
+        .map((value) => this.normalizeQueueJobId(value))
+        .filter((value) => value !== null)
+      : [];
+    const currentIds = this.queueEntries.map((entry) => Number(entry.jobId));
+    if (incoming.length !== currentIds.length) {
+      const error = new Error('Queue-Reihenfolge ungültig: Anzahl passt nicht.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const incomingSet = new Set(incoming.map((id) => String(id)));
+    if (incomingSet.size !== incoming.length || currentIds.some((id) => !incomingSet.has(String(id)))) {
+      const error = new Error('Queue-Reihenfolge ungültig: IDs passen nicht zur aktuellen Queue.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const byId = new Map(this.queueEntries.map((entry) => [Number(entry.jobId), entry]));
+    this.queueEntries = incoming.map((id) => byId.get(Number(id))).filter(Boolean);
+    await this.emitQueueChanged();
+    return this.lastQueueSnapshot;
+  }
+
+  async enqueueOrStartAction(action, jobId, startNow) {
+    const normalizedJobId = this.normalizeQueueJobId(jobId);
+    if (!normalizedJobId) {
+      const error = new Error('Ungültige Job-ID für Queue-Aktion.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!Object.values(QUEUE_ACTIONS).includes(action)) {
+      const error = new Error(`Unbekannte Queue-Aktion '${action}'.`);
+      error.statusCode = 400;
+      throw error;
+    }
+    if (typeof startNow !== 'function') {
+      const error = new Error('Queue-Aktion kann nicht gestartet werden (startNow fehlt).');
+      error.statusCode = 500;
+      throw error;
+    }
+
+    const existingQueueIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
+    if (existingQueueIndex >= 0) {
+      return {
+        queued: true,
+        started: false,
+        queuePosition: existingQueueIndex + 1,
+        action
+      };
+    }
+
+    const maxParallelJobs = await this.getMaxParallelJobs();
+    const runningJobs = await historyService.getRunningJobs();
+    const shouldQueue = this.queueEntries.length > 0 || runningJobs.length >= maxParallelJobs;
+    if (!shouldQueue) {
+      const result = await startNow();
+      await this.emitQueueChanged();
+      return {
+        queued: false,
+        started: true,
+        action,
+        ...(result && typeof result === 'object' ? result : {})
+      };
+    }
+
+    this.queueEntries.push({
+      id: this.queueEntrySeq++,
+      jobId: normalizedJobId,
+      action,
+      enqueuedAt: nowIso()
+    });
+    await historyService.appendLog(
+      normalizedJobId,
+      'USER_ACTION',
+      `In Queue aufgenommen: ${QUEUE_ACTION_LABELS[action] || action}`
+    );
+    await this.emitQueueChanged();
+    void this.pumpQueue();
+
+    return {
+      queued: true,
+      started: false,
+      queuePosition: this.queueEntries.length,
+      action
+    };
+  }
+
+  async dispatchQueuedEntry(entry) {
+    const action = entry?.action;
+    const jobId = Number(entry?.jobId);
+    if (!Number.isFinite(jobId) || jobId <= 0) {
+      return;
+    }
+    switch (action) {
+      case QUEUE_ACTIONS.START_PREPARED:
+        await this.startPreparedJob(jobId, { immediate: true });
+        break;
+      case QUEUE_ACTIONS.RETRY:
+        await this.retry(jobId, { immediate: true });
+        break;
+      case QUEUE_ACTIONS.REENCODE:
+        await this.reencodeFromRaw(jobId, { immediate: true });
+        break;
+      case QUEUE_ACTIONS.RESTART_ENCODE:
+        await this.restartEncodeWithLastSettings(jobId, { immediate: true });
+        break;
+      case QUEUE_ACTIONS.RESTART_REVIEW:
+        await this.restartReviewFromRaw(jobId, { immediate: true });
+        break;
+      default: {
+        const error = new Error(`Unbekannte Queue-Aktion: ${String(action || '-')}`);
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+  }
+
+  async pumpQueue() {
+    if (this.queuePumpRunning) {
+      return;
+    }
+    this.queuePumpRunning = true;
+    try {
+      while (this.queueEntries.length > 0) {
+        const maxParallelJobs = await this.getMaxParallelJobs();
+        const runningJobs = await historyService.getRunningJobs();
+        if (runningJobs.length >= maxParallelJobs) {
+          break;
+        }
+
+        const entry = this.queueEntries.shift();
+        if (!entry) {
+          break;
+        }
+
+        await this.emitQueueChanged();
+        try {
+          await historyService.appendLog(
+            entry.jobId,
+            'SYSTEM',
+            `Queue-Start: ${QUEUE_ACTION_LABELS[entry.action] || entry.action}`
+          );
+          await this.dispatchQueuedEntry(entry);
+        } catch (error) {
+          if (Number(error?.statusCode || 0) === 409) {
+            this.queueEntries.unshift(entry);
+            await this.emitQueueChanged();
+            break;
+          }
+          logger.error('queue:entry:failed', {
+            action: entry.action,
+            jobId: entry.jobId,
+            error: errorToMeta(error)
+          });
+          await historyService.appendLog(
+            entry.jobId,
+            'SYSTEM',
+            `Queue-Start fehlgeschlagen (${QUEUE_ACTION_LABELS[entry.action] || entry.action}): ${error.message}`
+          );
+        }
+      }
+    } finally {
+      this.queuePumpRunning = false;
+      await this.emitQueueChanged();
+    }
   }
 
   async resetFrontendState(reason = 'manual', options = {}) {
     const force = Boolean(options?.force);
     const keepDetectedDevice = options?.keepDetectedDevice !== false;
 
-    if (!force && (this.activeProcess || RUNNING_STATES.has(this.snapshot.state))) {
+    if (!force && (this.activeProcesses.size > 0 || RUNNING_STATES.has(this.snapshot.state))) {
       logger.warn('ui:reset:skipped-busy', {
         reason,
         state: this.snapshot.state,
@@ -2143,8 +2490,11 @@ class PipelineService extends EventEmitter {
     });
 
     await this.persistSnapshot();
-    wsService.broadcast('PIPELINE_STATE_CHANGED', this.snapshot);
-    this.emit('stateChanged', this.snapshot);
+    const snapshotPayload = this.getSnapshot();
+    wsService.broadcast('PIPELINE_STATE_CHANGED', snapshotPayload);
+    this.emit('stateChanged', snapshotPayload);
+    void this.emitQueueChanged();
+    void this.pumpQueue();
   }
 
   async persistSnapshot(force = true) {
@@ -2287,17 +2637,30 @@ class PipelineService extends EventEmitter {
     }
   }
 
-  ensureNotBusy(action) {
-    if (this.activeProcess) {
-      const error = new Error(`Pipeline ist beschäftigt. Aktion '${action}' aktuell nicht möglich.`);
+  ensureNotBusy(action, jobId = null) {
+    const normalizedJobId = this.normalizeQueueJobId(jobId);
+    if (!normalizedJobId) {
+      return;
+    }
+    if (this.activeProcesses.has(normalizedJobId)) {
+      const error = new Error(`Job #${normalizedJobId} ist bereits aktiv. Aktion '${action}' aktuell nicht möglich.`);
       error.statusCode = 409;
       logger.warn('busy:blocked-action', {
         action,
+        jobId: normalizedJobId,
         activeState: this.snapshot.state,
         activeJobId: this.snapshot.activeJobId
       });
       throw error;
     }
+  }
+
+  isPrimaryJob(jobId) {
+    const activeState = String(this.snapshot.state || '').toUpperCase();
+    if (!['ENCODING', 'RIPPING'].includes(activeState)) {
+      return true;
+    }
+    return Number(this.snapshot.activeJobId) === Number(jobId);
   }
 
   async ensureMakeMKVRegistration(jobId, stage) {
@@ -2341,6 +2704,10 @@ class PipelineService extends EventEmitter {
     const keys = Array.isArray(changedKeys)
       ? changedKeys.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
+    if (keys.includes('pipeline_max_parallel_jobs')) {
+      await this.emitQueueChanged();
+      void this.pumpQueue();
+    }
     const relevantKeys = keys.filter((key) => this.isReviewRefreshSettingKey(key));
     if (relevantKeys.length === 0) {
       return {
@@ -2350,7 +2717,7 @@ class PipelineService extends EventEmitter {
       };
     }
 
-    if (this.activeProcess || RUNNING_STATES.has(this.snapshot.state)) {
+    if (this.activeProcesses.size > 0 || RUNNING_STATES.has(this.snapshot.state)) {
       return {
         triggered: false,
         reason: 'pipeline_busy',
@@ -2454,11 +2821,14 @@ class PipelineService extends EventEmitter {
     if (selectedPlaylist) {
       selectedTitleId = pickTitleIdForPlaylist(playlistAnalysis, selectedPlaylist);
     }
-    if (selectedTitleId === null && rawSelectedTitleId !== null && rawSelectedTitleId !== undefined && rawSelectedTitleId !== '') {
-      const parsedSelectedTitleId = Number(rawSelectedTitleId);
-      if (Number.isFinite(parsedSelectedTitleId) && parsedSelectedTitleId >= 0) {
-        selectedTitleId = Math.trunc(parsedSelectedTitleId);
+    if (selectedTitleId === null) {
+      const parsedSelectedTitleId = normalizeNonNegativeInteger(rawSelectedTitleId);
+      if (parsedSelectedTitleId !== null) {
+        selectedTitleId = parsedSelectedTitleId;
       }
+    }
+    if (!selectedPlaylist && selectedTitleId !== null && !isCandidateTitleId(playlistAnalysis, selectedTitleId)) {
+      selectedTitleId = null;
     }
 
     const candidatePlaylists = buildPlaylistCandidates(playlistAnalysis);
@@ -2528,24 +2898,35 @@ class PipelineService extends EventEmitter {
         `Disk erkannt. Metadaten-Suche vorbereitet mit Query "${detectedTitle}".`
       );
 
-      await this.setState('METADATA_SELECTION', {
-        activeJobId: job.id,
-        progress: 0,
-        eta: null,
-        statusText: 'Metadaten auswählen',
-        context: {
-          jobId: job.id,
-          device,
-          detectedTitle,
-          detectedTitleSource: device.discLabel ? 'discLabel' : 'fallback',
-          omdbCandidates,
-          playlistAnalysis: null,
-          playlistDecisionRequired: false,
-          playlistCandidates: [],
-          selectedPlaylist: null,
-          selectedTitleId: null
-        }
-      });
+      const runningJobs = await historyService.getRunningJobs();
+      const foreignRunningJobs = runningJobs.filter((item) => Number(item?.id) !== Number(job.id));
+      const keepCurrentPipelineSession = foreignRunningJobs.length > 0;
+      if (!keepCurrentPipelineSession) {
+        await this.setState('METADATA_SELECTION', {
+          activeJobId: job.id,
+          progress: 0,
+          eta: null,
+          statusText: 'Metadaten auswählen',
+          context: {
+            jobId: job.id,
+            device,
+            detectedTitle,
+            detectedTitleSource: device.discLabel ? 'discLabel' : 'fallback',
+            omdbCandidates,
+            playlistAnalysis: null,
+            playlistDecisionRequired: false,
+            playlistCandidates: [],
+            selectedPlaylist: null,
+            selectedTitleId: null
+          }
+        });
+      } else {
+        await historyService.appendLog(
+          job.id,
+          'SYSTEM',
+          `Metadaten-Auswahl im Hintergrund vorbereitet. Aktive Session bleibt bei laufendem Job #${foreignRunningJobs.map((item) => item.id).join(',')}.`
+        );
+      }
 
       void this.notifyPushover('metadata_ready', {
         title: 'Ripster - Metadaten bereit',
@@ -2572,7 +2953,7 @@ class PipelineService extends EventEmitter {
   }
 
   async runDiscTrackReviewForJob(jobId, deviceInfo = null, options = {}) {
-    this.ensureNotBusy('runDiscTrackReviewForJob');
+    this.ensureNotBusy('runDiscTrackReviewForJob', jobId);
     logger.info('disc-track-review:start', { jobId, deviceInfo, options });
 
     const job = await historyService.getJobById(jobId);
@@ -2592,15 +2973,12 @@ class PipelineService extends EventEmitter {
       || this.snapshot.context?.selectedPlaylist
       || null
     );
-    const selectedMakemkvTitleIdRaw = Number(
+    const selectedMakemkvTitleIdRaw =
       options?.selectedTitleId
       ?? analyzeContext.selectedTitleId
       ?? this.snapshot.context?.selectedTitleId
-      ?? null
-    );
-    const selectedMakemkvTitleId = Number.isFinite(selectedMakemkvTitleIdRaw) && selectedMakemkvTitleIdRaw >= 0
-      ? Math.trunc(selectedMakemkvTitleIdRaw)
-      : null;
+      ?? null;
+    const selectedMakemkvTitleId = normalizeNonNegativeInteger(selectedMakemkvTitleIdRaw);
     const selectedMetadata = {
       title: job.title || job.detected_title || null,
       year: job.year || null,
@@ -2777,7 +3155,7 @@ class PipelineService extends EventEmitter {
   }
 
   async runBackupTrackReviewForJob(jobId, rawPath, options = {}) {
-    this.ensureNotBusy('runBackupTrackReviewForJob');
+    this.ensureNotBusy('runBackupTrackReviewForJob', jobId);
     logger.info('backup-track-review:start', { jobId, rawPath, options });
 
     const job = await historyService.getJobById(jobId);
@@ -2812,12 +3190,7 @@ class PipelineService extends EventEmitter {
     const selectedTitleSource = forcePlaylistReselection
       ? (options?.selectedTitleId ?? null)
       : (options?.selectedTitleId ?? analyzeContext.selectedTitleId ?? this.snapshot.context?.selectedTitleId ?? null);
-    const selectedMakemkvTitleIdRaw = Number(
-      selectedTitleSource
-    );
-    const selectedMakemkvTitleId = Number.isFinite(selectedMakemkvTitleIdRaw) && selectedMakemkvTitleIdRaw >= 0
-      ? Math.trunc(selectedMakemkvTitleIdRaw)
-      : null;
+    const selectedMakemkvTitleId = normalizeNonNegativeInteger(selectedTitleSource);
     const selectedMetadata = {
       title: job.title || job.detected_title || null,
       year: job.year || null,
@@ -2825,23 +3198,25 @@ class PipelineService extends EventEmitter {
       poster: job.poster_url || null
     };
 
-    await this.setState('MEDIAINFO_CHECK', {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: 'Titel-/Spurprüfung aus RAW-Backup läuft',
-      context: {
-        ...(this.snapshot.context || {}),
-        jobId,
-        rawPath,
-        inputPath: null,
-        hasEncodableTitle: false,
-        reviewConfirmed: false,
-        mode,
-        sourceJobId: options.sourceJobId || null,
-        selectedMetadata
-      }
-    });
+    if (this.isPrimaryJob(jobId)) {
+      await this.setState('MEDIAINFO_CHECK', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: 'Titel-/Spurprüfung aus RAW-Backup läuft',
+        context: {
+          ...(this.snapshot.context || {}),
+          jobId,
+          rawPath,
+          inputPath: null,
+          hasEncodableTitle: false,
+          reviewConfirmed: false,
+          mode,
+          sourceJobId: options.sourceJobId || null,
+          selectedMetadata
+        }
+      });
+    }
 
     await historyService.updateJob(jobId, {
       status: 'MEDIAINFO_CHECK',
@@ -2899,7 +3274,8 @@ class PipelineService extends EventEmitter {
         cmd: analyzeConfig.cmd,
         args: analyzeConfig.args,
         parser: parseMakeMkvProgress,
-        collectLines: analyzeLines
+        collectLines: analyzeLines,
+        silent: !this.isPrimaryJob(jobId)
       });
 
       const analyzed = analyzePlaylistObfuscation(
@@ -2916,7 +3292,10 @@ class PipelineService extends EventEmitter {
     const selectedTitleFromPlaylist = selectedPlaylistId
       ? pickTitleIdForPlaylist(playlistAnalysis, selectedPlaylistId)
       : null;
-    const selectedTitleForContext = selectedTitleFromPlaylist ?? selectedMakemkvTitleId ?? null;
+    const selectedTitleFromContext = (!selectedPlaylistId && !isCandidateTitleId(playlistAnalysis, selectedMakemkvTitleId))
+      ? null
+      : selectedMakemkvTitleId;
+    const selectedTitleForContext = selectedTitleFromPlaylist ?? selectedTitleFromContext ?? null;
     if (selectedPlaylistId && playlistCandidates.length > 0) {
       const isKnownPlaylist = playlistCandidates.some((item) => item.playlistId === selectedPlaylistId);
       if (!isKnownPlaylist) {
@@ -3040,6 +3419,7 @@ class PipelineService extends EventEmitter {
         ? playlistAnalysis.evaluatedCandidates
         : [];
       const recommendationFile = toPlaylistFile(playlistAnalysis?.recommendation?.playlistId);
+      const decisionContext = describePlaylistManualDecision(playlistAnalysis);
 
       await historyService.updateJob(jobId, {
         status: 'WAITING_FOR_USER_DECISION',
@@ -3057,7 +3437,7 @@ class PipelineService extends EventEmitter {
       });
 
       await historyService.appendLog(jobId, 'SYSTEM', 'Mehrere mögliche Haupttitel erkannt!');
-      await historyService.appendLog(jobId, 'SYSTEM', 'Blu-ray verwendet Playlist-Obfuscation.');
+      await historyService.appendLog(jobId, 'SYSTEM', decisionContext.detailText);
       for (const candidate of evaluated) {
         const playlistFile = toPlaylistFile(candidate?.playlistId) || `Titel #${candidate?.titleId || '-'}`;
         const score = Number(candidate?.score);
@@ -3104,7 +3484,9 @@ class PipelineService extends EventEmitter {
 
       const notificationMessage = [
         '⚠️ Manuelle Prüfung erforderlich!',
-        'Mehrere gleichlange Playlists erkannt.',
+        decisionContext.obfuscationDetected
+          ? 'Mehrere gleichlange Playlists erkannt.'
+          : 'Mehrere Playlists erfüllen MIN_LENGTH_MINUTES.',
         '',
         'Empfehlung:',
         recommendationFile || '(keine eindeutige Empfehlung)',
@@ -3171,14 +3553,16 @@ class PipelineService extends EventEmitter {
       && Number(cachedHandBrakePlaylistEntry.handBrakeTitleId) > 0
     );
 
-    await this.updateProgress(
-      'MEDIAINFO_CHECK',
-      30,
-      null,
-      hasCachedHandBrakeEntry
-        ? `HandBrake Trackdaten aus Cache (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
-        : `HandBrake Titel-/Spurscan läuft (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
-    );
+    if (this.isPrimaryJob(jobId)) {
+      await this.updateProgress(
+        'MEDIAINFO_CHECK',
+        30,
+        null,
+        hasCachedHandBrakeEntry
+          ? `HandBrake Trackdaten aus Cache (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
+          : `HandBrake Titel-/Spurscan läuft (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
+      );
+    }
 
     let handBrakeResolveRunInfo = null;
     let handBrakeTitleRunInfo = null;
@@ -3228,7 +3612,8 @@ class PipelineService extends EventEmitter {
           cmd: resolveScanConfig.cmd,
           args: resolveScanConfig.args,
           collectLines: resolveScanLines,
-          collectStderrLines: false
+          collectStderrLines: false,
+          silent: !this.isPrimaryJob(jobId)
         });
 
         const resolveScanJson = parseMediainfoJsonOutput(resolveScanLines.join('\n'));
@@ -3415,10 +3800,11 @@ class PipelineService extends EventEmitter {
     if (playlistDecisionRequired) {
       const playlistFiles = playlistCandidates.map((item) => item.playlistFile).filter(Boolean);
       const recommendationFile = toPlaylistFile(playlistAnalysis?.recommendation?.playlistId);
+      const decisionContext = describePlaylistManualDecision(playlistAnalysis);
       await historyService.appendLog(
         jobId,
         'SYSTEM',
-        `Playlist-Obfuscation erkannt (RAW). Kandidaten: ${playlistFiles.join(', ') || 'keine'}.`
+        `${decisionContext.detailText} (RAW). Kandidaten: ${playlistFiles.join(', ') || 'keine'}.`
       );
       if (recommendationFile) {
         await historyService.appendLog(
@@ -3430,33 +3816,35 @@ class PipelineService extends EventEmitter {
     }
 
     const hasEncodableTitle = Boolean(review.encodeInputPath && review.encodeInputTitleId);
-    await this.setState('READY_TO_ENCODE', {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: review.titleSelectionRequired
-        ? 'Titel-/Spurprüfung fertig - Titel per Checkbox wählen'
-        : (hasEncodableTitle
-          ? 'Titel-/Spurprüfung fertig - Auswahl bestätigen, dann Encode manuell starten'
-          : 'Titel-/Spurprüfung fertig - kein Titel erfüllt MIN_LENGTH_MINUTES'),
-      context: {
-        ...(this.snapshot.context || {}),
-        jobId,
-        rawPath,
-        inputPath: review.encodeInputPath || null,
-        hasEncodableTitle,
-        reviewConfirmed: false,
-        mode,
-        sourceJobId: options.sourceJobId || null,
-        mediaInfoReview: review,
-        selectedMetadata,
-        playlistAnalysis: playlistAnalysis || null,
-        playlistDecisionRequired,
-        playlistCandidates,
-        selectedPlaylist: resolvedPlaylistId || null,
-        selectedTitleId: selectedTitleForReview
-      }
-    });
+    if (this.isPrimaryJob(jobId)) {
+      await this.setState('READY_TO_ENCODE', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: review.titleSelectionRequired
+          ? 'Titel-/Spurprüfung fertig - Titel per Checkbox wählen'
+          : (hasEncodableTitle
+            ? 'Titel-/Spurprüfung fertig - Auswahl bestätigen, dann Encode manuell starten'
+            : 'Titel-/Spurprüfung fertig - kein Titel erfüllt MIN_LENGTH_MINUTES'),
+        context: {
+          ...(this.snapshot.context || {}),
+          jobId,
+          rawPath,
+          inputPath: review.encodeInputPath || null,
+          hasEncodableTitle,
+          reviewConfirmed: false,
+          mode,
+          sourceJobId: options.sourceJobId || null,
+          mediaInfoReview: review,
+          selectedMetadata,
+          playlistAnalysis: playlistAnalysis || null,
+          playlistDecisionRequired,
+          playlistCandidates,
+          selectedPlaylist: resolvedPlaylistId || null,
+          selectedTitleId: selectedTitleForReview
+        }
+      });
+    }
 
     void this.notifyPushover('metadata_ready', {
       title: 'Ripster - RAW geprüft',
@@ -3482,7 +3870,7 @@ class PipelineService extends EventEmitter {
   }
 
   async selectMetadata({ jobId, title, year, imdbId, poster, fromOmdb = null, selectedPlaylist = null }) {
-    this.ensureNotBusy('selectMetadata');
+    this.ensureNotBusy('selectMetadata', jobId);
     logger.info('metadata:selected', { jobId, title, year, imdbId, poster, fromOmdb, selectedPlaylist });
 
     const job = await historyService.getJobById(jobId);
@@ -3635,6 +4023,10 @@ class PipelineService extends EventEmitter {
       makemkv_info_json: JSON.stringify(updatedMakemkvInfo)
     });
 
+    const runningJobs = await historyService.getRunningJobs();
+    const foreignRunningJobs = runningJobs.filter((item) => Number(item?.id) !== Number(jobId));
+    const keepCurrentPipelineSession = foreignRunningJobs.length > 0;
+
     if (existingRawPath) {
       await historyService.appendLog(
         jobId,
@@ -3649,41 +4041,50 @@ class PipelineService extends EventEmitter {
       );
     }
 
-    await this.setState(nextStatus, {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: requiresManualPlaylistSelection
-        ? 'waiting_for_manual_playlist_selection'
-        : (existingRawPath
-          ? 'Metadaten übernommen - vorhandenes RAW erkannt'
-          : 'Metadaten übernommen - bereit zum Start'),
-      context: {
-        ...(this.snapshot.context || {}),
-        jobId,
-        rawPath: updatedRawPath,
-        selectedMetadata,
-        playlistAnalysis: playlistDecision.playlistAnalysis || null,
-        playlistDecisionRequired: Boolean(playlistDecision.playlistDecisionRequired),
-        playlistCandidates: playlistDecision.candidatePlaylists,
-        selectedPlaylist: playlistDecision.selectedPlaylist || null,
-        selectedTitleId: playlistDecision.selectedTitleId ?? null,
-        waitingForManualPlaylistSelection: requiresManualPlaylistSelection,
-        manualDecisionState: requiresManualPlaylistSelection
+    if (!keepCurrentPipelineSession) {
+      await this.setState(nextStatus, {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: requiresManualPlaylistSelection
           ? 'waiting_for_manual_playlist_selection'
-          : null
-      }
-    });
+          : (existingRawPath
+            ? 'Metadaten übernommen - vorhandenes RAW erkannt'
+            : 'Metadaten übernommen - bereit zum Start'),
+        context: {
+          ...(this.snapshot.context || {}),
+          jobId,
+          rawPath: updatedRawPath,
+          selectedMetadata,
+          playlistAnalysis: playlistDecision.playlistAnalysis || null,
+          playlistDecisionRequired: Boolean(playlistDecision.playlistDecisionRequired),
+          playlistCandidates: playlistDecision.candidatePlaylists,
+          selectedPlaylist: playlistDecision.selectedPlaylist || null,
+          selectedTitleId: playlistDecision.selectedTitleId ?? null,
+          waitingForManualPlaylistSelection: requiresManualPlaylistSelection,
+          manualDecisionState: requiresManualPlaylistSelection
+            ? 'waiting_for_manual_playlist_selection'
+            : null
+        }
+      });
+    } else {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Metadaten übernommen. Aktive Session bleibt bei laufendem Job #${foreignRunningJobs.map((item) => item.id).join(',')}.`
+      );
+    }
 
     if (requiresManualPlaylistSelection) {
       const playlistFiles = playlistDecision.candidatePlaylists
         .map((item) => item.playlistFile)
         .filter(Boolean);
       const recommendationFile = toPlaylistFile(playlistDecision.recommendation?.playlistId);
+      const decisionContext = describePlaylistManualDecision(playlistDecision.playlistAnalysis);
       await historyService.appendLog(
         jobId,
         'SYSTEM',
-        `Playlist-Obfuscation erkannt. Status=waiting_for_manual_playlist_selection. Kandidaten: ${playlistFiles.join(', ') || 'keine'}.`
+        `${decisionContext.detailText} Status=waiting_for_manual_playlist_selection. Kandidaten: ${playlistFiles.join(', ') || 'keine'}.`
       );
       if (recommendationFile) {
         await historyService.appendLog(jobId, 'SYSTEM', `Empfehlung laut MakeMKV-TINFO-Analyse: ${recommendationFile}`);
@@ -3738,11 +4139,61 @@ class PipelineService extends EventEmitter {
     return historyService.getJobById(jobId);
   }
 
-  async startPreparedJob(jobId) {
-    this.ensureNotBusy('startPreparedJob');
-    logger.info('startPreparedJob:requested', { jobId });
+  async startPreparedJob(jobId, options = {}) {
+    const immediate = Boolean(options?.immediate);
+    if (!immediate) {
+      const preloadedJob = await historyService.getJobById(jobId);
+      if (!preloadedJob) {
+        const error = new Error(`Job ${jobId} nicht gefunden.`);
+        error.statusCode = 404;
+        throw error;
+      }
+      if (!preloadedJob.title && !preloadedJob.detected_title) {
+        const error = new Error('Start nicht möglich: keine Metadaten vorhanden.');
+        error.statusCode = 400;
+        throw error;
+      }
 
-    const job = await historyService.getJobById(jobId);
+      const isReadyToEncode = preloadedJob.status === 'READY_TO_ENCODE' || preloadedJob.last_state === 'READY_TO_ENCODE';
+      if (isReadyToEncode) {
+        return this.enqueueOrStartAction(
+          QUEUE_ACTIONS.START_PREPARED,
+          jobId,
+          () => this.startPreparedJob(jobId, { ...options, immediate: true })
+        );
+      }
+
+      let hasUsableRawInput = false;
+      if (preloadedJob.raw_path) {
+        try {
+          if (fs.existsSync(preloadedJob.raw_path)) {
+            const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, preloadedJob);
+            hasUsableRawInput = Boolean(findPreferredRawInput(preloadedJob.raw_path, {
+              playlistAnalysis: playlistDecision.playlistAnalysis,
+              selectedPlaylistId: playlistDecision.selectedPlaylist
+            }));
+          }
+        } catch (_error) {
+          hasUsableRawInput = false;
+        }
+      }
+
+      if (!hasUsableRawInput) {
+        return this.enqueueOrStartAction(
+          QUEUE_ACTIONS.START_PREPARED,
+          jobId,
+          () => this.startPreparedJob(jobId, { ...options, immediate: true })
+        );
+      }
+
+      return this.startPreparedJob(jobId, { ...options, immediate: true, preloadedJob });
+    }
+
+    this.ensureNotBusy('startPreparedJob', jobId);
+    logger.info('startPreparedJob:requested', { jobId });
+    this.cancelRequestedByJob.delete(Number(jobId));
+
+    const job = options?.preloadedJob || await historyService.getJobById(jobId);
     if (!job) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
       error.statusCode = 404;
@@ -3899,11 +4350,13 @@ class PipelineService extends EventEmitter {
   }
 
   async confirmEncodeReview(jobId, options = {}) {
-    this.ensureNotBusy('confirmEncodeReview');
+    this.ensureNotBusy('confirmEncodeReview', jobId);
+    const skipPipelineStateUpdate = Boolean(options?.skipPipelineStateUpdate);
     logger.info('confirmEncodeReview:requested', {
       jobId,
       selectedEncodeTitleId: options?.selectedEncodeTitleId ?? null,
       selectedTrackSelectionProvided: Boolean(options?.selectedTrackSelection),
+      skipPipelineStateUpdate,
       selectedPostEncodeScriptIdsCount: Array.isArray(options?.selectedPostEncodeScriptIds)
         ? options.selectedPostEncodeScriptIds.length
         : 0
@@ -3984,33 +4437,36 @@ class PipelineService extends EventEmitter {
       + ` Post-Encode-Scripte: ${selectedPostEncodeScripts.length > 0 ? selectedPostEncodeScripts.map((item) => item.name).join(' -> ') : 'none'}.`
     );
 
-    await this.setState('READY_TO_ENCODE', {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: hasEncodableTitle
-        ? (isPreRipMode
-          ? 'Spurauswahl bestätigt - Backup/Rip + Encode manuell starten'
-          : 'Mediainfo bestätigt - Encode manuell starten')
-        : (isPreRipMode
-          ? 'Spurauswahl bestätigt - kein passender Titel gewählt'
-          : 'Mediainfo bestätigt - kein Titel erfüllt MIN_LENGTH_MINUTES'),
-      context: {
-        ...(this.snapshot.context || {}),
-        jobId,
-        inputPath,
-        hasEncodableTitle,
-        mediaInfoReview: confirmedPlan,
-        reviewConfirmed: true
-      }
-    });
+    if (!skipPipelineStateUpdate) {
+      await this.setState('READY_TO_ENCODE', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: hasEncodableTitle
+          ? (isPreRipMode
+            ? 'Spurauswahl bestätigt - Backup/Rip + Encode manuell starten'
+            : 'Mediainfo bestätigt - Encode manuell starten')
+          : (isPreRipMode
+            ? 'Spurauswahl bestätigt - kein passender Titel gewählt'
+            : 'Mediainfo bestätigt - kein Titel erfüllt MIN_LENGTH_MINUTES'),
+        context: {
+          ...(this.snapshot.context || {}),
+          jobId,
+          inputPath,
+          hasEncodableTitle,
+          mediaInfoReview: confirmedPlan,
+          reviewConfirmed: true
+        }
+      });
+    }
 
     return historyService.getJobById(jobId);
   }
 
-  async reencodeFromRaw(sourceJobId) {
-    this.ensureNotBusy('reencodeFromRaw');
+  async reencodeFromRaw(sourceJobId, options = {}) {
+    this.ensureNotBusy('reencodeFromRaw', sourceJobId);
     logger.info('reencodeFromRaw:requested', { sourceJobId });
+    this.cancelRequestedByJob.delete(Number(sourceJobId));
 
     const sourceJob = await historyService.getJobById(sourceJobId);
     if (!sourceJob) {
@@ -4136,7 +4592,7 @@ class PipelineService extends EventEmitter {
   }
 
   async runMediainfoReviewForJob(jobId, rawPath, options = {}) {
-    this.ensureNotBusy('runMediainfoReviewForJob');
+    this.ensureNotBusy('runMediainfoReviewForJob', jobId);
     logger.info('mediainfo:review:start', { jobId, rawPath, options });
 
     const job = await historyService.getJobById(jobId);
@@ -4157,10 +4613,7 @@ class PipelineService extends EventEmitter {
     const playlistAnalysis = analyzeContext.playlistAnalysis
       || this.snapshot.context?.playlistAnalysis
       || null;
-    const preferredEncodeTitleIdRaw = Number(analyzeContext.selectedTitleId);
-    const preferredEncodeTitleId = Number.isFinite(preferredEncodeTitleIdRaw) && preferredEncodeTitleIdRaw >= 0
-      ? Math.trunc(preferredEncodeTitleIdRaw)
-      : null;
+    const preferredEncodeTitleId = normalizeNonNegativeInteger(analyzeContext.selectedTitleId);
     const rawMedia = collectRawMediaCandidates(rawPath, {
       playlistAnalysis,
       selectedPlaylistId
@@ -4197,20 +4650,22 @@ class PipelineService extends EventEmitter {
       poster: job.poster_url || null
     };
 
-    await this.setState('MEDIAINFO_CHECK', {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: 'Mediainfo-Prüfung läuft',
-      context: {
-        jobId,
-        rawPath,
-        reviewConfirmed: false,
-        mode: options.mode || 'rip',
-        sourceJobId: options.sourceJobId || null,
-        selectedMetadata
-      }
-    });
+    if (this.isPrimaryJob(jobId)) {
+      await this.setState('MEDIAINFO_CHECK', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: 'Mediainfo-Prüfung läuft',
+        context: {
+          jobId,
+          rawPath,
+          reviewConfirmed: false,
+          mode: options.mode || 'rip',
+          sourceJobId: options.sourceJobId || null,
+          selectedMetadata
+        }
+      });
+    }
 
     await historyService.updateJob(jobId, {
       status: 'MEDIAINFO_CHECK',
@@ -4261,23 +4716,25 @@ class PipelineService extends EventEmitter {
       });
 
       const partialReview = buildReviewSnapshot(i + 1);
-      await this.setState('MEDIAINFO_CHECK', {
-        activeJobId: jobId,
-        progress: percent,
-        eta: null,
-        statusText: `Mediainfo ${i + 1}/${mediaFiles.length} analysiert: ${path.basename(file.path)}`,
-        context: {
-          jobId,
-          rawPath,
-          inputPath: partialReview?.encodeInputPath || null,
-          hasEncodableTitle: Boolean(partialReview?.encodeInputPath),
-          reviewConfirmed: false,
-          mode: options.mode || 'rip',
-          sourceJobId: options.sourceJobId || null,
-          mediaInfoReview: partialReview,
-          selectedMetadata
-        }
-      });
+      if (this.isPrimaryJob(jobId)) {
+        await this.setState('MEDIAINFO_CHECK', {
+          activeJobId: jobId,
+          progress: percent,
+          eta: null,
+          statusText: `Mediainfo ${i + 1}/${mediaFiles.length} analysiert: ${path.basename(file.path)}`,
+          context: {
+            jobId,
+            rawPath,
+            inputPath: partialReview?.encodeInputPath || null,
+            hasEncodableTitle: Boolean(partialReview?.encodeInputPath),
+            reviewConfirmed: false,
+            mode: options.mode || 'rip',
+            sourceJobId: options.sourceJobId || null,
+            mediaInfoReview: partialReview,
+            selectedMetadata
+          }
+        });
+      }
     }
 
     const review = buildMediainfoReview({
@@ -4328,27 +4785,29 @@ class PipelineService extends EventEmitter {
       `Mediainfo-Prüfung abgeschlossen: ${enrichedReview.titles.length} Titel, Input=${enrichedReview.encodeInputPath || (titleSelectionRequired ? 'Titelauswahl erforderlich' : 'kein passender Titel')}`
     );
 
-    await this.setState('READY_TO_ENCODE', {
-      activeJobId: jobId,
-      progress: 0,
-      eta: null,
-      statusText: titleSelectionRequired
-        ? 'Mediainfo geprüft - Titelauswahl per Checkbox erforderlich'
-        : (hasEncodableTitle
-        ? 'Mediainfo geprüft - Encode manuell starten'
-        : 'Mediainfo geprüft - kein Titel erfüllt MIN_LENGTH_MINUTES'),
-      context: {
-        jobId,
-        rawPath,
-        inputPath: enrichedReview.encodeInputPath || null,
-        hasEncodableTitle,
-        reviewConfirmed: false,
-        mode: options.mode || 'rip',
-        sourceJobId: options.sourceJobId || null,
-        mediaInfoReview: enrichedReview,
-        selectedMetadata
-      }
-    });
+    if (this.isPrimaryJob(jobId)) {
+      await this.setState('READY_TO_ENCODE', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: titleSelectionRequired
+          ? 'Mediainfo geprüft - Titelauswahl per Checkbox erforderlich'
+          : (hasEncodableTitle
+          ? 'Mediainfo geprüft - Encode manuell starten'
+          : 'Mediainfo geprüft - kein Titel erfüllt MIN_LENGTH_MINUTES'),
+        context: {
+          jobId,
+          rawPath,
+          inputPath: enrichedReview.encodeInputPath || null,
+          hasEncodableTitle,
+          reviewConfirmed: false,
+          mode: options.mode || 'rip',
+          sourceJobId: options.sourceJobId || null,
+          mediaInfoReview: enrichedReview,
+          selectedMetadata
+        }
+      });
+    }
 
     void this.notifyPushover('metadata_ready', {
       title: 'Ripster - Mediainfo geprüft',
@@ -4513,7 +4972,7 @@ class PipelineService extends EventEmitter {
   }
 
   async startEncodingFromPrepared(jobId) {
-    this.ensureNotBusy('startEncodingFromPrepared');
+    this.ensureNotBusy('startEncodingFromPrepared', jobId);
     logger.info('encode:start-from-prepared', { jobId });
 
     const settings = await settingsService.getSettingsMap();
@@ -4817,7 +5276,7 @@ class PipelineService extends EventEmitter {
   }
 
   async startRipEncode(jobId) {
-    this.ensureNotBusy('startRipEncode');
+    this.ensureNotBusy('startRipEncode', jobId);
     logger.info('ripEncode:start', { jobId });
 
     let job = await historyService.getJobById(jobId);
@@ -4962,10 +5421,11 @@ class PipelineService extends EventEmitter {
           );
         }
       } else if (playlistDecision.playlistDecisionRequired) {
+        const decisionContext = describePlaylistManualDecision(playlistDecision.playlistAnalysis);
         await historyService.appendLog(
           jobId,
           'SYSTEM',
-          'Playlist-Obfuscation erkannt: Rip läuft ohne Vorauswahl. Finale Titelwahl erfolgt in der Mediainfo-Prüfung per Checkbox.'
+          `${decisionContext.detailText} Rip läuft ohne Vorauswahl. Finale Titelwahl erfolgt in der Mediainfo-Prüfung per Checkbox.`
         );
       }
       if (devicePath) {
@@ -5061,9 +5521,19 @@ class PipelineService extends EventEmitter {
     }
   }
 
-  async retry(jobId) {
-    this.ensureNotBusy('retry');
+  async retry(jobId, options = {}) {
+    const immediate = Boolean(options?.immediate);
+    if (!immediate) {
+      return this.enqueueOrStartAction(
+        QUEUE_ACTIONS.RETRY,
+        jobId,
+        () => this.retry(jobId, { ...options, immediate: true })
+      );
+    }
+
+    this.ensureNotBusy('retry', jobId);
     logger.info('retry:start', { jobId });
+    this.cancelRequestedByJob.delete(Number(jobId));
 
     const job = await historyService.getJobById(jobId);
     if (!job) {
@@ -5101,7 +5571,7 @@ class PipelineService extends EventEmitter {
   }
 
   async resumeReadyToEncodeJob(jobId) {
-    this.ensureNotBusy('resumeReadyToEncodeJob');
+    this.ensureNotBusy('resumeReadyToEncodeJob', jobId);
     logger.info('resumeReadyToEncodeJob:requested', { jobId });
 
     const job = await historyService.getJobById(jobId);
@@ -5178,9 +5648,19 @@ class PipelineService extends EventEmitter {
     return historyService.getJobById(jobId);
   }
 
-  async restartEncodeWithLastSettings(jobId) {
-    this.ensureNotBusy('restartEncodeWithLastSettings');
+  async restartEncodeWithLastSettings(jobId, options = {}) {
+    const immediate = Boolean(options?.immediate);
+    if (!immediate) {
+      return this.enqueueOrStartAction(
+        QUEUE_ACTIONS.RESTART_ENCODE,
+        jobId,
+        () => this.restartEncodeWithLastSettings(jobId, { ...options, immediate: true })
+      );
+    }
+
+    this.ensureNotBusy('restartEncodeWithLastSettings', jobId);
     logger.info('restartEncodeWithLastSettings:requested', { jobId });
+    this.cancelRequestedByJob.delete(Number(jobId));
 
     const job = await historyService.getJobById(jobId);
     if (!job) {
@@ -5262,26 +5742,178 @@ class PipelineService extends EventEmitter {
         : 'Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet.'
     );
 
-    const result = await this.startPreparedJob(jobId);
+    const result = await this.startPreparedJob(jobId, { immediate: true });
     return {
       restarted: true,
       ...result
     };
   }
 
-  async cancel() {
-    if (!this.activeProcess) {
+  async restartReviewFromRaw(jobId, options = {}) {
+    this.ensureNotBusy('restartReviewFromRaw', jobId);
+    logger.info('restartReviewFromRaw:requested', { jobId, options });
+    this.cancelRequestedByJob.delete(Number(jobId));
+
+    const sourceJob = await historyService.getJobById(jobId);
+    if (!sourceJob) {
+      const error = new Error(`Job ${jobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!sourceJob.raw_path) {
+      const error = new Error('Review-Neustart nicht möglich: raw_path fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!fs.existsSync(sourceJob.raw_path)) {
+      const error = new Error(`Review-Neustart nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const currentStatus = String(sourceJob.status || '').trim().toUpperCase();
+    if (['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(currentStatus)) {
+      const error = new Error(`Review-Neustart nicht möglich: Job ${jobId} ist noch aktiv (${currentStatus}).`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const staleQueueIndex = this.findQueueEntryIndexByJobId(Number(jobId));
+    if (staleQueueIndex >= 0) {
+      const [removed] = this.queueEntries.splice(staleQueueIndex, 1);
+      await historyService.appendLog(
+        jobId,
+        'USER_ACTION',
+        `Queue-Eintrag entfernt (Review-Neustart): ${QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion'}`
+      );
+      await this.emitQueueChanged();
+    }
+
+    await historyService.resetProcessLog(jobId);
+
+    const forcePlaylistReselection = Boolean(options?.forcePlaylistReselection);
+    const mkInfo = this.safeParseJson(sourceJob.makemkv_info_json);
+    const nextMakemkvInfoJson = mkInfo && typeof mkInfo === 'object'
+      ? JSON.stringify({
+        ...mkInfo,
+        analyzeContext: forcePlaylistReselection
+          ? {
+            ...(mkInfo?.analyzeContext || {}),
+            selectedPlaylist: null,
+            selectedTitleId: null
+          }
+          : (mkInfo?.analyzeContext || null)
+      })
+      : sourceJob.makemkv_info_json;
+
+    await historyService.updateJob(jobId, {
+      status: 'MEDIAINFO_CHECK',
+      last_state: 'MEDIAINFO_CHECK',
+      start_time: nowIso(),
+      end_time: null,
+      error_message: null,
+      output_path: null,
+      handbrake_info_json: null,
+      mediainfo_info_json: null,
+      encode_plan_json: null,
+      encode_input_path: null,
+      encode_review_confirmed: 0,
+      makemkv_info_json: nextMakemkvInfoJson
+    });
+    await historyService.appendLog(
+      jobId,
+      'USER_ACTION',
+      `Review-Neustart aus RAW angefordert.${forcePlaylistReselection ? ' Playlist-Auswahl wird zurückgesetzt.' : ''}`
+    );
+
+    this.runReviewForRawJob(jobId, sourceJob.raw_path, {
+      mode: options?.mode || 'reencode',
+      sourceJobId: jobId,
+      forcePlaylistReselection
+    }).catch((error) => {
+      logger.error('restartReviewFromRaw:background-failed', { jobId, error: errorToMeta(error) });
+      this.failJob(jobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
+        logger.error('restartReviewFromRaw:background-failJob-failed', {
+          jobId,
+          error: errorToMeta(failError)
+        });
+      });
+    });
+
+    return {
+      restarted: true,
+      started: true,
+      stage: 'MEDIAINFO_CHECK',
+      jobId
+    };
+  }
+
+  async cancel(jobId = null) {
+    const normalizedJobId = this.normalizeQueueJobId(jobId)
+      || this.normalizeQueueJobId(this.snapshot.activeJobId)
+      || this.normalizeQueueJobId(this.snapshot.context?.jobId)
+      || this.normalizeQueueJobId(Array.from(this.activeProcesses.keys())[0]);
+
+    if (!normalizedJobId) {
       const error = new Error('Kein laufender Prozess zum Abbrechen.');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const queuedIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
+    if (queuedIndex >= 0) {
+      const [removed] = this.queueEntries.splice(queuedIndex, 1);
+      await historyService.appendLog(
+        normalizedJobId,
+        'USER_ACTION',
+        `Aus Queue entfernt: ${QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion'}`
+      );
+      await this.emitQueueChanged();
+      return {
+        cancelled: true,
+        queuedOnly: true,
+        jobId: normalizedJobId
+      };
+    }
+
+    const processHandle = this.activeProcesses.get(normalizedJobId) || null;
+    if (!processHandle) {
+      const runningJob = await historyService.getJobById(normalizedJobId);
+      const status = String(runningJob?.status || '').trim().toUpperCase();
+      if (['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(status)) {
+        this.cancelRequestedByJob.add(normalizedJobId);
+        await historyService.appendLog(
+          normalizedJobId,
+          'USER_ACTION',
+          'Abbruch angefordert. Wird beim nächsten Prozessschritt angewendet.'
+        );
+        return {
+          cancelled: true,
+          queuedOnly: false,
+          pending: true,
+          jobId: normalizedJobId
+        };
+      }
+
+      const error = new Error(`Kein laufender Prozess für Job #${normalizedJobId} zum Abbrechen.`);
       error.statusCode = 409;
       throw error;
     }
 
     logger.warn('cancel:requested', {
       state: this.snapshot.state,
-      activeJobId: this.snapshot.activeJobId
+      activeJobId: this.snapshot.activeJobId,
+      requestedJobId: normalizedJobId
     });
-    this.cancelRequested = true;
-    this.activeProcess.cancel();
+    this.cancelRequestedByJob.add(normalizedJobId);
+    processHandle.cancel();
+    return {
+      cancelled: true,
+      queuedOnly: false,
+      jobId: normalizedJobId
+    };
   }
 
   async runCommand({
@@ -5294,9 +5926,36 @@ class PipelineService extends EventEmitter {
     collectLines = null,
     collectStdoutLines = true,
     collectStderrLines = true,
-    argsForLog = null
+    argsForLog = null,
+    silent = false
   }) {
+    const normalizedJobId = this.normalizeQueueJobId(jobId) || Number(jobId) || jobId;
     const loggableArgs = Array.isArray(argsForLog) ? argsForLog : args;
+    if (this.cancelRequestedByJob.has(Number(normalizedJobId))) {
+      const cancelError = new Error('Job wurde vom Benutzer abgebrochen.');
+      cancelError.statusCode = 409;
+      const endedAt = nowIso();
+      cancelError.runInfo = {
+        source,
+        stage,
+        cmd,
+        args: loggableArgs,
+        startedAt: endedAt,
+        endedAt,
+        durationMs: 0,
+        status: 'CANCELLED',
+        exitCode: null,
+        stdoutLines: 0,
+        stderrLines: 0,
+        lastProgress: 0,
+        eta: null,
+        lastDetail: null,
+        highlights: []
+      };
+      logger.warn('command:cancelled-before-spawn', { jobId: normalizedJobId, stage, source });
+      throw cancelError;
+    }
+
     await historyService.appendLog(jobId, 'SYSTEM', `Spawn ${cmd} ${loggableArgs.join(' ')}`);
     logger.info('command:spawn', { jobId, stage, source, cmd, args: loggableArgs });
 
@@ -5335,7 +5994,7 @@ class PipelineService extends EventEmitter {
         runInfo.highlights.push(text);
       }
 
-      if (parser) {
+      if (parser && !silent) {
         const progress = parser(text);
         if (progress && progress.percent !== null) {
           runInfo.lastProgress = progress.percent;
@@ -5358,7 +6017,6 @@ class PipelineService extends EventEmitter {
       }
     };
 
-    this.cancelRequested = false;
     const processHandle = spawnTrackedProcess({
       cmd,
       args,
@@ -5379,7 +6037,8 @@ class PipelineService extends EventEmitter {
       }
     });
 
-    this.activeProcess = processHandle;
+    this.activeProcesses.set(Number(normalizedJobId), processHandle);
+    this.syncPrimaryActiveProcess();
 
     try {
       const procResult = await processHandle.promise;
@@ -5391,7 +6050,7 @@ class PipelineService extends EventEmitter {
       logger.info('command:completed', { jobId, stage, source });
       return runInfo;
     } catch (error) {
-      if (this.cancelRequested) {
+      if (this.cancelRequestedByJob.has(Number(normalizedJobId))) {
         const cancelError = new Error('Job wurde vom Benutzer abgebrochen.');
         cancelError.statusCode = 409;
         runInfo.status = 'CANCELLED';
@@ -5412,26 +6071,55 @@ class PipelineService extends EventEmitter {
       throw error;
     } finally {
       await historyService.closeProcessLog(jobId);
-      this.activeProcess = null;
-      this.cancelRequested = false;
+      this.activeProcesses.delete(Number(normalizedJobId));
+      this.syncPrimaryActiveProcess();
+      this.cancelRequestedByJob.delete(Number(normalizedJobId));
+      await this.emitQueueChanged();
+      void this.pumpQueue();
     }
   }
 
   async failJob(jobId, stage, error) {
     const message = error?.message || String(error);
-    const isCancelled = /abgebrochen/i.test(message);
+    const isCancelled = /abgebrochen|cancelled/i.test(message)
+      || String(error?.runInfo?.status || '').trim().toUpperCase() === 'CANCELLED';
     const job = await historyService.getJobById(jobId);
     const title = job?.title || job?.detected_title || `Job #${jobId}`;
-    logger.error('job:failed', { jobId, stage, error: errorToMeta(error) });
+    const finalState = isCancelled ? 'CANCELLED' : 'ERROR';
+    logger[isCancelled ? 'warn' : 'error']('job:failed', { jobId, stage, error: errorToMeta(error) });
+    const encodePlan = this.safeParseJson(job?.encode_plan_json);
+    const mode = String(encodePlan?.mode || '').trim().toLowerCase();
+    const isPreRipMode = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
+    const hasEncodableInput = isPreRipMode
+      ? Boolean(encodePlan?.encodeInputTitleId)
+      : Boolean(job?.encode_input_path || encodePlan?.encodeInputPath || job?.raw_path);
+    const hasConfirmedPlan = Boolean(
+      encodePlan
+      && Array.isArray(encodePlan?.titles)
+      && encodePlan.titles.length > 0
+      && (Number(job?.encode_review_confirmed || 0) === 1 || Boolean(encodePlan?.reviewConfirmed))
+      && hasEncodableInput
+    );
+    let hasRawPath = false;
+    try {
+      hasRawPath = Boolean(job?.raw_path && fs.existsSync(job.raw_path));
+    } catch (_error) {
+      hasRawPath = false;
+    }
+
     await historyService.updateJob(jobId, {
-      status: 'ERROR',
-      last_state: 'ERROR',
+      status: finalState,
+      last_state: finalState,
       end_time: nowIso(),
       error_message: message
     });
-    await historyService.appendLog(jobId, 'SYSTEM', `Fehler in ${stage}: ${message}`);
+    await historyService.appendLog(
+      jobId,
+      'SYSTEM',
+      `${isCancelled ? 'Abbruch' : 'Fehler'} in ${stage}: ${message}`
+    );
 
-    await this.setState('ERROR', {
+    await this.setState(finalState, {
       activeJobId: jobId,
       progress: this.snapshot.progress,
       eta: null,
@@ -5439,9 +6127,20 @@ class PipelineService extends EventEmitter {
       context: {
         jobId,
         stage,
-        error: message
+        error: message,
+        rawPath: job?.raw_path || null,
+        inputPath: job?.encode_input_path || encodePlan?.encodeInputPath || null,
+        selectedMetadata: {
+          title: job?.title || job?.detected_title || null,
+          year: job?.year || null,
+          imdbId: job?.imdb_id || null,
+          poster: job?.poster_url || null
+        },
+        canRestartEncodeFromLastSettings: hasConfirmedPlan,
+        canRestartReviewFromRaw: hasRawPath
       }
     });
+    this.cancelRequestedByJob.delete(Number(jobId));
 
     void this.notifyPushover(isCancelled ? 'job_cancelled' : 'job_error', {
       title: isCancelled ? 'Ripster - Job abgebrochen' : 'Ripster - Job Fehler',

@@ -10,6 +10,7 @@ import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import { getStatusLabel, getStatusSeverity, normalizeStatus } from '../utils/statusPresentation';
 
 const processingStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'];
 const dashboardStatuses = new Set([
@@ -21,29 +22,63 @@ const dashboardStatuses = new Set([
   'READY_TO_ENCODE',
   'RIPPING',
   'ENCODING',
+  'CANCELLED',
   'ERROR'
 ]);
-const statusSeverityMap = {
-  IDLE: 'secondary',
-  DISC_DETECTED: 'info',
-  ANALYZING: 'warning',
-  METADATA_SELECTION: 'warning',
-  WAITING_FOR_USER_DECISION: 'warning',
-  READY_TO_START: 'info',
-  MEDIAINFO_CHECK: 'warning',
-  READY_TO_ENCODE: 'info',
-  RIPPING: 'warning',
-  ENCODING: 'warning',
-  FINISHED: 'success',
-  ERROR: 'danger'
-};
-
 function normalizeJobId(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return null;
   }
   return Math.trunc(parsed);
+}
+
+function normalizeQueue(queue) {
+  const payload = queue && typeof queue === 'object' ? queue : {};
+  const runningJobs = Array.isArray(payload.runningJobs) ? payload.runningJobs : [];
+  const queuedJobs = Array.isArray(payload.queuedJobs) ? payload.queuedJobs : [];
+  return {
+    maxParallelJobs: Number(payload.maxParallelJobs || 1),
+    runningCount: Number(payload.runningCount || runningJobs.length || 0),
+    runningJobs,
+    queuedJobs,
+    queuedCount: Number(payload.queuedCount || queuedJobs.length || 0),
+    updatedAt: payload.updatedAt || null
+  };
+}
+
+function getQueueActionResult(response) {
+  return response?.result && typeof response.result === 'object' ? response.result : {};
+}
+
+function showQueuedToast(toastRef, actionLabel, result) {
+  if (!toastRef?.current) {
+    return;
+  }
+  const queuePosition = Number(result?.queuePosition || 0);
+  const positionText = queuePosition > 0 ? `Position ${queuePosition}` : 'in der Warteschlange';
+  toastRef.current.show({
+    severity: 'info',
+    summary: `${actionLabel} in Queue`,
+    detail: `${actionLabel} wurde ${positionText} eingeplant.`,
+    life: 3200
+  });
+}
+
+function reorderQueuedItems(items, draggedJobId, targetJobId) {
+  const list = Array.isArray(items) ? items : [];
+  const from = list.findIndex((item) => Number(item?.jobId) === Number(draggedJobId));
+  const to = list.findIndex((item) => Number(item?.jobId) === Number(targetJobId));
+  if (from < 0 || to < 0 || from === to) {
+    return list;
+  }
+  const next = [...list];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next.map((item, index) => ({
+    ...item,
+    position: index + 1
+  }));
 }
 
 function getAnalyzeContext(job) {
@@ -99,14 +134,12 @@ function JobStepChecks({ backupSuccess, encodeSuccess }) {
 
 function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const jobId = normalizeJobId(job?.id);
-  if (
+  const isCurrentSessionJob = Boolean(
     jobId
     && currentPipelineJobId
     && jobId === currentPipelineJobId
     && String(currentPipeline?.state || '').trim().toUpperCase() !== 'IDLE'
-  ) {
-    return currentPipeline;
-  }
+  );
 
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const analyzeContext = getAnalyzeContext(job);
@@ -124,11 +157,11 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const errorText = String(job?.error_message || '').trim().toUpperCase();
   const hasOutputPath = Boolean(String(job?.output_path || '').trim());
   const hasEncodePlan = Boolean(encodePlan && Array.isArray(encodePlan?.titles) && encodePlan.titles.length > 0);
-  const looksLikeCancelledEncode = jobStatus === 'ERROR' && (
+  const looksLikeCancelledEncode = (jobStatus === 'ERROR' || jobStatus === 'CANCELLED') && (
     (errorText.includes('ABGEBROCHEN') || errorText.includes('CANCELLED'))
     && (hasOutputPath || Boolean(job?.encode_input_path) || Boolean(job?.handbrakeInfo))
   );
-  const looksLikeEncodingError = jobStatus === 'ERROR' && (
+  const looksLikeEncodingError = (jobStatus === 'ERROR' || jobStatus === 'CANCELLED') && (
     errorText.includes('ENCODING')
     || errorText.includes('HANDBRAKE')
     || lastState === 'ENCODING'
@@ -142,9 +175,60 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     && (
       jobStatus === 'READY_TO_ENCODE'
       || jobStatus === 'ENCODING'
+      || jobStatus === 'CANCELLED'
       || looksLikeEncodingError
     )
   );
+  const canRestartReviewFromRaw = Boolean(
+    job?.raw_path
+    && !processingStates.includes(jobStatus)
+  );
+  const computedContext = {
+    jobId,
+    rawPath: job?.raw_path || null,
+    detectedTitle: job?.detected_title || null,
+    inputPath,
+    hasEncodableTitle,
+    reviewConfirmed,
+    mode,
+    sourceJobId: encodePlan?.sourceJobId || null,
+    selectedMetadata: {
+      title: job?.title || job?.detected_title || null,
+      year: job?.year || null,
+      imdbId: job?.imdb_id || null,
+      poster: job?.poster_url || null
+    },
+    mediaInfoReview: encodePlan,
+    playlistAnalysis: analyzeContext.playlistAnalysis || null,
+    playlistDecisionRequired: Boolean(analyzeContext.playlistDecisionRequired),
+    playlistCandidates: Array.isArray(analyzeContext?.playlistAnalysis?.evaluatedCandidates)
+      ? analyzeContext.playlistAnalysis.evaluatedCandidates
+      : [],
+    selectedPlaylist: analyzeContext.selectedPlaylist || null,
+    selectedTitleId: analyzeContext.selectedTitleId ?? null,
+    omdbCandidates: [],
+    canRestartEncodeFromLastSettings,
+    canRestartReviewFromRaw
+  };
+
+  if (isCurrentSessionJob) {
+    const existingContext = currentPipeline?.context && typeof currentPipeline.context === 'object'
+      ? currentPipeline.context
+      : {};
+    return {
+      ...currentPipeline,
+      context: {
+        ...computedContext,
+        ...existingContext,
+        rawPath: existingContext.rawPath || computedContext.rawPath,
+        selectedMetadata: existingContext.selectedMetadata || computedContext.selectedMetadata,
+        canRestartEncodeFromLastSettings:
+          existingContext.canRestartEncodeFromLastSettings ?? computedContext.canRestartEncodeFromLastSettings,
+        canRestartReviewFromRaw:
+          existingContext.canRestartReviewFromRaw ?? computedContext.canRestartReviewFromRaw
+      }
+    };
+  }
 
   return {
     state: jobStatus,
@@ -152,41 +236,24 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     progress: Number.isFinite(Number(job?.progress)) ? Number(job.progress) : 0,
     eta: job?.eta || null,
     statusText: job?.status_text || job?.error_message || null,
-    context: {
-      jobId,
-      inputPath,
-      hasEncodableTitle,
-      reviewConfirmed,
-      mode,
-      sourceJobId: encodePlan?.sourceJobId || null,
-      selectedMetadata: {
-        title: job?.title || job?.detected_title || null,
-        year: job?.year || null,
-        imdbId: job?.imdb_id || null,
-        poster: job?.poster_url || null
-      },
-      mediaInfoReview: encodePlan,
-      playlistAnalysis: analyzeContext.playlistAnalysis || null,
-      playlistDecisionRequired: Boolean(analyzeContext.playlistDecisionRequired),
-      playlistCandidates: Array.isArray(analyzeContext?.playlistAnalysis?.evaluatedCandidates)
-        ? analyzeContext.playlistAnalysis.evaluatedCandidates
-        : [],
-      selectedPlaylist: analyzeContext.selectedPlaylist || null,
-      selectedTitleId: analyzeContext.selectedTitleId ?? null,
-      canRestartEncodeFromLastSettings
-    }
+    context: computedContext
   };
 }
 
 export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline }) {
   const [busy, setBusy] = useState(false);
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
+  const [metadataDialogContext, setMetadataDialogContext] = useState(null);
   const [cancelCleanupDialog, setCancelCleanupDialog] = useState({
     visible: false,
     jobId: null,
-    outputPath: null
+    target: null,
+    path: null
   });
   const [cancelCleanupBusy, setCancelCleanupBusy] = useState(false);
+  const [queueState, setQueueState] = useState(() => normalizeQueue(pipeline?.queue));
+  const [queueReorderBusy, setQueueReorderBusy] = useState(false);
+  const [draggingQueueJobId, setDraggingQueueJobId] = useState(null);
   const [liveJobLog, setLiveJobLog] = useState('');
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
@@ -200,8 +267,16 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   const loadDashboardJobs = async () => {
     setJobsLoading(true);
     try {
-      const response = await api.getJobs();
-      const allJobs = Array.isArray(response?.jobs) ? response.jobs : [];
+      const [jobsResponse, queueResponse] = await Promise.allSettled([
+        api.getJobs(),
+        api.getPipelineQueue()
+      ]);
+      const allJobs = jobsResponse.status === 'fulfilled'
+        ? (Array.isArray(jobsResponse.value?.jobs) ? jobsResponse.value.jobs : [])
+        : [];
+      if (queueResponse.status === 'fulfilled') {
+        setQueueState(normalizeQueue(queueResponse.value?.queue));
+      }
       const next = allJobs
         .filter((job) => dashboardStatuses.has(String(job?.status || '').trim().toUpperCase()))
         .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0));
@@ -237,10 +312,20 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   };
 
   useEffect(() => {
+    if (!metadataDialogVisible) {
+      return;
+    }
+    if (metadataDialogContext?.jobId) {
+      return;
+    }
     if (pipeline?.state !== 'METADATA_SELECTION' && pipeline?.state !== 'WAITING_FOR_USER_DECISION') {
       setMetadataDialogVisible(false);
     }
-  }, [pipeline?.state]);
+  }, [pipeline?.state, metadataDialogVisible, metadataDialogContext?.jobId]);
+
+  useEffect(() => {
+    setQueueState(normalizeQueue(pipeline?.queue));
+  }, [pipeline?.queue]);
 
   useEffect(() => {
     void loadDashboardJobs();
@@ -303,6 +388,71 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     return map;
   }, [dashboardJobs, pipeline, currentPipelineJobId]);
 
+  const buildMetadataContextForJob = (jobId) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId) {
+      return null;
+    }
+    const job = dashboardJobs.find((item) => normalizeJobId(item?.id) === normalizedJobId) || null;
+    const pipelineForJob = pipelineByJobId.get(normalizedJobId) || null;
+    const context = pipelineForJob?.context && typeof pipelineForJob.context === 'object'
+      ? pipelineForJob.context
+      : {};
+    const selectedMetadata = context.selectedMetadata && typeof context.selectedMetadata === 'object'
+      ? context.selectedMetadata
+      : {
+        title: job?.title || job?.detected_title || context?.detectedTitle || '',
+        year: job?.year || null,
+        imdbId: job?.imdb_id || null,
+        poster: job?.poster_url || null
+      };
+    return {
+      ...context,
+      jobId: normalizedJobId,
+      detectedTitle: context?.detectedTitle || job?.detected_title || selectedMetadata?.title || '',
+      selectedMetadata,
+      omdbCandidates: Array.isArray(context?.omdbCandidates) ? context.omdbCandidates : []
+    };
+  };
+
+  const defaultMetadataDialogContext = useMemo(() => {
+    const currentState = String(pipeline?.state || '').trim().toUpperCase();
+    const currentContext = pipeline?.context && typeof pipeline.context === 'object'
+      ? pipeline.context
+      : null;
+    const currentContextJobId = normalizeJobId(currentContext?.jobId);
+    if (
+      (currentState === 'METADATA_SELECTION' || currentState === 'WAITING_FOR_USER_DECISION')
+      && currentContextJobId
+    ) {
+      return {
+        ...currentContext,
+        jobId: currentContextJobId,
+        selectedMetadata: currentContext?.selectedMetadata || {
+          title: currentContext?.detectedTitle || '',
+          year: null,
+          imdbId: null,
+          poster: null
+        },
+        omdbCandidates: Array.isArray(currentContext?.omdbCandidates) ? currentContext.omdbCandidates : []
+      };
+    }
+
+    const pendingJob = dashboardJobs.find((job) => {
+      const normalized = normalizeStatus(job?.status);
+      return normalized === 'METADATA_SELECTION' || normalized === 'WAITING_FOR_USER_DECISION';
+    });
+    if (!pendingJob) {
+      return null;
+    }
+    return buildMetadataContextForJob(pendingJob.id);
+  }, [pipeline, dashboardJobs, pipelineByJobId]);
+
+  const effectiveMetadataDialogContext = metadataDialogContext
+    || defaultMetadataDialogContext
+    || pipeline?.context
+    || {};
+
   const showError = (error) => {
     toastRef.current?.show({
       severity: 'error',
@@ -312,12 +462,39 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     });
   };
 
+  const handleOpenMetadataDialog = (jobId = null) => {
+    const context = jobId ? buildMetadataContextForJob(jobId) : defaultMetadataDialogContext;
+    if (!context?.jobId) {
+      showError(new Error('Kein Job mit offener Metadaten-Auswahl gefunden.'));
+      return;
+    }
+    setMetadataDialogContext(context);
+    setMetadataDialogVisible(true);
+  };
+
   const handleAnalyze = async () => {
     setBusy(true);
     try {
-      await api.analyzeDisc();
+      const response = await api.analyzeDisc();
       await refreshPipeline();
       await loadDashboardJobs();
+      const analyzedJobId = normalizeJobId(response?.result?.jobId);
+      if (analyzedJobId && state === 'ENCODING') {
+        setMetadataDialogContext({
+          jobId: analyzedJobId,
+          detectedTitle: response?.result?.detectedTitle || '',
+          selectedMetadata: {
+            title: response?.result?.detectedTitle || '',
+            year: null,
+            imdbId: null,
+            poster: null
+          },
+          omdbCandidates: Array.isArray(response?.result?.omdbCandidates)
+            ? response.result.omdbCandidates
+            : []
+        });
+        setMetadataDialogVisible(true);
+      }
     } catch (error) {
       showError(error);
     } finally {
@@ -327,7 +504,14 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
 
   const handleReanalyze = async () => {
     const hasActiveJob = Boolean(pipeline?.context?.jobId || pipeline?.activeJobId);
-    if (hasActiveJob && !['IDLE', 'DISC_DETECTED', 'FINISHED'].includes(state)) {
+    if (state === 'ENCODING') {
+      const confirmed = window.confirm(
+        'Laufendes Encoding bleibt aktiv. Neue Disk jetzt als separaten Job analysieren?'
+      );
+      if (!confirmed) {
+        return;
+      }
+    } else if (hasActiveJob && !['IDLE', 'DISC_DETECTED', 'FINISHED'].includes(state)) {
       const confirmed = window.confirm(
         'Aktuellen Ablauf verwerfen und die Disk ab der ersten MakeMKV-Analyse neu starten?'
       );
@@ -361,21 +545,34 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
     }
   };
 
-  const handleCancel = async () => {
-    const cancelledState = state;
-    const cancelledJobId = currentPipelineJobId;
+  const handleCancel = async (jobId = null, jobState = null) => {
+    const cancelledJobId = normalizeJobId(jobId) || currentPipelineJobId;
     const cancelledJob = dashboardJobs.find((item) => normalizeJobId(item?.id) === cancelledJobId) || null;
+    const cancelledState = String(
+      jobState
+      || cancelledJob?.status
+      || state
+      || 'IDLE'
+    ).trim().toUpperCase();
 
     setBusy(true);
     try {
-      await api.cancelPipeline();
+      await api.cancelPipeline(cancelledJobId);
       await refreshPipeline();
       await loadDashboardJobs();
       if (cancelledState === 'ENCODING' && cancelledJobId) {
         setCancelCleanupDialog({
           visible: true,
           jobId: cancelledJobId,
-          outputPath: cancelledJob?.output_path || null
+          target: 'movie',
+          path: cancelledJob?.output_path || null
+        });
+      } else if (cancelledState === 'RIPPING' && cancelledJobId) {
+        setCancelCleanupDialog({
+          visible: true,
+          jobId: cancelledJobId,
+          target: 'raw',
+          path: cancelledJob?.raw_path || null
         });
       }
     } catch (error) {
@@ -387,24 +584,32 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
 
   const handleDeleteCancelledOutput = async () => {
     const jobId = normalizeJobId(cancelCleanupDialog?.jobId);
+    const target = String(cancelCleanupDialog?.target || '').trim().toLowerCase();
+    const effectiveTarget = target === 'raw' ? 'raw' : 'movie';
     if (!jobId) {
-      setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null });
+      setCancelCleanupDialog({ visible: false, jobId: null, target: null, path: null });
       return;
     }
 
     setCancelCleanupBusy(true);
     try {
-      const response = await api.deleteJobFiles(jobId, 'movie');
+      const response = await api.deleteJobFiles(jobId, effectiveTarget);
       const summary = response?.summary || {};
+      const deletedFiles = effectiveTarget === 'raw'
+        ? (summary.raw?.filesDeleted ?? 0)
+        : (summary.movie?.filesDeleted ?? 0);
+      const removedDirs = effectiveTarget === 'raw'
+        ? (summary.raw?.dirsRemoved ?? 0)
+        : (summary.movie?.dirsRemoved ?? 0);
       toastRef.current?.show({
         severity: 'success',
-        summary: 'Movie gelöscht',
-        detail: `Entfernt: ${summary.movie?.filesDeleted ?? 0} Datei(en), ${summary.movie?.dirsRemoved ?? 0} Ordner.`,
+        summary: effectiveTarget === 'raw' ? 'RAW gelöscht' : 'Movie gelöscht',
+        detail: `Entfernt: ${deletedFiles} Datei(en), ${removedDirs} Ordner.`,
         life: 4000
       });
       await loadDashboardJobs();
       await refreshPipeline();
-      setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null });
+      setCancelCleanupDialog({ visible: false, jobId: null, target: null, path: null });
     } catch (error) {
       showError(error);
     } finally {
@@ -425,13 +630,19 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
         await api.confirmEncodeReview(normalizedJobId, {
           selectedEncodeTitleId: startOptions.selectedEncodeTitleId ?? null,
           selectedTrackSelection: startOptions.selectedTrackSelection ?? null,
-          selectedPostEncodeScriptIds: startOptions.selectedPostEncodeScriptIds ?? []
+          selectedPostEncodeScriptIds: startOptions.selectedPostEncodeScriptIds ?? [],
+          skipPipelineStateUpdate: true
         });
       }
-      await api.startJob(normalizedJobId);
+      const response = await api.startJob(normalizedJobId);
+      const result = getQueueActionResult(response);
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizedJobId);
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Start', result);
+      } else {
+        setExpandedJobId(normalizedJobId);
+      }
     } catch (error) {
       showError(error);
     } finally {
@@ -482,10 +693,15 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   const handleRetry = async (jobId) => {
     setBusy(true);
     try {
-      await api.retryJob(jobId);
+      const response = await api.retryJob(jobId);
+      const result = getQueueActionResult(response);
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizeJobId(jobId));
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Retry', result);
+      } else {
+        setExpandedJobId(normalizeJobId(jobId));
+      }
     } catch (error) {
       showError(error);
     } finally {
@@ -508,14 +724,112 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
 
     setBusy(true);
     try {
-      await api.restartEncodeWithLastSettings(jobId);
+      const response = await api.restartEncodeWithLastSettings(jobId);
+      const result = getQueueActionResult(response);
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizeJobId(jobId));
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Encode-Neustart', result);
+      } else {
+        setExpandedJobId(normalizeJobId(jobId));
+      }
     } catch (error) {
       showError(error);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRestartReviewFromRaw = async (jobId) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await api.restartReviewFromRaw(normalizedJobId);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      setExpandedJobId(normalizedJobId);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleQueueDragEnter = (targetJobId) => {
+    const targetId = normalizeJobId(targetJobId);
+    const draggedId = normalizeJobId(draggingQueueJobId);
+    if (!targetId || !draggedId || targetId === draggedId || queueReorderBusy) {
+      return;
+    }
+    setQueueState((prev) => {
+      const queuedJobs = reorderQueuedItems(prev?.queuedJobs || [], draggedId, targetId);
+      return {
+        ...normalizeQueue(prev),
+        queuedJobs,
+        queuedCount: queuedJobs.length
+      };
+    });
+  };
+
+  const handleQueueDrop = async () => {
+    const draggedId = normalizeJobId(draggingQueueJobId);
+    setDraggingQueueJobId(null);
+    if (!draggedId || queueReorderBusy) {
+      return;
+    }
+
+    const orderedJobIds = (Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [])
+      .map((item) => normalizeJobId(item?.jobId))
+      .filter(Boolean);
+    if (orderedJobIds.length <= 1) {
+      return;
+    }
+
+    setQueueReorderBusy(true);
+    try {
+      const response = await api.reorderPipelineQueue(orderedJobIds);
+      setQueueState(normalizeQueue(response?.queue));
+    } catch (error) {
+      showError(error);
+      try {
+        const latest = await api.getPipelineQueue();
+        setQueueState(normalizeQueue(latest?.queue));
+      } catch (_reloadError) {
+        // ignore reload failures after reorder error
+      }
+    } finally {
+      setQueueReorderBusy(false);
+    }
+  };
+
+  const handleRemoveQueuedJob = async (jobId) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId || queueReorderBusy) {
+      return;
+    }
+
+    setQueueReorderBusy(true);
+    try {
+      await api.cancelPipeline(normalizedJobId);
+      const latest = await api.getPipelineQueue();
+      setQueueState(normalizeQueue(latest?.queue));
+    } catch (error) {
+      showError(error);
+    } finally {
+      setQueueReorderBusy(false);
+    }
+  };
+
+  const syncQueueFromServer = async () => {
+    try {
+      const latest = await api.getPipelineQueue();
+      setQueueState(normalizeQueue(latest?.queue));
+    } catch (_error) {
+      // ignore sync failures
     }
   };
 
@@ -536,6 +850,7 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
       await refreshPipeline();
       await loadDashboardJobs();
       setMetadataDialogVisible(false);
+      setMetadataDialogContext(null);
     } catch (error) {
       showError(error);
     } finally {
@@ -544,12 +859,102 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
   };
 
   const device = lastDiscEvent || pipeline?.context?.device;
-  const canReanalyze = !processingStates.includes(state);
-  const canOpenMetadataModal = pipeline?.state === 'METADATA_SELECTION' || pipeline?.state === 'WAITING_FOR_USER_DECISION';
+  const canReanalyze = state === 'ENCODING'
+    ? Boolean(device)
+    : !processingStates.includes(state);
+  const canOpenMetadataModal = Boolean(defaultMetadataDialogContext?.jobId);
+  const queueRunningJobs = Array.isArray(queueState?.runningJobs) ? queueState.runningJobs : [];
+  const queuedJobs = Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [];
+  const canReorderQueue = queuedJobs.length > 1 && !queueReorderBusy;
+  const queuedJobIdSet = useMemo(() => {
+    const set = new Set();
+    for (const item of queuedJobs) {
+      const id = normalizeJobId(item?.jobId);
+      if (id) {
+        set.add(id);
+      }
+    }
+    return set;
+  }, [queuedJobs]);
 
   return (
     <div className="page-grid">
       <Toast ref={toastRef} />
+
+      <Card title="Job Queue" subTitle="Starts werden nach Parallel-Limit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">
+        <div className="pipeline-queue-meta">
+          <Tag value={`Parallel: ${queueState?.maxParallelJobs || 1}`} severity="info" />
+          <Tag value={`Laufend: ${queueState?.runningCount || 0}`} severity={queueRunningJobs.length > 0 ? 'warning' : 'success'} />
+          <Tag value={`Wartend: ${queueState?.queuedCount || 0}`} severity={queuedJobs.length > 0 ? 'warning' : 'success'} />
+        </div>
+
+        <div className="pipeline-queue-grid">
+          <div className="pipeline-queue-col">
+            <h4>Laufende Jobs</h4>
+            {queueRunningJobs.length === 0 ? (
+              <small>Keine laufenden Jobs.</small>
+            ) : (
+              queueRunningJobs.map((item) => (
+                <div key={`running-${item.jobId}`} className="pipeline-queue-item running">
+                  <strong>#{item.jobId} | {item.title || `Job #${item.jobId}`}</strong>
+                  <small>{getStatusLabel(item.status)}</small>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="pipeline-queue-col">
+            <h4>Warteschlange</h4>
+            {queuedJobs.length === 0 ? (
+              <small>Queue ist leer.</small>
+            ) : (
+              queuedJobs.map((item) => {
+                const queuedJobId = normalizeJobId(item?.jobId);
+                const isDragging = normalizeJobId(draggingQueueJobId) === queuedJobId;
+                return (
+                  <div
+                    key={`queued-${item.jobId}`}
+                    className={`pipeline-queue-item queued${isDragging ? ' dragging' : ''}`}
+                    draggable={canReorderQueue}
+                    onDragStart={() => setDraggingQueueJobId(queuedJobId)}
+                    onDragEnter={() => handleQueueDragEnter(queuedJobId)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      void handleQueueDrop();
+                    }}
+                    onDragEnd={() => {
+                      setDraggingQueueJobId(null);
+                      void syncQueueFromServer();
+                    }}
+                  >
+                    <span className={`pipeline-queue-drag-handle${canReorderQueue ? '' : ' disabled'}`} title="Reihenfolge ändern">
+                      <i className="pi pi-bars" />
+                    </span>
+                    <div className="pipeline-queue-item-main">
+                      <strong>{item.position || '-'} | #{item.jobId} | {item.title || `Job #${item.jobId}`}</strong>
+                      <small>{item.actionLabel || item.action || '-'} | Status {getStatusLabel(item.status)}</small>
+                    </div>
+                    <Button
+                      icon="pi pi-times"
+                      severity="danger"
+                      text
+                      rounded
+                      size="small"
+                      className="pipeline-queue-remove-btn"
+                      disabled={queueReorderBusy}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleRemoveQueuedJob(queuedJobId);
+                      }}
+                    />
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </Card>
 
       <Card title="Job Übersicht" subTitle="Kompakte Liste; Klick auf Zeile öffnet die volle Job-Detailansicht mit passenden CTAs">
         {jobsLoading ? (
@@ -563,9 +968,13 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
               if (!jobId) {
                 return null;
               }
+              const normalizedStatus = normalizeStatus(job?.status);
+              const isQueued = queuedJobIdSet.has(jobId);
+              const statusBadgeValue = getStatusLabel(job?.status, { queued: isQueued });
+              const statusBadgeSeverity = getStatusSeverity(normalizedStatus, { queued: isQueued });
               const isExpanded = normalizeJobId(expandedJobId) === jobId;
               const isCurrentSession = currentPipelineJobId === jobId && state !== 'IDLE';
-              const isResumable = String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE' && !isCurrentSession;
+              const isResumable = normalizedStatus === 'READY_TO_ENCODE' && !isCurrentSession;
               const reviewConfirmed = Boolean(Number(job?.encode_review_confirmed || 0));
               const pipelineForJob = pipelineByJobId.get(jobId) || pipeline;
               const jobTitle = job?.title || job?.detected_title || `Job #${jobId}`;
@@ -592,10 +1001,10 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                           <span>#{jobId} | {jobTitle}</span>
                         </strong>
                         <div className="dashboard-job-badges">
-                          <Tag value={String(job?.status || '-')} severity={statusSeverityMap[String(job?.status || '').trim().toUpperCase()] || 'secondary'} />
+                          <Tag value={statusBadgeValue} severity={statusBadgeSeverity} />
                           {isCurrentSession ? <Tag value="Aktive Session" severity="info" /> : null}
                           {isResumable ? <Tag value="Fortsetzbar" severity="success" /> : null}
-                          {String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE'
+                          {normalizedStatus === 'READY_TO_ENCODE'
                             ? <Tag value={reviewConfirmed ? 'Review bestätigt' : 'Review offen'} severity={reviewConfirmed ? 'success' : 'warning'} />
                             : null}
                           <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
@@ -614,12 +1023,16 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                       pipeline={pipelineForJob}
                       onAnalyze={handleAnalyze}
                       onReanalyze={handleReanalyze}
+                      onOpenMetadata={handleOpenMetadataDialog}
                       onStart={handleStartJob}
                       onRestartEncode={handleRestartEncodeWithLastSettings}
+                      onRestartReview={handleRestartReviewFromRaw}
                       onConfirmReview={handleConfirmReview}
                       onSelectPlaylist={handleSelectPlaylist}
                       onCancel={handleCancel}
                       onRetry={handleRetry}
+                      onRemoveFromQueue={handleRemoveQueuedJob}
+                      isQueued={isQueued}
                       busy={busy}
                       liveJobLog={isCurrentSession ? liveJobLog : ''}
                     />
@@ -660,10 +1073,10 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
                     </div>
                   </div>
                   <div className="dashboard-job-badges">
-                    <Tag value={String(job?.status || '-')} severity={statusSeverityMap[String(job?.status || '').trim().toUpperCase()] || 'secondary'} />
+                    <Tag value={statusBadgeValue} severity={statusBadgeSeverity} />
                     {isCurrentSession ? <Tag value="Aktive Session" severity="info" /> : null}
                     {isResumable ? <Tag value="Fortsetzbar" severity="success" /> : null}
-                    {String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE'
+                    {normalizedStatus === 'READY_TO_ENCODE'
                       ? <Tag value={reviewConfirmed ? 'Bestätigt' : 'Unbestätigt'} severity={reviewConfirmed ? 'success' : 'warning'} />
                       : null}
                     <JobStepChecks backupSuccess={Boolean(job?.backupSuccess)} encodeSuccess={Boolean(job?.encodeSuccess)} />
@@ -696,7 +1109,7 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
           <Button
             label="Metadaten-Modal öffnen"
             icon="pi pi-list"
-            onClick={() => setMetadataDialogVisible(true)}
+            onClick={() => handleOpenMetadataDialog()}
             disabled={!canOpenMetadataModal}
           />
         </div>
@@ -725,36 +1138,43 @@ export default function DashboardPage({ pipeline, lastDiscEvent, refreshPipeline
 
       <MetadataSelectionDialog
         visible={metadataDialogVisible}
-        context={pipeline?.context || {}}
-        onHide={() => setMetadataDialogVisible(false)}
+        context={effectiveMetadataDialogContext}
+        onHide={() => {
+          setMetadataDialogVisible(false);
+          setMetadataDialogContext(null);
+        }}
         onSubmit={handleMetadataSubmit}
         onSearch={handleOmdbSearch}
         busy={busy}
       />
 
       <Dialog
-        header="Encode abgebrochen"
+        header={cancelCleanupDialog?.target === 'raw' ? 'Rip abgebrochen' : 'Encode abgebrochen'}
         visible={Boolean(cancelCleanupDialog.visible)}
-        onHide={() => setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null })}
+        onHide={() => setCancelCleanupDialog({ visible: false, jobId: null, target: null, path: null })}
         style={{ width: '32rem', maxWidth: '96vw' }}
         modal
       >
         <p>
-          Soll die bisher erzeugte Movie-Datei inklusive Job-Ordner im Ausgabeverzeichnis gelöscht werden?
+          {cancelCleanupDialog?.target === 'raw'
+            ? 'Soll der bisher erzeugte RAW-Ordner gelöscht werden?'
+            : 'Soll die bisher erzeugte Movie-Datei inklusive Job-Ordner im Ausgabeverzeichnis gelöscht werden?'}
         </p>
-        {cancelCleanupDialog?.outputPath ? (
-          <small className="muted-inline">Output-Pfad: {cancelCleanupDialog.outputPath}</small>
+        {cancelCleanupDialog?.path ? (
+          <small className="muted-inline">
+            {cancelCleanupDialog?.target === 'raw' ? 'RAW-Pfad' : 'Output-Pfad'}: {cancelCleanupDialog.path}
+          </small>
         ) : null}
         <div className="dialog-actions">
           <Button
             label="Behalten"
             severity="secondary"
             outlined
-            onClick={() => setCancelCleanupDialog({ visible: false, jobId: null, outputPath: null })}
+            onClick={() => setCancelCleanupDialog({ visible: false, jobId: null, target: null, path: null })}
             disabled={cancelCleanupBusy}
           />
           <Button
-            label="Movie löschen"
+            label={cancelCleanupDialog?.target === 'raw' ? 'RAW löschen' : 'Movie löschen'}
             icon="pi pi-trash"
             severity="danger"
             onClick={handleDeleteCancelledOutput}

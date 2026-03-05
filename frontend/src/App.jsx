@@ -35,6 +35,13 @@ function App() {
         }));
       }
 
+      if (message.type === 'PIPELINE_QUEUE_CHANGED') {
+        setPipeline((prev) => ({
+          ...(prev || {}),
+          queue: message.payload || null
+        }));
+      }
+
       if (message.type === 'DISC_DETECTED') {
         setLastDiscEvent(message.payload?.device || null);
       }

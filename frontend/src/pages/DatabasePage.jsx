@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card } from 'primereact/card';
 import { DataTable } from 'primereact/datatable';
 import { Column } from 'primereact/column';
@@ -12,33 +12,28 @@ import JobDetailDialog from '../components/JobDetailDialog';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
-
-const statusOptions = [
-  { label: 'Alle', value: '' },
-  { label: 'FINISHED', value: 'FINISHED' },
-  { label: 'ERROR', value: 'ERROR' },
-  { label: 'WAITING_FOR_USER_DECISION', value: 'WAITING_FOR_USER_DECISION' },
-  { label: 'READY_TO_START', value: 'READY_TO_START' },
-  { label: 'READY_TO_ENCODE', value: 'READY_TO_ENCODE' },
-  { label: 'MEDIAINFO_CHECK', value: 'MEDIAINFO_CHECK' },
-  { label: 'RIPPING', value: 'RIPPING' },
-  { label: 'ENCODING', value: 'ENCODING' },
-  { label: 'ANALYZING', value: 'ANALYZING' },
-  { label: 'METADATA_SELECTION', value: 'METADATA_SELECTION' }
-];
-
-function statusSeverity(status) {
-  if (status === 'FINISHED') return 'success';
-  if (status === 'ERROR') return 'danger';
-  if (status === 'READY_TO_START' || status === 'READY_TO_ENCODE') return 'info';
-  if (status === 'WAITING_FOR_USER_DECISION') return 'warning';
-  if (status === 'RIPPING' || status === 'ENCODING' || status === 'ANALYZING' || status === 'MEDIAINFO_CHECK') return 'warning';
-  return 'secondary';
-}
+import {
+  getStatusLabel,
+  getStatusSeverity,
+  normalizeStatus,
+  STATUS_FILTER_OPTIONS
+} from '../utils/statusPresentation';
 
 function resolveMediaType(row) {
   const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
   return raw === 'bluray' ? 'bluray' : 'disc';
+}
+
+function normalizeJobId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function getQueueActionResult(response) {
+  return response?.result && typeof response.result === 'object' ? response.result : {};
 }
 
 export default function DatabasePage() {
@@ -59,7 +54,18 @@ export default function DatabasePage() {
   const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
   const [deleteEntryBusyJobId, setDeleteEntryBusyJobId] = useState(null);
   const [orphanImportBusyPath, setOrphanImportBusyPath] = useState(null);
+  const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
+  const queuedJobIdSet = useMemo(() => {
+    const next = new Set();
+    for (const value of Array.isArray(queuedJobIds) ? queuedJobIds : []) {
+      const id = normalizeJobId(value);
+      if (id) {
+        next.add(id);
+      }
+    }
+    return next;
+  }, [queuedJobIds]);
 
   const loadRows = async () => {
     setLoading(true);
@@ -85,8 +91,21 @@ export default function DatabasePage() {
     }
   };
 
+  const loadQueue = async () => {
+    try {
+      const response = await api.getPipelineQueue();
+      const queuedRows = Array.isArray(response?.queue?.queuedJobs) ? response.queue.queuedJobs : [];
+      const queuedIds = queuedRows
+        .map((item) => normalizeJobId(item?.jobId))
+        .filter(Boolean);
+      setQueuedJobIds(queuedIds);
+    } catch (_error) {
+      setQueuedJobIds([]);
+    }
+  };
+
   const load = async () => {
-    await Promise.all([loadRows(), loadOrphans()]);
+    await Promise.all([loadRows(), loadOrphans(), loadQueue()]);
   };
 
   useEffect(() => {
@@ -238,6 +257,116 @@ export default function DatabasePage() {
       toastRef.current?.show({ severity: 'error', summary: 'Re-Encode fehlgeschlagen', detail: error.message, life: 4500 });
     } finally {
       setReencodeBusyJobId(null);
+    }
+  };
+
+  const handleRestartEncode = async (row) => {
+    const title = row.title || row.detected_title || `Job #${row.id}`;
+    if (row?.encodeSuccess) {
+      const confirmed = window.confirm(
+        `Encode für "${title}" ist bereits erfolgreich abgeschlossen. Wirklich erneut encodieren?\n` +
+        'Es wird eine neue Datei mit Kollisionsprüfung angelegt.'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setActionBusy(true);
+    try {
+      const response = await api.restartEncodeWithLastSettings(row.id);
+      const result = getQueueActionResult(response);
+      if (result.queued) {
+        const queuePosition = Number(result?.queuePosition || 0);
+        toastRef.current?.show({
+          severity: 'info',
+          summary: 'Encode-Neustart in Queue',
+          detail: queuePosition > 0
+            ? `Job wurde auf Position ${queuePosition} eingeplant.`
+            : 'Job wurde in die Warteschlange eingeplant.',
+          life: 3500
+        });
+      } else {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Encode-Neustart gestartet',
+          detail: 'Letzte bestätigte Einstellungen werden verwendet.',
+          life: 3500
+        });
+      }
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Encode-Neustart fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRestartReview = async (row) => {
+    setActionBusy(true);
+    try {
+      await api.restartReviewFromRaw(row.id);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Review-Neustart gestartet',
+        detail: 'Die Titel-/Spurprüfung wird aus dem RAW neu berechnet.',
+        life: 3500
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Review-Neustart fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRemoveFromQueue = async (row) => {
+    const jobId = normalizeJobId(row?.id || row);
+    if (!jobId) {
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await api.cancelPipeline(jobId);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Aus Queue entfernt',
+        detail: `Job #${jobId} wurde aus der Warteschlange entfernt.`,
+        life: 3200
+      });
+      await load();
+      await refreshDetailIfOpen(jobId);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Queue-Entfernung fehlgeschlagen',
+        detail: error.message,
+        life: 4500
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleResumeReady = async (row) => {
+    setActionBusy(true);
+    try {
+      await api.resumeReadyJob(row.id);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Job ins Dashboard geladen',
+        detail: 'Job ist wieder im Dashboard aktiv.',
+        life: 3200
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Laden fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -431,7 +560,17 @@ export default function DatabasePage() {
     </div>
   );
 
-  const stateBody = (row) => <Tag value={row.status} severity={statusSeverity(row.status)} />;
+  const stateBody = (row) => {
+    const normalizedStatus = normalizeStatus(row?.status);
+    const rowId = normalizeJobId(row?.id);
+    const isQueued = Boolean(rowId && queuedJobIdSet.has(rowId));
+    return (
+      <Tag
+        value={getStatusLabel(row?.status, { queued: isQueued })}
+        severity={getStatusSeverity(normalizedStatus, { queued: isQueued })}
+      />
+    );
+  };
   const mediaBody = (row) => {
     const mediaType = resolveMediaType(row);
     const src = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
@@ -480,7 +619,7 @@ export default function DatabasePage() {
           />
           <Dropdown
             value={status}
-            options={statusOptions}
+            options={STATUS_FILTER_OPTIONS}
             optionLabel="label"
             optionValue="value"
             onChange={(event) => setStatus(event.value)}
@@ -556,9 +695,14 @@ export default function DatabasePage() {
           setLogLoadingMode(null);
         }}
         onAssignOmdb={openMetadataAssignDialog}
+        onResumeReady={handleResumeReady}
+        onRestartEncode={handleRestartEncode}
+        onRestartReview={handleRestartReview}
         onReencode={handleReencode}
         onDeleteFiles={handleDeleteFiles}
         onDeleteEntry={handleDeleteEntry}
+        onRemoveFromQueue={handleRemoveFromQueue}
+        isQueued={Boolean(selectedJob?.id && queuedJobIdSet.has(normalizeJobId(selectedJob.id)))}
         omdbAssignBusy={metadataDialogBusy}
         actionBusy={actionBusy}
         reencodeBusy={reencodeBusyJobId === selectedJob?.id}

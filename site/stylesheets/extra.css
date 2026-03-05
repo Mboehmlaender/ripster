@@ -1,0 +1,150 @@
+/* Ripster custom styles */
+
+:root {
+  --md-primary-fg-color: #6a1b9a;
+  --md-accent-fg-color: #ab47bc;
+}
+
+/* Cards grid layout */
+.grid.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.grid.cards > * {
+  border-radius: 0.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  padding: 1.25rem;
+  transition: box-shadow 0.2s ease;
+}
+
+.grid.cards > *:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* Status badge colors */
+.status-idle { color: #78909c; }
+.status-analyzing { color: #fb8c00; }
+.status-ripping { color: #1976d2; }
+.status-encoding { color: #7b1fa2; }
+.status-finished { color: #388e3c; }
+.status-error { color: #d32f2f; }
+
+/* Code blocks */
+.md-typeset pre > code {
+  font-size: 0.85em;
+}
+
+/* Mermaid diagrams – standard */
+.md-typeset .mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1.5rem 0;
+}
+
+/* Large pipeline flowchart: horizontal scroll + min-height */
+.pipeline-diagram {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1.5rem 0;
+  padding-bottom: 0.5rem;
+}
+
+.pipeline-diagram .mermaid {
+  min-width: 900px;
+  justify-content: flex-start;
+}
+
+.pipeline-diagram .mermaid svg {
+  min-width: 900px;
+  height: auto;
+}
+
+/* Pipeline step track */
+.pipeline-steps {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 1rem 0 1.5rem 0;
+  margin: 1.5rem 0;
+  scrollbar-width: thin;
+}
+
+.pipeline-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 110px;
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.pipeline-step:not(:last-child)::after {
+  content: '→';
+  position: absolute;
+  right: -14px;
+  top: 22px;
+  font-size: 1.2rem;
+  color: var(--md-default-fg-color--light);
+  z-index: 1;
+}
+
+.pipeline-step-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  border: 2px solid transparent;
+}
+
+.pipeline-step-label {
+  font-size: 0.7rem;
+  text-align: center;
+  line-height: 1.2;
+  max-width: 90px;
+  color: var(--md-default-fg-color);
+}
+
+.pipeline-step-sub {
+  font-size: 0.6rem;
+  color: var(--md-default-fg-color--light);
+  text-align: center;
+  margin-top: 0.2rem;
+}
+
+/* Step colors */
+.step-idle    { background: #eceff1; color: #546e7a; border-color: #90a4ae; }
+.step-user    { background: #e8eaf6; color: #3949ab; border-color: #7986cb; }
+.step-running { background: #e3f2fd; color: #1565c0; border-color: #42a5f5; }
+.step-wait    { background: #fff8e1; color: #e65100; border-color: #ffa726; }
+.step-encode  { background: #f3e5f5; color: #6a1b9a; border-color: #ab47bc; }
+.step-done    { background: #e8f5e9; color: #2e7d32; border-color: #66bb6a; }
+.step-error   { background: #ffebee; color: #c62828; border-color: #ef5350; }
+
+/* Table improvements */
+.md-typeset table:not([class]) {
+  width: 100%;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--md-primary-fg-color);
+  color: white;
+}
+
+/* Admonition tweaks */
+.md-typeset .admonition.tip {
+  border-color: #00897b;
+}
+
+.md-typeset .admonition.tip > .admonition-title {
+  background-color: rgba(0, 137, 123, 0.1);
+}

@@ -564,6 +564,49 @@ class HistoryService {
     }));
   }
 
+  async getJobsByIds(jobIds = []) {
+    const ids = Array.isArray(jobIds)
+      ? jobIds
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.trunc(value))
+      : [];
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const db = await getDb();
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = await db.all(
+      `SELECT * FROM jobs WHERE id IN (${placeholders})`,
+      ids
+    );
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter(Boolean)
+      .map((job) => ({
+        ...enrichJobRow(job),
+        log_count: hasProcessLogFile(job.id) ? 1 : 0
+      }));
+  }
+
+  async getRunningJobs() {
+    const db = await getDb();
+    const rows = await db.all(
+      `
+        SELECT *
+        FROM jobs
+        WHERE status IN ('RIPPING', 'ENCODING')
+        ORDER BY updated_at ASC, id ASC
+      `
+    );
+    return rows.map((job) => ({
+      ...enrichJobRow(job),
+      log_count: hasProcessLogFile(job.id) ? 1 : 0
+    }));
+  }
+
   async getJobWithLogs(jobId, options = {}) {
     const db = await getDb();
     const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);

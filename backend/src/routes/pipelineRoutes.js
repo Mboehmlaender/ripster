@@ -95,11 +95,13 @@ router.post(
     const selectedEncodeTitleId = req.body?.selectedEncodeTitleId ?? null;
     const selectedTrackSelection = req.body?.selectedTrackSelection ?? null;
     const selectedPostEncodeScriptIds = req.body?.selectedPostEncodeScriptIds;
+    const skipPipelineStateUpdate = Boolean(req.body?.skipPipelineStateUpdate);
     logger.info('post:confirm-encode', {
       reqId: req.reqId,
       jobId,
       selectedEncodeTitleId,
       selectedTrackSelectionProvided: Boolean(selectedTrackSelection),
+      skipPipelineStateUpdate,
       selectedPostEncodeScriptIdsCount: Array.isArray(selectedPostEncodeScriptIds)
         ? selectedPostEncodeScriptIds.length
         : 0
@@ -107,7 +109,8 @@ router.post(
     const job = await pipelineService.confirmEncodeReview(jobId, {
       selectedEncodeTitleId,
       selectedTrackSelection,
-      selectedPostEncodeScriptIds
+      selectedPostEncodeScriptIds,
+      skipPipelineStateUpdate
     });
     res.json({ job });
   })
@@ -116,9 +119,13 @@ router.post(
 router.post(
   '/cancel',
   asyncHandler(async (req, res) => {
-    logger.warn('post:cancel', { reqId: req.reqId });
-    await pipelineService.cancel();
-    res.json({ ok: true });
+    const rawJobId = req.body?.jobId;
+    const jobId = rawJobId === null || rawJobId === undefined || String(rawJobId).trim() === ''
+      ? null
+      : Number(rawJobId);
+    logger.warn('post:cancel', { reqId: req.reqId, jobId });
+    const result = await pipelineService.cancel(jobId);
+    res.json({ result });
   })
 );
 
@@ -127,8 +134,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const jobId = Number(req.params.jobId);
     logger.info('post:retry', { reqId: req.reqId, jobId });
-    await pipelineService.retry(jobId);
-    res.json({ ok: true });
+    const result = await pipelineService.retry(jobId);
+    res.json({ result });
   })
 );
 
@@ -153,12 +160,41 @@ router.post(
 );
 
 router.post(
+  '/restart-review/:jobId',
+  asyncHandler(async (req, res) => {
+    const jobId = Number(req.params.jobId);
+    logger.info('post:restart-review', { reqId: req.reqId, jobId });
+    const result = await pipelineService.restartReviewFromRaw(jobId);
+    res.json({ result });
+  })
+);
+
+router.post(
   '/restart-encode/:jobId',
   asyncHandler(async (req, res) => {
     const jobId = Number(req.params.jobId);
     logger.info('post:restart-encode', { reqId: req.reqId, jobId });
     const result = await pipelineService.restartEncodeWithLastSettings(jobId);
     res.json({ result });
+  })
+);
+
+router.get(
+  '/queue',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:queue', { reqId: req.reqId });
+    const queue = await pipelineService.getQueueSnapshot();
+    res.json({ queue });
+  })
+);
+
+router.post(
+  '/queue/reorder',
+  asyncHandler(async (req, res) => {
+    const orderedJobIds = Array.isArray(req.body?.orderedJobIds) ? req.body.orderedJobIds : [];
+    logger.info('post:queue:reorder', { reqId: req.reqId, orderedJobIds });
+    const queue = await pipelineService.reorderQueue(orderedJobIds);
+    res.json({ queue });
   })
 );
 

@@ -70,6 +70,20 @@ function normalizeTrackIds(rawList) {
   return output;
 }
 
+function normalizeNonNegativeInteger(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return null;
+  }
+  if (typeof rawValue === 'string' && rawValue.trim() === '') {
+    return null;
+  }
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.trunc(value);
+}
+
 function removeSelectionArgs(extraArgs) {
   const args = Array.isArray(extraArgs) ? extraArgs : [];
   const filtered = [];
@@ -554,7 +568,7 @@ class SettingsService {
       ? 'backup'
       : 'mkv';
     const sourceArg = this.resolveSourceArg(map, deviceInfo);
-    const rawSelectedTitleId = Number(options?.selectedTitleId);
+    const rawSelectedTitleId = normalizeNonNegativeInteger(options?.selectedTitleId);
     const parsedExtra = splitArgs(map.makemkv_rip_extra_args);
     let extra = [];
     let baseArgs = [];
@@ -574,7 +588,7 @@ class SettingsService {
     } else {
       extra = parsedExtra;
       const minLength = Number(map.makemkv_min_length_minutes || 60);
-      const hasExplicitTitle = Number.isFinite(rawSelectedTitleId) && rawSelectedTitleId >= 0;
+      const hasExplicitTitle = rawSelectedTitleId !== null;
       const targetTitle = hasExplicitTitle ? String(Math.trunc(rawSelectedTitleId)) : 'all';
       if (hasExplicitTitle) {
         baseArgs = [

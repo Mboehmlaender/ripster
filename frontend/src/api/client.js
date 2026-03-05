@@ -115,9 +115,10 @@ export const api = {
       body: JSON.stringify(payload || {})
     });
   },
-  cancelPipeline() {
+  cancelPipeline(jobId = null) {
     return request('/pipeline/cancel', {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ jobId })
     });
   },
   retryJob(jobId) {
@@ -135,9 +136,23 @@ export const api = {
       method: 'POST'
     });
   },
+  restartReviewFromRaw(jobId) {
+    return request(`/pipeline/restart-review/${jobId}`, {
+      method: 'POST'
+    });
+  },
   restartEncodeWithLastSettings(jobId) {
     return request(`/pipeline/restart-encode/${jobId}`, {
       method: 'POST'
+    });
+  },
+  getPipelineQueue() {
+    return request('/pipeline/queue');
+  },
+  reorderPipelineQueue(orderedJobIds = []) {
+    return request('/pipeline/queue/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ orderedJobIds: Array.isArray(orderedJobIds) ? orderedJobIds : [] })
     });
   },
   getJobs(params = {}) {

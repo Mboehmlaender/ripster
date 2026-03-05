@@ -71,18 +71,23 @@ function spawnTrackedProcess({
     });
   });
 
+  let cancelCalled = false;
   const cancel = () => {
-    if (child.killed) {
+    if (cancelCalled) {
       return;
     }
+    cancelCalled = true;
 
     logger.warn('spawn:cancel:requested', { cmd, args, context, pid: child.pid });
     child.kill('SIGINT');
 
     setTimeout(() => {
-      if (!child.killed) {
+      try {
+        process.kill(child.pid, 0);
         logger.warn('spawn:cancel:force-kill', { cmd, args, context, pid: child.pid });
         child.kill('SIGKILL');
+      } catch (_e) {
+        // Process already terminated
       }
     }, 3000);
   };

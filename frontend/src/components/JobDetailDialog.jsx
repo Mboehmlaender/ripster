@@ -3,6 +3,7 @@ import { Button } from 'primereact/button';
 import MediaInfoReviewPanel from './MediaInfoReviewPanel';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import { getStatusLabel } from '../utils/statusPresentation';
 
 function JsonView({ title, value }) {
   return (
@@ -18,36 +19,43 @@ function resolveMediaType(job) {
   return raw === 'bluray' ? 'bluray' : 'disc';
 }
 
-function statusBadgeMeta(status) {
+function statusBadgeMeta(status, queued = false) {
   const normalized = String(status || '').trim().toUpperCase();
+  const label = getStatusLabel(normalized, { queued });
+  if (queued) {
+    return { label, icon: 'pi-list', tone: 'info' };
+  }
   if (normalized === 'FINISHED') {
-    return { label: normalized, icon: 'pi-check-circle', tone: 'success' };
+    return { label, icon: 'pi-check-circle', tone: 'success' };
   }
   if (normalized === 'ERROR') {
-    return { label: normalized, icon: 'pi-times-circle', tone: 'danger' };
+    return { label, icon: 'pi-times-circle', tone: 'danger' };
+  }
+  if (normalized === 'CANCELLED') {
+    return { label, icon: 'pi-ban', tone: 'warning' };
   }
   if (normalized === 'READY_TO_ENCODE' || normalized === 'READY_TO_START') {
-    return { label: normalized, icon: 'pi-play-circle', tone: 'info' };
+    return { label, icon: 'pi-play-circle', tone: 'info' };
   }
   if (normalized === 'WAITING_FOR_USER_DECISION') {
-    return { label: normalized, icon: 'pi-exclamation-circle', tone: 'warning' };
+    return { label, icon: 'pi-exclamation-circle', tone: 'warning' };
   }
   if (normalized === 'METADATA_SELECTION') {
-    return { label: normalized, icon: 'pi-list', tone: 'warning' };
+    return { label, icon: 'pi-list', tone: 'warning' };
   }
   if (normalized === 'ANALYZING') {
-    return { label: normalized, icon: 'pi-search', tone: 'warning' };
+    return { label, icon: 'pi-search', tone: 'warning' };
   }
   if (normalized === 'RIPPING') {
-    return { label: normalized, icon: 'pi-download', tone: 'warning' };
+    return { label, icon: 'pi-download', tone: 'warning' };
   }
   if (normalized === 'MEDIAINFO_CHECK') {
-    return { label: normalized, icon: 'pi-sliders-h', tone: 'warning' };
+    return { label, icon: 'pi-sliders-h', tone: 'warning' };
   }
   if (normalized === 'ENCODING') {
-    return { label: normalized, icon: 'pi-cog', tone: 'warning' };
+    return { label, icon: 'pi-cog', tone: 'warning' };
   }
-  return { label: normalized || '-', icon: 'pi-info-circle', tone: 'secondary' };
+  return { label: label || '-', icon: 'pi-info-circle', tone: 'secondary' };
 }
 
 function omdbField(value) {
@@ -82,10 +90,14 @@ export default function JobDetailDialog({
   onLoadLog,
   logLoadingMode = null,
   onAssignOmdb,
+  onResumeReady,
   onRestartEncode,
+  onRestartReview,
   onReencode,
   onDeleteFiles,
   onDeleteEntry,
+  onRemoveFromQueue,
+  isQueued = false,
   omdbAssignBusy = false,
   actionBusy = false,
   reencodeBusy = false,
@@ -95,6 +107,11 @@ export default function JobDetailDialog({
   const running = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(job?.status);
   const showFinalLog = !running;
   const canReencode = !!(job?.rawStatus?.exists && job?.rawStatus?.isEmpty !== true && mkDone && !running);
+  const canResumeReady = Boolean(
+    (String(job?.status || '').trim().toUpperCase() === 'READY_TO_ENCODE' || String(job?.last_state || '').trim().toUpperCase() === 'READY_TO_ENCODE')
+    && !running
+    && typeof onResumeReady === 'function'
+  );
   const hasConfirmedPlan = Boolean(
     job?.encodePlan
     && Array.isArray(job?.encodePlan?.titles)
@@ -103,7 +120,13 @@ export default function JobDetailDialog({
   );
   const hasRestartInput = Boolean(job?.encode_input_path || job?.raw_path || job?.encodePlan?.encodeInputPath);
   const canRestartEncode = Boolean(hasConfirmedPlan && hasRestartInput && !running);
+  const canRestartReview = Boolean(
+    (job?.rawStatus?.exists || job?.raw_path)
+    && !running
+    && typeof onRestartReview === 'function'
+  );
   const canDeleteEntry = !running && typeof onDeleteEntry === 'function';
+  const queueLocked = Boolean(isQueued && job?.id);
   const logCount = Number(job?.log_count || 0);
   const logMeta = job?.logMeta && typeof job.logMeta === 'object' ? job.logMeta : null;
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
@@ -112,7 +135,7 @@ export default function JobDetailDialog({
   const mediaTypeLabel = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges Medium';
   const mediaTypeIcon = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
   const mediaTypeAlt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
-  const statusMeta = statusBadgeMeta(job?.status);
+  const statusMeta = statusBadgeMeta(job?.status, queueLocked);
   const omdbInfo = job?.omdbInfo && typeof job.omdbInfo === 'object' ? job.omdbInfo : {};
 
   return (
@@ -261,74 +284,112 @@ export default function JobDetailDialog({
 
           <h4>Aktionen</h4>
           <div className="actions-row">
-            <Button
-              label="OMDb neu zuordnen"
-              icon="pi pi-search"
-              severity="secondary"
-              size="small"
-              onClick={() => onAssignOmdb?.(job)}
-              loading={omdbAssignBusy}
-              disabled={running || typeof onAssignOmdb !== 'function'}
-            />
-            {typeof onRestartEncode === 'function' ? (
+            {queueLocked ? (
               <Button
-                label="Encode neu starten"
-                icon="pi pi-play"
-                severity="success"
+                label="Aus Queue löschen"
+                icon="pi pi-times"
+                severity="danger"
+                outlined
                 size="small"
-                onClick={() => onRestartEncode?.(job)}
+                onClick={() => onRemoveFromQueue?.(job)}
                 loading={actionBusy}
-                disabled={!canRestartEncode}
+                disabled={typeof onRemoveFromQueue !== 'function'}
               />
-            ) : null}
-            <Button
-              label="RAW neu encodieren"
-              icon="pi pi-cog"
-              severity="info"
-              size="small"
-              onClick={() => onReencode?.(job)}
-              loading={reencodeBusy}
-              disabled={!canReencode || typeof onReencode !== 'function'}
-            />
-            <Button
-              label="RAW löschen"
-              icon="pi pi-trash"
-              severity="warning"
-              outlined
-              size="small"
-              onClick={() => onDeleteFiles?.(job, 'raw')}
-              loading={actionBusy}
-              disabled={!job.rawStatus?.exists || typeof onDeleteFiles !== 'function'}
-            />
-            <Button
-              label="Movie löschen"
-              icon="pi pi-trash"
-              severity="warning"
-              outlined
-              size="small"
-              onClick={() => onDeleteFiles?.(job, 'movie')}
-              loading={actionBusy}
-              disabled={!job.outputStatus?.exists || typeof onDeleteFiles !== 'function'}
-            />
-            <Button
-              label="Beides löschen"
-              icon="pi pi-times"
-              severity="danger"
-              size="small"
-              onClick={() => onDeleteFiles?.(job, 'both')}
-              loading={actionBusy}
-              disabled={(!job.rawStatus?.exists && !job.outputStatus?.exists) || typeof onDeleteFiles !== 'function'}
-            />
-            <Button
-              label="Historieneintrag löschen"
-              icon="pi pi-trash"
-              severity="danger"
-              outlined
-              size="small"
-              onClick={() => onDeleteEntry?.(job)}
-              loading={deleteEntryBusy}
-              disabled={!canDeleteEntry}
-            />
+            ) : (
+              <>
+                <Button
+                  label="OMDb neu zuordnen"
+                  icon="pi pi-search"
+                  severity="secondary"
+                  size="small"
+                  onClick={() => onAssignOmdb?.(job)}
+                  loading={omdbAssignBusy}
+                  disabled={running || typeof onAssignOmdb !== 'function'}
+                />
+                {canResumeReady ? (
+                  <Button
+                    label="Im Dashboard öffnen"
+                    icon="pi pi-window-maximize"
+                    severity="info"
+                    outlined
+                    size="small"
+                    onClick={() => onResumeReady?.(job)}
+                    loading={actionBusy}
+                  />
+                ) : null}
+                {typeof onRestartEncode === 'function' ? (
+                  <Button
+                    label="Encode neu starten"
+                    icon="pi pi-play"
+                    severity="success"
+                    size="small"
+                    onClick={() => onRestartEncode?.(job)}
+                    loading={actionBusy}
+                    disabled={!canRestartEncode}
+                  />
+                ) : null}
+                {typeof onRestartReview === 'function' ? (
+                  <Button
+                    label="Review neu starten"
+                    icon="pi pi-refresh"
+                    severity="info"
+                    outlined
+                    size="small"
+                    onClick={() => onRestartReview?.(job)}
+                    loading={actionBusy}
+                    disabled={!canRestartReview}
+                  />
+                ) : null}
+                <Button
+                  label="RAW neu encodieren"
+                  icon="pi pi-cog"
+                  severity="info"
+                  size="small"
+                  onClick={() => onReencode?.(job)}
+                  loading={reencodeBusy}
+                  disabled={!canReencode || typeof onReencode !== 'function'}
+                />
+                <Button
+                  label="RAW löschen"
+                  icon="pi pi-trash"
+                  severity="warning"
+                  outlined
+                  size="small"
+                  onClick={() => onDeleteFiles?.(job, 'raw')}
+                  loading={actionBusy}
+                  disabled={!job.rawStatus?.exists || typeof onDeleteFiles !== 'function'}
+                />
+                <Button
+                  label="Movie löschen"
+                  icon="pi pi-trash"
+                  severity="warning"
+                  outlined
+                  size="small"
+                  onClick={() => onDeleteFiles?.(job, 'movie')}
+                  loading={actionBusy}
+                  disabled={!job.outputStatus?.exists || typeof onDeleteFiles !== 'function'}
+                />
+                <Button
+                  label="Beides löschen"
+                  icon="pi pi-times"
+                  severity="danger"
+                  size="small"
+                  onClick={() => onDeleteFiles?.(job, 'both')}
+                  loading={actionBusy}
+                  disabled={(!job.rawStatus?.exists && !job.outputStatus?.exists) || typeof onDeleteFiles !== 'function'}
+                />
+                <Button
+                  label="Historieneintrag löschen"
+                  icon="pi pi-trash"
+                  severity="danger"
+                  outlined
+                  size="small"
+                  onClick={() => onDeleteEntry?.(job)}
+                  loading={deleteEntryBusy}
+                  disabled={!canDeleteEntry}
+                />
+              </>
+            )}
           </div>
 
           <h4>Log</h4>

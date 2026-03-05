@@ -667,7 +667,7 @@ export default function SettingsPage() {
                 <div className="script-test-result">
                   <h4>Letzter Script-Test: {lastScriptTestResult.scriptName}</h4>
                   <small>
-                    Status: {lastScriptTestResult.success ? 'SUCCESS' : 'ERROR'}
+                    Status: {lastScriptTestResult.success ? 'Erfolgreich' : 'Fehler'}
                     {' | '}exit={lastScriptTestResult.exitCode ?? 'n/a'}
                     {' | '}timeout={lastScriptTestResult.timedOut ? 'ja' : 'nein'}
                     {' | '}dauer={Number(lastScriptTestResult.durationMs || 0)}ms

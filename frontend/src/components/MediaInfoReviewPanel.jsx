@@ -51,6 +51,20 @@ function normalizeTrackIdList(values) {
   return output;
 }
 
+function isBurnedSubtitleTrack(track) {
+  const flags = Array.isArray(track?.subtitlePreviewFlags)
+    ? track.subtitlePreviewFlags
+    : (Array.isArray(track?.flags) ? track.flags : []);
+  const hasBurnedFlag = flags.some((flag) => String(flag || '').trim().toLowerCase() === 'burned');
+  const summary = `${track?.subtitlePreviewSummary || ''} ${track?.subtitleActionSummary || ''}`;
+  return Boolean(
+    track?.subtitlePreviewBurnIn
+    || track?.burnIn
+    || hasBurnedFlag
+    || /burned/i.test(summary)
+  );
+}
+
 function splitArgs(input) {
   if (!input || typeof input !== 'string') {
     return [];
@@ -542,8 +556,9 @@ function TrackList({
         <div className="media-track-list">
           {tracks.map((track) => {
             const trackId = normalizeTrackId(track.id);
+            const burned = type === 'subtitle' ? isBurnedSubtitleTrack(track) : false;
             const checked = allowSelection
-              ? (trackId !== null && selectedIds.includes(trackId))
+              ? (trackId !== null && selectedIds.includes(trackId) && !(type === 'subtitle' && burned))
               : Boolean(track.selectedForEncode);
             const selectedIndex = trackId !== null
               ? checkedTrackOrder.indexOf(trackId)
@@ -567,26 +582,13 @@ function TrackList({
                   })()
                   : 'Nicht übernommen')
                 : null;
-            const subtitleFlags = type === 'subtitle' && checked
-              ? (Array.isArray(track.subtitlePreviewFlags)
-                ? track.subtitlePreviewFlags
-                : (Array.isArray(track.flags) ? track.flags : []))
-              : [];
-
             const displayLanguage = toLang2(track.language || track.languageLabel || 'und');
             const displayHint = track.description || track.title;
             const displayCodec = simplifyCodec(type, track.format, displayHint);
             const displayChannelCount = channelCount(track.channels);
             const displayAudioTitle = audioChannelLabel(track.channels);
             const audioVariant = type === 'audio' ? extractAudioVariant(displayHint) : '';
-            const burned = type === 'subtitle' && checked
-              ? Boolean(
-                track.subtitlePreviewBurnIn
-                || track.burnIn
-                || subtitleFlags.includes('burned')
-                || /burned/i.test(String(track.subtitlePreviewSummary || track.subtitleActionSummary || ''))
-              )
-              : false;
+            const disabled = !allowSelection || (type === 'subtitle' && burned);
 
             let displayText = `#${track.id} | ${displayLanguage} | ${displayCodec}`;
             if (type === 'audio') {
@@ -611,13 +613,13 @@ function TrackList({
                     type="checkbox"
                     checked={checked}
                     onChange={(event) => {
-                      if (!allowSelection || typeof onToggleTrack !== 'function' || trackId === null) {
+                      if (disabled || typeof onToggleTrack !== 'function' || trackId === null) {
                         return;
                       }
                       onToggleTrack(trackId, event.target.checked);
                     }}
-                    readOnly={!allowSelection}
-                    disabled={!allowSelection}
+                    readOnly={disabled}
+                    disabled={disabled}
                   />
                   <span>{displayText}</span>
                 </label>
@@ -848,12 +850,18 @@ export default function MediaInfoReviewPanel({
             ? currentSelectedId === normalizeTitleId(title.id)
             : Boolean(title.selectedForEncode);
           const titleSelectionEntry = trackSelectionByTitle?.[title.id] || trackSelectionByTitle?.[String(title.id)] || {};
+          const subtitleTracks = Array.isArray(title.subtitleTracks) ? title.subtitleTracks : [];
+          const selectableSubtitleTrackIds = subtitleTracks
+            .filter((track) => !isBurnedSubtitleTrack(track))
+            .map((track) => normalizeTrackId(track?.id))
+            .filter((id) => id !== null);
+          const selectableSubtitleTrackIdSet = new Set(selectableSubtitleTrackIds.map((id) => String(id)));
           const defaultAudioTrackIds = (Array.isArray(title.audioTracks) ? title.audioTracks : [])
             .filter((track) => Boolean(track?.selectedByRule))
             .map((track) => normalizeTrackId(track?.id))
             .filter((id) => id !== null);
-          const defaultSubtitleTrackIds = (Array.isArray(title.subtitleTracks) ? title.subtitleTracks : [])
-            .filter((track) => Boolean(track?.selectedByRule))
+          const defaultSubtitleTrackIds = subtitleTracks
+            .filter((track) => Boolean(track?.selectedByRule) && !isBurnedSubtitleTrack(track))
             .map((track) => normalizeTrackId(track?.id))
             .filter((id) => id !== null);
           const selectedAudioTrackIds = normalizeTrackIdList(
@@ -865,7 +873,7 @@ export default function MediaInfoReviewPanel({
             Array.isArray(titleSelectionEntry?.subtitleTrackIds)
               ? titleSelectionEntry.subtitleTrackIds
               : defaultSubtitleTrackIds
-          );
+          ).filter((id) => selectableSubtitleTrackIdSet.has(String(id)));
           const allowTrackSelectionForTitle = Boolean(
             allowTrackSelection
             && allowTitleSelection
@@ -934,7 +942,7 @@ export default function MediaInfoReviewPanel({
                 />
                 <TrackList
                   title={`Subtitles (Titel #${title.id})`}
-                  tracks={title.subtitleTracks || []}
+                  tracks={allowTrackSelectionForTitle ? subtitleTracks.filter((track) => !isBurnedSubtitleTrack(track)) : subtitleTracks}
                   type="subtitle"
                   allowSelection={allowTrackSelectionForTitle}
                   selectedTrackIds={selectedSubtitleTrackIds}

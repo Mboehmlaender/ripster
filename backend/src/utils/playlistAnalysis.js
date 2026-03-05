@@ -524,13 +524,15 @@ function analyzePlaylistObfuscation(lines, minLengthMinutes = 60, options = {}) 
 
   const similarityGroups = buildSimilarityGroups(candidates, durationSimilaritySeconds);
   const obfuscationDetected = similarityGroups.length > 0;
-  const primaryGroup = similarityGroups[0] || null;
-  const evaluatedCandidates = primaryGroup ? scoreCandidates(primaryGroup.titles) : [];
+  const multipleCandidatesDetected = candidates.length > 1;
+  const manualDecisionRequired = multipleCandidatesDetected;
+  const decisionPool = manualDecisionRequired ? candidates : [];
+  const evaluatedCandidates = decisionPool.length > 0 ? scoreCandidates(decisionPool) : [];
   const recommendation = evaluatedCandidates[0] || null;
-  const candidatePlaylists = primaryGroup
-    ? uniqueOrdered(primaryGroup.titles.map((item) => item.playlistId).filter(Boolean))
+  const candidatePlaylists = manualDecisionRequired
+    ? uniqueOrdered(decisionPool.map((item) => item.playlistId).filter(Boolean))
     : [];
-  const playlistSegments = buildPlaylistSegmentMap(primaryGroup ? primaryGroup.titles : []);
+  const playlistSegments = buildPlaylistSegmentMap(decisionPool);
   const playlistToTitleId = buildPlaylistToTitleIdMap(parsedTitles);
 
   return {
@@ -542,7 +544,10 @@ function analyzePlaylistObfuscation(lines, minLengthMinutes = 60, options = {}) 
     candidates,
     duplicateDurationGroups: similarityGroups,
     obfuscationDetected,
-    manualDecisionRequired: obfuscationDetected,
+    manualDecisionRequired,
+    manualDecisionReason: manualDecisionRequired
+      ? (obfuscationDetected ? 'multiple_similar_candidates' : 'multiple_candidates_after_min_length')
+      : null,
     candidatePlaylists,
     candidatePlaylistFiles: candidatePlaylists.map((item) => `${item}.mpls`),
     playlistToTitleId,

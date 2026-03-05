@@ -5,21 +5,7 @@ import { ProgressBar } from 'primereact/progressbar';
 import { Button } from 'primereact/button';
 import MediaInfoReviewPanel from './MediaInfoReviewPanel';
 import { api } from '../api/client';
-
-const severityMap = {
-  IDLE: 'success',
-  DISC_DETECTED: 'info',
-  ANALYZING: 'warning',
-  METADATA_SELECTION: 'warning',
-  WAITING_FOR_USER_DECISION: 'warning',
-  READY_TO_START: 'info',
-  MEDIAINFO_CHECK: 'warning',
-  READY_TO_ENCODE: 'info',
-  RIPPING: 'warning',
-  ENCODING: 'warning',
-  FINISHED: 'success',
-  ERROR: 'danger'
-};
+import { getStatusLabel, getStatusSeverity } from '../utils/statusPresentation';
 
 function normalizeTitleId(value) {
   const parsed = Number(value);
@@ -92,6 +78,20 @@ function normalizeScriptIdList(values) {
   return output;
 }
 
+function isBurnedSubtitleTrack(track) {
+  const flags = Array.isArray(track?.subtitlePreviewFlags)
+    ? track.subtitlePreviewFlags
+    : (Array.isArray(track?.flags) ? track.flags : []);
+  const hasBurnedFlag = flags.some((flag) => String(flag || '').trim().toLowerCase() === 'burned');
+  const summary = `${track?.subtitlePreviewSummary || ''} ${track?.subtitleActionSummary || ''}`;
+  return Boolean(
+    track?.subtitlePreviewBurnIn
+    || track?.burnIn
+    || hasBurnedFlag
+    || /burned/i.test(summary)
+  );
+}
+
 function buildDefaultTrackSelection(review) {
   const titles = Array.isArray(review?.titles) ? review.titles : [];
   const selection = {};
@@ -110,7 +110,7 @@ function buildDefaultTrackSelection(review) {
       ),
       subtitleTrackIds: normalizeTrackIdList(
         (Array.isArray(title?.subtitleTracks) ? title.subtitleTracks : [])
-          .filter((track) => Boolean(track?.selectedByRule))
+          .filter((track) => Boolean(track?.selectedByRule) && !isBurnedSubtitleTrack(track))
           .map((track) => track?.id)
       )
     };
@@ -192,19 +192,25 @@ export default function PipelineStatusCard({
   pipeline,
   onAnalyze,
   onReanalyze,
+  onOpenMetadata,
   onStart,
+  onRemoveFromQueue,
   onRestartEncode,
+  onRestartReview,
   onConfirmReview,
   onSelectPlaylist,
   onCancel,
   onRetry,
+  isQueued = false,
   busy,
   liveJobLog = ''
 }) {
   const state = pipeline?.state || 'IDLE';
+  const stateLabel = getStatusLabel(state);
   const progress = Number(pipeline?.progress || 0);
   const running = state === 'ANALYZING' || state === 'RIPPING' || state === 'ENCODING' || state === 'MEDIAINFO_CHECK';
   const retryJobId = pipeline?.context?.jobId;
+  const queueLocked = Boolean(isQueued && retryJobId);
   const selectedMetadata = pipeline?.context?.selectedMetadata || null;
   const mediaInfoReview = pipeline?.context?.mediaInfoReview || null;
   const playlistAnalysis = pipeline?.context?.playlistAnalysis || null;
@@ -298,9 +304,14 @@ export default function PipelineStatusCard({
     ? Boolean(retryJobId)
     : Boolean(retryJobId && encodeInputPath);
   const canRestartEncodeFromLastSettings = Boolean(
-    state === 'ERROR'
+    (state === 'ERROR' || state === 'CANCELLED')
     && retryJobId
     && pipeline?.context?.canRestartEncodeFromLastSettings
+  );
+  const canRestartReviewFromRaw = Boolean(
+    retryJobId
+    && !running
+    && (pipeline?.context?.canRestartReviewFromRaw || pipeline?.context?.rawPath)
   );
 
   const waitingPlaylistRows = useMemo(() => {
@@ -401,11 +412,24 @@ export default function PipelineStatusCard({
       ? defaultTrackSelectionForTitle(mediaInfoReview, encodeTitleId)
       : { audioTrackIds: [], subtitleTrackIds: [] };
     const effectiveSelection = selectionEntry || fallbackSelection;
+    const encodeTitle = encodeTitleId
+      ? (Array.isArray(mediaInfoReview?.titles)
+        ? (mediaInfoReview.titles.find((title) => normalizeTitleId(title?.id) === encodeTitleId) || null)
+        : null)
+      : null;
+    const blockedSubtitleTrackIds = new Set(
+      (Array.isArray(encodeTitle?.subtitleTracks) ? encodeTitle.subtitleTracks : [])
+        .filter((track) => isBurnedSubtitleTrack(track))
+        .map((track) => normalizeTrackId(track?.id))
+        .filter((id) => id !== null)
+        .map((id) => String(id))
+    );
     const selectedTrackSelection = encodeTitleId
       ? {
         [encodeTitleId]: {
           audioTrackIds: normalizeTrackIdList(effectiveSelection?.audioTrackIds || []),
           subtitleTrackIds: normalizeTrackIdList(effectiveSelection?.subtitleTrackIds || [])
+            .filter((id) => !blockedSubtitleTrackIds.has(String(id)))
         }
       }
       : null;
@@ -418,9 +442,9 @@ export default function PipelineStatusCard({
   };
 
   return (
-    <Card title="Pipeline Status" subTitle="Live Zustand und Fortschritt">
+    <Card title="Pipeline-Status" subTitle="Live-Zustand und Fortschritt">
       <div className="status-row">
-        <Tag value={state} severity={severityMap[state] || 'secondary'} />
+        <Tag value={stateLabel} severity={getStatusSeverity(state)} />
         <span>{pipeline?.statusText || 'Bereit'}</span>
       </div>
 
@@ -438,106 +462,142 @@ export default function PipelineStatusCard({
       )}
 
       <div className="actions-row">
-        {(state === 'DISC_DETECTED' || state === 'IDLE') && (
+        {queueLocked ? (
           <Button
-            label="Analyse starten"
-            icon="pi pi-search"
-            onClick={onAnalyze}
-            loading={busy}
-          />
-        )}
-
-        {state === 'READY_TO_START' && retryJobId && (
-          <Button
-            label="Job starten"
-            icon="pi pi-play"
-            severity="success"
-            onClick={() => onStart(retryJobId)}
-            loading={busy}
-          />
-        )}
-
-        {playlistDecisionRequiredBeforeStart && retryJobId && (
-          <Button
-            label="Playlist übernehmen"
-            icon="pi pi-check"
-            severity="warning"
-            outlined
-            onClick={() => onSelectPlaylist?.(retryJobId, selectedPlaylistId)}
-            loading={busy}
-            disabled={!normalizePlaylistId(selectedPlaylistId)}
-          />
-        )}
-
-        {state === 'READY_TO_ENCODE' && retryJobId && (
-          <Button
-            label={isPreRipReview ? 'Backup + Encoding starten' : 'Encoding starten'}
-            icon="pi pi-play"
-            severity="success"
-            onClick={async () => {
-              const requiresAutoConfirm = !reviewConfirmed;
-              if (!requiresAutoConfirm) {
-                await onStart(retryJobId);
-                return;
-              }
-
-              const {
-                encodeTitleId,
-                selectedTrackSelection,
-                selectedPostScriptIds
-              } = buildSelectedTrackSelectionForCurrentTitle();
-              await onStart(retryJobId, {
-                ensureConfirmed: true,
-                selectedEncodeTitleId: encodeTitleId,
-                selectedTrackSelection,
-                selectedPostEncodeScriptIds: selectedPostScriptIds
-              });
-            }}
-            loading={busy}
-            disabled={!canStartReadyJob || !canConfirmReview}
-          />
-        )}
-
-        {running && (
-          <Button
-            label="Abbrechen"
-            icon="pi pi-stop"
+            label="Aus Queue löschen"
+            icon="pi pi-times"
             severity="danger"
-            onClick={onCancel}
+            outlined
+            onClick={() => onRemoveFromQueue?.(retryJobId)}
             loading={busy}
+            disabled={typeof onRemoveFromQueue !== 'function'}
           />
+        ) : (
+          <>
+            {(state === 'DISC_DETECTED' || state === 'IDLE') && (
+              <Button
+                label="Analyse starten"
+                icon="pi pi-search"
+                onClick={onAnalyze}
+                loading={busy}
+              />
+            )}
+
+            {(state === 'METADATA_SELECTION' || state === 'WAITING_FOR_USER_DECISION') && retryJobId && typeof onOpenMetadata === 'function' ? (
+              <Button
+                label="Metadaten öffnen"
+                icon="pi pi-list"
+                severity="info"
+                onClick={() => onOpenMetadata?.(retryJobId)}
+                loading={busy}
+              />
+            ) : null}
+
+            {state === 'READY_TO_START' && retryJobId ? (
+              <Button
+                label="Job starten"
+                icon="pi pi-play"
+                severity="success"
+                onClick={() => onStart(retryJobId)}
+                loading={busy}
+              />
+            ) : null}
+
+            {playlistDecisionRequiredBeforeStart && retryJobId && (
+              <Button
+                label="Playlist übernehmen"
+                icon="pi pi-check"
+                severity="warning"
+                outlined
+                onClick={() => onSelectPlaylist?.(retryJobId, selectedPlaylistId)}
+                loading={busy}
+                disabled={!normalizePlaylistId(selectedPlaylistId)}
+              />
+            )}
+
+            {state === 'READY_TO_ENCODE' && retryJobId ? (
+              <Button
+                label={isPreRipReview ? 'Backup + Encoding starten' : 'Encoding starten'}
+                icon="pi pi-play"
+                severity="success"
+                onClick={async () => {
+                  const requiresAutoConfirm = !reviewConfirmed;
+                  if (!requiresAutoConfirm) {
+                    await onStart(retryJobId);
+                    return;
+                  }
+
+                  const {
+                    encodeTitleId,
+                    selectedTrackSelection,
+                    selectedPostScriptIds
+                  } = buildSelectedTrackSelectionForCurrentTitle();
+                  await onStart(retryJobId, {
+                    ensureConfirmed: true,
+                    selectedEncodeTitleId: encodeTitleId,
+                    selectedTrackSelection,
+                    selectedPostEncodeScriptIds: selectedPostScriptIds
+                  });
+                }}
+                loading={busy}
+                disabled={!canStartReadyJob || !canConfirmReview}
+              />
+            ) : null}
+
+            {running && (
+              <Button
+                label="Abbrechen"
+                icon="pi pi-stop"
+                severity="danger"
+                onClick={() => onCancel?.(retryJobId, state)}
+                loading={busy}
+              />
+            )}
+
+            {canRestartReviewFromRaw ? (
+              <Button
+                label="Review neu starten"
+                icon="pi pi-refresh"
+                severity="info"
+                outlined
+                onClick={() => onRestartReview?.(retryJobId)}
+                loading={busy}
+                disabled={!retryJobId}
+              />
+            ) : null}
+
+            {canRestartEncodeFromLastSettings ? (
+              <Button
+                label="Encode neu starten"
+                icon="pi pi-play"
+                severity="success"
+                onClick={() => onRestartEncode?.(retryJobId)}
+                loading={busy}
+                disabled={!retryJobId}
+              />
+            ) : null}
+
+            {(state === 'ERROR' || state === 'CANCELLED') && retryJobId && (
+              <Button
+                label="Retry Rippen"
+                icon="pi pi-refresh"
+                severity="warning"
+                onClick={() => onRetry(retryJobId)}
+                loading={busy}
+              />
+            )}
+
+            {(state === 'ERROR' || state === 'CANCELLED') ? (
+              <Button
+                label="Disk-Analyse neu starten"
+                icon="pi pi-search"
+                severity="secondary"
+                onClick={onReanalyze || onAnalyze}
+                loading={busy}
+              />
+            ) : null}
+          </>
         )}
-
-        {canRestartEncodeFromLastSettings ? (
-          <Button
-            label="Encode neu starten"
-            icon="pi pi-play"
-            severity="success"
-            onClick={() => onRestartEncode?.(retryJobId)}
-            loading={busy}
-            disabled={!retryJobId}
-          />
-        ) : null}
-
-        {state === 'ERROR' && retryJobId && (
-          <Button
-            label="Retry Rippen"
-            icon="pi pi-refresh"
-            severity="warning"
-            onClick={() => onRetry(retryJobId)}
-            loading={busy}
-          />
-        )}
-
-        {state === 'ERROR' ? (
-          <Button
-            label="Disk-Analyse neu starten"
-            icon="pi pi-search"
-            severity="secondary"
-            onClick={onReanalyze || onAnalyze}
-            loading={busy}
-          />
-        ) : null}
       </div>
 
       {running ? (
@@ -547,7 +607,7 @@ export default function PipelineStatusCard({
         </div>
       ) : null}
 
-      {playlistDecisionRequiredBeforeStart ? (
+      {playlistDecisionRequiredBeforeStart && !queueLocked ? (
         <div className="playlist-decision-block">
           <h3>Playlist-Auswahl erforderlich</h3>
           <small>
@@ -561,6 +621,7 @@ export default function PipelineStatusCard({
                     <input
                       type="checkbox"
                       checked={normalizePlaylistId(selectedPlaylistId) === row.playlistId}
+                      disabled={queueLocked}
                       onChange={() => {
                         const next = normalizePlaylistId(selectedPlaylistId) === row.playlistId ? null : row.playlistId;
                         setSelectedPlaylistId(next);
@@ -629,7 +690,7 @@ export default function PipelineStatusCard({
               <strong>IMDb:</strong> {selectedMetadata.imdbId || '-'}
             </div>
             <div>
-              <strong>Status:</strong> {state}
+              <strong>Status:</strong> {stateLabel}
             </div>
           </div>
         </div>
@@ -638,7 +699,7 @@ export default function PipelineStatusCard({
       {(state === 'READY_TO_ENCODE' || state === 'MEDIAINFO_CHECK' || mediaInfoReview) ? (
         <div className="mediainfo-review-block">
           <h3>Titel-/Spurprüfung</h3>
-          {state === 'READY_TO_ENCODE' && !reviewConfirmed ? (
+          {state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked ? (
             <small>
               {isPreRipReview
                 ? 'Spurauswahl kann direkt übernommen werden. Beim Klick auf "Backup + Encoding starten" wird automatisch bestätigt und gestartet.'
@@ -651,9 +712,9 @@ export default function PipelineStatusCard({
             presetDisplayValue={presetDisplayValue}
             commandOutputPath={commandOutputPath}
             selectedEncodeTitleId={normalizeTitleId(selectedEncodeTitleId)}
-            allowTitleSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed}
+            allowTitleSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
             onSelectEncodeTitle={(titleId) => setSelectedEncodeTitleId(normalizeTitleId(titleId))}
-            allowTrackSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed}
+            allowTrackSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
             trackSelectionByTitle={trackSelectionByTitle}
             onTrackSelectionChange={(titleId, trackType, trackId, checked) => {
               const normalizedTitleId = normalizeTitleId(titleId);
@@ -684,7 +745,7 @@ export default function PipelineStatusCard({
             }}
             availablePostScripts={scriptCatalog}
             selectedPostEncodeScriptIds={selectedPostEncodeScriptIds}
-            allowPostScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed}
+            allowPostScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
             onAddPostEncodeScript={() => {
               setSelectedPostEncodeScriptIds((prev) => {
                 const normalizedCurrent = normalizeScriptIdList(prev);

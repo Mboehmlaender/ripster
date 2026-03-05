@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /home/michael/ripster/*.sh)",
+      "Bash(ls /home/michael/ripster/backend/*.sh)",
+      "Bash(systemctl list-units --type=service)",
+      "Bash(pip install -q -r requirements-docs.txt)",
+      "Bash(mkdocs build --strict)"
+    ]
+  }
+}

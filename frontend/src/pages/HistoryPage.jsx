@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card } from 'primereact/card';
 import { DataTable } from 'primereact/datatable';
 import { Column } from 'primereact/column';
@@ -11,24 +11,29 @@ import { api } from '../api/client';
 import JobDetailDialog from '../components/JobDetailDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
-
-const statusOptions = [
-  { label: 'Alle', value: '' },
-  { label: 'FINISHED', value: 'FINISHED' },
-  { label: 'ERROR', value: 'ERROR' },
-  { label: 'WAITING_FOR_USER_DECISION', value: 'WAITING_FOR_USER_DECISION' },
-  { label: 'READY_TO_START', value: 'READY_TO_START' },
-  { label: 'READY_TO_ENCODE', value: 'READY_TO_ENCODE' },
-  { label: 'MEDIAINFO_CHECK', value: 'MEDIAINFO_CHECK' },
-  { label: 'RIPPING', value: 'RIPPING' },
-  { label: 'ENCODING', value: 'ENCODING' },
-  { label: 'ANALYZING', value: 'ANALYZING' },
-  { label: 'METADATA_SELECTION', value: 'METADATA_SELECTION' }
-];
+import {
+  getStatusLabel,
+  getStatusSeverity,
+  getProcessStatusLabel,
+  normalizeStatus,
+  STATUS_FILTER_OPTIONS
+} from '../utils/statusPresentation';
 
 function resolveMediaType(row) {
   const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
   return raw === 'bluray' ? 'bluray' : 'disc';
+}
+
+function normalizeJobId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function getQueueActionResult(response) {
+  return response?.result && typeof response.result === 'object' ? response.result : {};
 }
 
 export default function HistoryPage() {
@@ -42,13 +47,40 @@ export default function HistoryPage() {
   const [actionBusy, setActionBusy] = useState(false);
   const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
+  const queuedJobIdSet = useMemo(() => {
+    const next = new Set();
+    for (const value of Array.isArray(queuedJobIds) ? queuedJobIds : []) {
+      const id = normalizeJobId(value);
+      if (id) {
+        next.add(id);
+      }
+    }
+    return next;
+  }, [queuedJobIds]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const response = await api.getJobs({ search, status });
-      setJobs(response.jobs || []);
+      const [jobsResponse, queueResponse] = await Promise.allSettled([
+        api.getJobs({ search, status }),
+        api.getPipelineQueue()
+      ]);
+      if (jobsResponse.status === 'fulfilled') {
+        setJobs(jobsResponse.value.jobs || []);
+      } else {
+        setJobs([]);
+      }
+      if (queueResponse.status === 'fulfilled') {
+        const queuedRows = Array.isArray(queueResponse.value?.queue?.queuedJobs) ? queueResponse.value.queue.queuedJobs : [];
+        const queuedIds = queuedRows
+          .map((item) => normalizeJobId(item?.jobId))
+          .filter(Boolean);
+        setQueuedJobIds(queuedIds);
+      } else {
+        setQueuedJobIds([]);
+      }
     } catch (error) {
       toastRef.current?.show({ severity: 'error', summary: 'Fehler', detail: error.message });
     } finally {
@@ -189,13 +221,26 @@ export default function HistoryPage() {
 
     setActionBusy(true);
     try {
-      await api.restartEncodeWithLastSettings(row.id);
-      toastRef.current?.show({
-        severity: 'success',
-        summary: 'Encode-Neustart gestartet',
-        detail: 'Letzte bestätigte Einstellungen werden verwendet.',
-        life: 3500
-      });
+      const response = await api.restartEncodeWithLastSettings(row.id);
+      const result = getQueueActionResult(response);
+      if (result.queued) {
+        const queuePosition = Number(result?.queuePosition || 0);
+        toastRef.current?.show({
+          severity: 'info',
+          summary: 'Encode-Neustart in Queue',
+          detail: queuePosition > 0
+            ? `Job wurde auf Position ${queuePosition} eingeplant.`
+            : 'Job wurde in die Warteschlange eingeplant.',
+          life: 3500
+        });
+      } else {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Encode-Neustart gestartet',
+          detail: 'Letzte bestätigte Einstellungen werden verwendet.',
+          life: 3500
+        });
+      }
       await load();
       await refreshDetailIfOpen(row.id);
     } catch (error) {
@@ -205,17 +250,64 @@ export default function HistoryPage() {
     }
   };
 
-  const statusBody = (row) => <Tag value={row.status} />;
+  const handleRemoveFromQueue = async (row) => {
+    const jobId = normalizeJobId(row?.id || row);
+    if (!jobId) {
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await api.cancelPipeline(jobId);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Aus Queue entfernt',
+        detail: `Job #${jobId} wurde aus der Warteschlange entfernt.`,
+        life: 3200
+      });
+      await load();
+      await refreshDetailIfOpen(jobId);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Queue-Entfernung fehlgeschlagen',
+        detail: error.message,
+        life: 4500
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const statusBody = (row) => {
+    const normalizedStatus = normalizeStatus(row?.status);
+    const rowId = normalizeJobId(row?.id);
+    const isQueued = Boolean(rowId && queuedJobIdSet.has(rowId));
+    return (
+      <Tag
+        value={getStatusLabel(row?.status, { queued: isQueued })}
+        severity={getStatusSeverity(normalizedStatus, { queued: isQueued })}
+      />
+    );
+  };
   const mkBody = (row) => (
     <span className="job-step-cell">
       {row?.backupSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Backup erfolgreich" title="Backup erfolgreich" /> : null}
-      <span>{row.makemkvInfo ? `${row.makemkvInfo.status || '-'} ${typeof row.makemkvInfo.lastProgress === 'number' ? `${row.makemkvInfo.lastProgress.toFixed(1)}%` : ''}` : '-'}</span>
+      <span>
+        {row.makemkvInfo
+          ? `${getProcessStatusLabel(row.makemkvInfo.status)} ${typeof row.makemkvInfo.lastProgress === 'number' ? `${row.makemkvInfo.lastProgress.toFixed(1)}%` : ''}`
+          : '-'}
+      </span>
     </span>
   );
   const hbBody = (row) => (
     <span className="job-step-cell">
       {row?.encodeSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Encode erfolgreich" title="Encode erfolgreich" /> : null}
-      <span>{row.handbrakeInfo ? `${row.handbrakeInfo.status || '-'} ${typeof row.handbrakeInfo.lastProgress === 'number' ? `${row.handbrakeInfo.lastProgress.toFixed(1)}%` : ''}` : '-'}</span>
+      <span>
+        {row.handbrakeInfo
+          ? `${getProcessStatusLabel(row.handbrakeInfo.status)} ${typeof row.handbrakeInfo.lastProgress === 'number' ? `${row.handbrakeInfo.lastProgress.toFixed(1)}%` : ''}`
+          : '-'}
+      </span>
     </span>
   );
   const mediaBody = (row) => {
@@ -245,7 +337,7 @@ export default function HistoryPage() {
           />
           <Dropdown
             value={status}
-            options={statusOptions}
+            options={STATUS_FILTER_OPTIONS}
             optionLabel="label"
             optionValue="value"
             onChange={(event) => setStatus(event.value)}
@@ -291,6 +383,8 @@ export default function HistoryPage() {
         onRestartEncode={handleRestartEncode}
         onReencode={handleReencode}
         onDeleteFiles={handleDeleteFiles}
+        onRemoveFromQueue={handleRemoveFromQueue}
+        isQueued={Boolean(selectedJob?.id && queuedJobIdSet.has(normalizeJobId(selectedJob.id)))}
         actionBusy={actionBusy}
         reencodeBusy={reencodeBusyJobId === selectedJob?.id}
         onHide={() => {
