@@ -169,10 +169,21 @@ export const api = {
   getPipelineQueue() {
     return request('/pipeline/queue');
   },
-  reorderPipelineQueue(orderedJobIds = []) {
+  reorderPipelineQueue(orderedEntryIds = []) {
     return request('/pipeline/queue/reorder', {
       method: 'POST',
-      body: JSON.stringify({ orderedJobIds: Array.isArray(orderedJobIds) ? orderedJobIds : [] })
+      body: JSON.stringify({ orderedEntryIds: Array.isArray(orderedEntryIds) ? orderedEntryIds : [] })
+    });
+  },
+  addQueueEntry(payload = {}) {
+    return request('/pipeline/queue/entry', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+  removeQueueEntry(entryId) {
+    return request(`/pipeline/queue/entry/${encodeURIComponent(entryId)}`, {
+      method: 'DELETE'
     });
   },
   getJobs(params = {}) {

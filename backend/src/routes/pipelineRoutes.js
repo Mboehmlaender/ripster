@@ -195,9 +195,37 @@ router.get(
 router.post(
   '/queue/reorder',
   asyncHandler(async (req, res) => {
-    const orderedJobIds = Array.isArray(req.body?.orderedJobIds) ? req.body.orderedJobIds : [];
-    logger.info('post:queue:reorder', { reqId: req.reqId, orderedJobIds });
-    const queue = await pipelineService.reorderQueue(orderedJobIds);
+    // Accept orderedEntryIds (new) or orderedJobIds (legacy fallback for job-only queues).
+    const orderedEntryIds = Array.isArray(req.body?.orderedEntryIds)
+      ? req.body.orderedEntryIds
+      : (Array.isArray(req.body?.orderedJobIds) ? req.body.orderedJobIds : []);
+    logger.info('post:queue:reorder', { reqId: req.reqId, orderedEntryIds });
+    const queue = await pipelineService.reorderQueue(orderedEntryIds);
+    res.json({ queue });
+  })
+);
+
+router.post(
+  '/queue/entry',
+  asyncHandler(async (req, res) => {
+    const { type, scriptId, chainId, waitSeconds, insertAfterEntryId } = req.body || {};
+    logger.info('post:queue:entry', { reqId: req.reqId, type });
+    const result = await pipelineService.enqueueNonJobEntry(
+      type,
+      { scriptId, chainId, waitSeconds },
+      insertAfterEntryId ?? null
+    );
+    const queue = await pipelineService.getQueueSnapshot();
+    res.json({ result, queue });
+  })
+);
+
+router.delete(
+  '/queue/entry/:entryId',
+  asyncHandler(async (req, res) => {
+    const entryId = req.params.entryId;
+    logger.info('delete:queue:entry', { reqId: req.reqId, entryId });
+    const queue = await pipelineService.removeQueueEntry(entryId);
     res.json({ queue });
   })
 );

@@ -5,6 +5,7 @@ import { Button } from 'primereact/button';
 import { Tag } from 'primereact/tag';
 import { ProgressBar } from 'primereact/progressbar';
 import { Dialog } from 'primereact/dialog';
+import { InputNumber } from 'primereact/inputnumber';
 import { api } from '../api/client';
 import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
@@ -140,10 +141,10 @@ function showQueuedToast(toastRef, actionLabel, result) {
   });
 }
 
-function reorderQueuedItems(items, draggedJobId, targetJobId) {
+function reorderQueuedItems(items, draggedEntryId, targetEntryId) {
   const list = Array.isArray(items) ? items : [];
-  const from = list.findIndex((item) => Number(item?.jobId) === Number(draggedJobId));
-  const to = list.findIndex((item) => Number(item?.jobId) === Number(targetJobId));
+  const from = list.findIndex((item) => Number(item?.entryId) === Number(draggedEntryId));
+  const to = list.findIndex((item) => Number(item?.entryId) === Number(targetEntryId));
   if (from < 0 || to < 0 || from === to) {
     return list;
   }
@@ -154,6 +155,20 @@ function reorderQueuedItems(items, draggedJobId, targetJobId) {
     ...item,
     position: index + 1
   }));
+}
+
+function queueEntryIcon(type) {
+  if (type === 'script') return 'pi pi-code';
+  if (type === 'chain') return 'pi pi-link';
+  if (type === 'wait') return 'pi pi-clock';
+  return 'pi pi-box';
+}
+
+function queueEntryLabel(item) {
+  if (item.type === 'script') return `Skript: ${item.title}`;
+  if (item.type === 'chain') return `Kette: ${item.title}`;
+  if (item.type === 'wait') return `Warten: ${item.waitSeconds}s`;
+  return item.title || `Job #${item.jobId}`;
 }
 
 function getAnalyzeContext(job) {
@@ -338,12 +353,15 @@ export default function DashboardPage({
   const [cancelCleanupBusy, setCancelCleanupBusy] = useState(false);
   const [queueState, setQueueState] = useState(() => normalizeQueue(pipeline?.queue));
   const [queueReorderBusy, setQueueReorderBusy] = useState(false);
-  const [draggingQueueJobId, setDraggingQueueJobId] = useState(null);
+  const [draggingQueueEntryId, setDraggingQueueEntryId] = useState(null);
+  const [insertQueueDialog, setInsertQueueDialog] = useState({ visible: false, afterEntryId: null });
   const [liveJobLog, setLiveJobLog] = useState('');
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
+  const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
+  const [insertWaitSeconds, setInsertWaitSeconds] = useState(30);
   const toastRef = useRef(null);
 
   const state = String(pipeline?.state || 'IDLE').trim().toUpperCase();
@@ -358,6 +376,20 @@ export default function DashboardPage({
   const memoryMetrics = monitoringSample?.memory || null;
   const gpuMetrics = monitoringSample?.gpu || null;
   const storageMetrics = Array.isArray(monitoringSample?.storage) ? monitoringSample.storage : [];
+  const storageGroups = useMemo(() => {
+    const groups = [];
+    const mountMap = new Map();
+    for (const entry of storageMetrics) {
+      const groupKey = entry?.mountPoint || `__no_mount_${entry?.key}`;
+      if (!mountMap.has(groupKey)) {
+        const group = { mountPoint: entry?.mountPoint || null, entries: [], representative: entry };
+        mountMap.set(groupKey, group);
+        groups.push(group);
+      }
+      mountMap.get(groupKey).entries.push(entry);
+    }
+    return groups;
+  }, [storageMetrics]);
   const cpuPerCoreMetrics = Array.isArray(cpuMetrics?.perCore) ? cpuMetrics.perCore : [];
   const gpuDevices = Array.isArray(gpuMetrics?.devices) ? gpuMetrics.devices : [];
 
@@ -859,9 +891,9 @@ export default function DashboardPage({
     }
   };
 
-  const handleQueueDragEnter = (targetJobId) => {
-    const targetId = normalizeJobId(targetJobId);
-    const draggedId = normalizeJobId(draggingQueueJobId);
+  const handleQueueDragEnter = (targetEntryId) => {
+    const targetId = Number(targetEntryId);
+    const draggedId = Number(draggingQueueEntryId);
     if (!targetId || !draggedId || targetId === draggedId || queueReorderBusy) {
       return;
     }
@@ -876,22 +908,22 @@ export default function DashboardPage({
   };
 
   const handleQueueDrop = async () => {
-    const draggedId = normalizeJobId(draggingQueueJobId);
-    setDraggingQueueJobId(null);
+    const draggedId = Number(draggingQueueEntryId);
+    setDraggingQueueEntryId(null);
     if (!draggedId || queueReorderBusy) {
       return;
     }
 
-    const orderedJobIds = (Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [])
-      .map((item) => normalizeJobId(item?.jobId))
+    const orderedEntryIds = (Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [])
+      .map((item) => Number(item?.entryId))
       .filter(Boolean);
-    if (orderedJobIds.length <= 1) {
+    if (orderedEntryIds.length <= 1) {
       return;
     }
 
     setQueueReorderBusy(true);
     try {
-      const response = await api.reorderPipelineQueue(orderedJobIds);
+      const response = await api.reorderPipelineQueue(orderedEntryIds);
       setQueueState(normalizeQueue(response?.queue));
     } catch (error) {
       showError(error);
@@ -921,6 +953,43 @@ export default function DashboardPage({
       showError(error);
     } finally {
       setQueueReorderBusy(false);
+    }
+  };
+
+  const handleRemoveQueueEntry = async (entryId) => {
+    if (!entryId || queueReorderBusy) {
+      return;
+    }
+    setQueueReorderBusy(true);
+    try {
+      const response = await api.removeQueueEntry(entryId);
+      setQueueState(normalizeQueue(response?.queue));
+    } catch (error) {
+      showError(error);
+    } finally {
+      setQueueReorderBusy(false);
+    }
+  };
+
+  const openInsertQueueDialog = async (afterEntryId) => {
+    setInsertQueueDialog({ visible: true, afterEntryId: afterEntryId ?? null });
+    try {
+      const [scriptsRes, chainsRes] = await Promise.allSettled([api.getScripts(), api.getScriptChains()]);
+      setQueueCatalog({
+        scripts: scriptsRes.status === 'fulfilled' ? (Array.isArray(scriptsRes.value?.scripts) ? scriptsRes.value.scripts : []) : [],
+        chains: chainsRes.status === 'fulfilled' ? (Array.isArray(chainsRes.value?.chains) ? chainsRes.value.chains : []) : []
+      });
+    } catch (_) { /* ignore */ }
+  };
+
+  const handleAddQueueEntry = async (type, params) => {
+    const afterEntryId = insertQueueDialog.afterEntryId;
+    setInsertQueueDialog({ visible: false, afterEntryId: null });
+    try {
+      const response = await api.addQueueEntry({ type, ...params, insertAfterEntryId: afterEntryId });
+      setQueueState(normalizeQueue(response?.queue));
+    } catch (error) {
+      showError(error);
     }
   };
 
@@ -1100,47 +1169,55 @@ export default function DashboardPage({
             <section className="hardware-monitor-block">
               <h4>Freier Speicher in Pfaden</h4>
               <div className="hardware-storage-list">
-                {storageMetrics.map((entry) => {
-                  const tone = getStorageUsageTone(entry?.usagePercent);
-                  const usagePercent = Number(entry?.usagePercent);
+                {storageGroups.map((group) => {
+                  const rep = group.representative;
+                  const tone = getStorageUsageTone(rep?.usagePercent);
+                  const usagePercent = Number(rep?.usagePercent);
                   const barValue = Number.isFinite(usagePercent)
                     ? Math.max(0, Math.min(100, usagePercent))
                     : 0;
+                  const hasError = group.entries.every((e) => e?.error);
+                  const groupKey = group.mountPoint || group.entries.map((e) => e?.key).join('-');
                   return (
                     <div
-                      key={`storage-${entry?.key || entry?.label || 'path'}`}
-                      className={`hardware-storage-item compact${entry?.error ? ' has-error' : ''}`}
+                      key={`storage-group-${groupKey}`}
+                      className={`hardware-storage-item compact${hasError ? ' has-error' : ''}`}
                     >
                       <div className="hardware-storage-head">
-                        <strong>{entry?.label || entry?.key || 'Pfad'}</strong>
+                        <strong>{group.entries.map((e) => e?.label || e?.key || 'Pfad').join(' · ')}</strong>
                         <span className={`hardware-storage-percent tone-${tone}`}>
-                          {entry?.error ? 'Fehler' : formatPercent(entry?.usagePercent)}
+                          {hasError ? 'Fehler' : formatPercent(rep?.usagePercent)}
                         </span>
                       </div>
 
-                      {entry?.error ? (
-                        <small className="error-text">{entry.error}</small>
+                      {hasError ? (
+                        <small className="error-text">{rep?.error}</small>
                       ) : (
                         <>
                           <div className={`hardware-storage-bar tone-${tone}`}>
                             <ProgressBar value={barValue} showValue={false} />
                           </div>
                           <div className="hardware-storage-summary">
-                            <small>Frei: {formatBytes(entry?.freeBytes)}</small>
-                            <small>Gesamt: {formatBytes(entry?.totalBytes)}</small>
+                            <small>Frei: {formatBytes(rep?.freeBytes)}</small>
+                            <small>Gesamt: {formatBytes(rep?.totalBytes)}</small>
                           </div>
                         </>
                       )}
 
-                      <small className="hardware-storage-path" title={entry?.path || '-'}>
-                        Pfad: {entry?.path || '-'}
-                      </small>
-                      {entry?.queryPath && entry.queryPath !== entry.path ? (
-                        <small className="hardware-storage-path" title={entry.queryPath}>
-                          Parent: {entry.queryPath}
-                        </small>
-                      ) : null}
-                      {entry?.note ? <small className="hardware-storage-path">{entry.note}</small> : null}
+                      {group.entries.map((entry) => (
+                        <div key={entry?.key} className="hardware-storage-paths">
+                          <small className="hardware-storage-label-tag">{entry?.label || entry?.key}:</small>
+                          <small className="hardware-storage-path" title={entry?.path || '-'}>
+                            {entry?.path || '-'}
+                          </small>
+                          {entry?.queryPath && entry.queryPath !== entry.path ? (
+                            <small className="hardware-storage-path" title={entry.queryPath}>
+                              (Parent: {entry.queryPath})
+                            </small>
+                          ) : null}
+                          {entry?.note ? <small className="hardware-storage-path">{entry.note}</small> : null}
+                        </div>
+                      ))}
                     </div>
                   );
                 })}
@@ -1172,54 +1249,91 @@ export default function DashboardPage({
             )}
           </div>
           <div className="pipeline-queue-col">
-            <h4>Warteschlange</h4>
+            <div className="pipeline-queue-col-header">
+              <h4>Warteschlange</h4>
+              <button
+                type="button"
+                className="queue-add-entry-btn"
+                title="Skript, Kette oder Wartezeit zur Queue hinzufügen"
+                onClick={() => void openInsertQueueDialog(null)}
+              >
+                <i className="pi pi-plus" /> Hinzufügen
+              </button>
+            </div>
             {queuedJobs.length === 0 ? (
-              <small>Queue ist leer.</small>
+              <small className="queue-empty-hint">Queue ist leer.</small>
             ) : (
-              queuedJobs.map((item) => {
-                const queuedJobId = normalizeJobId(item?.jobId);
-                const isDragging = normalizeJobId(draggingQueueJobId) === queuedJobId;
-                return (
-                  <div
-                    key={`queued-${item.jobId}`}
-                    className={`pipeline-queue-item queued${isDragging ? ' dragging' : ''}`}
-                    draggable={canReorderQueue}
-                    onDragStart={() => setDraggingQueueJobId(queuedJobId)}
-                    onDragEnter={() => handleQueueDragEnter(queuedJobId)}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      void handleQueueDrop();
-                    }}
-                    onDragEnd={() => {
-                      setDraggingQueueJobId(null);
-                      void syncQueueFromServer();
-                    }}
-                  >
-                    <span className={`pipeline-queue-drag-handle${canReorderQueue ? '' : ' disabled'}`} title="Reihenfolge ändern">
-                      <i className="pi pi-bars" />
-                    </span>
-                    <div className="pipeline-queue-item-main">
-                      <strong>{item.position || '-'} | #{item.jobId} | {item.title || `Job #${item.jobId}`}</strong>
-                      <small>{item.actionLabel || item.action || '-'} | Status {getStatusLabel(item.status)}</small>
+              <>
+                {queuedJobs.map((item) => {
+                  const entryId = Number(item?.entryId);
+                  const isNonJob = item.type && item.type !== 'job';
+                  const isDragging = Number(draggingQueueEntryId) === entryId;
+                  return (
+                    <div key={`queued-entry-${entryId}`} className="pipeline-queue-entry-wrap">
+                      <div
+                        className={`pipeline-queue-item queued${isDragging ? ' dragging' : ''}${isNonJob ? ' non-job' : ''}`}
+                        draggable={canReorderQueue}
+                        onDragStart={() => setDraggingQueueEntryId(entryId)}
+                        onDragEnter={() => handleQueueDragEnter(entryId)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          void handleQueueDrop();
+                        }}
+                        onDragEnd={() => {
+                          setDraggingQueueEntryId(null);
+                          void syncQueueFromServer();
+                        }}
+                      >
+                        <span className={`pipeline-queue-drag-handle${canReorderQueue ? '' : ' disabled'}`} title="Reihenfolge ändern">
+                          <i className="pi pi-bars" />
+                        </span>
+                        <i className={`pipeline-queue-type-icon ${queueEntryIcon(item.type)}`} title={item.type || 'job'} />
+                        <div className="pipeline-queue-item-main">
+                          {isNonJob ? (
+                            <strong>{item.position || '-'}. {queueEntryLabel(item)}</strong>
+                          ) : (
+                            <>
+                              <strong>
+                                {item.position || '-'} | #{item.jobId} | {item.title || `Job #${item.jobId}`}
+                                {item.hasScripts ? <i className="pi pi-code queue-job-tag" title="Skripte hinterlegt" /> : null}
+                                {item.hasChains ? <i className="pi pi-link queue-job-tag" title="Skriptketten hinterlegt" /> : null}
+                              </strong>
+                              <small>{item.actionLabel || item.action || '-'} | {getStatusLabel(item.status)}</small>
+                            </>
+                          )}
+                        </div>
+                        <Button
+                          icon="pi pi-times"
+                          severity="danger"
+                          text
+                          rounded
+                          size="small"
+                          className="pipeline-queue-remove-btn"
+                          disabled={queueReorderBusy}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (isNonJob) {
+                              void handleRemoveQueueEntry(entryId);
+                            } else {
+                              void handleRemoveQueuedJob(item.jobId);
+                            }
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="queue-insert-btn"
+                        title="Eintrag danach einfügen"
+                        onClick={() => void openInsertQueueDialog(entryId)}
+                      >
+                        <i className="pi pi-plus" />
+                      </button>
                     </div>
-                    <Button
-                      icon="pi pi-times"
-                      severity="danger"
-                      text
-                      rounded
-                      size="small"
-                      className="pipeline-queue-remove-btn"
-                      disabled={queueReorderBusy}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleRemoveQueuedJob(queuedJobId);
-                      }}
-                    />
-                  </div>
-                );
-              })
+                  );
+                })}
+              </>
             )}
           </div>
         </div>
@@ -1451,6 +1565,81 @@ export default function DashboardPage({
             onClick={handleDeleteCancelledOutput}
             loading={cancelCleanupBusy}
           />
+        </div>
+      </Dialog>
+
+      <Dialog
+        header="Queue-Eintrag einfügen"
+        visible={insertQueueDialog.visible}
+        onHide={() => setInsertQueueDialog({ visible: false, afterEntryId: null })}
+        style={{ width: '28rem', maxWidth: '96vw' }}
+        modal
+      >
+        <div className="queue-insert-dialog-body">
+          <p className="queue-insert-dialog-hint">
+            {insertQueueDialog.afterEntryId
+              ? 'Eintrag wird nach dem ausgewählten Element eingefügt.'
+              : 'Eintrag wird am Ende der Queue eingefügt.'}
+          </p>
+
+          {queueCatalog.scripts.length > 0 ? (
+            <div className="queue-insert-section">
+              <strong><i className="pi pi-code" /> Skript</strong>
+              <div className="queue-insert-options">
+                {queueCatalog.scripts.map((script) => (
+                  <button
+                    key={`qi-script-${script.id}`}
+                    type="button"
+                    className="queue-insert-option"
+                    onClick={() => void handleAddQueueEntry('script', { scriptId: script.id })}
+                  >
+                    {script.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {queueCatalog.chains.length > 0 ? (
+            <div className="queue-insert-section">
+              <strong><i className="pi pi-link" /> Skriptkette</strong>
+              <div className="queue-insert-options">
+                {queueCatalog.chains.map((chain) => (
+                  <button
+                    key={`qi-chain-${chain.id}`}
+                    type="button"
+                    className="queue-insert-option"
+                    onClick={() => void handleAddQueueEntry('chain', { chainId: chain.id })}
+                  >
+                    {chain.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="queue-insert-section">
+            <strong><i className="pi pi-clock" /> Warten</strong>
+            <div className="queue-insert-wait-row">
+              <InputNumber
+                value={insertWaitSeconds}
+                onValueChange={(e) => setInsertWaitSeconds(e.value ?? 30)}
+                min={1}
+                max={3600}
+                suffix="s"
+                style={{ width: '7rem' }}
+              />
+              <Button
+                label="Einfügen"
+                icon="pi pi-check"
+                onClick={() => void handleAddQueueEntry('wait', { waitSeconds: insertWaitSeconds })}
+              />
+            </div>
+          </div>
+
+          {queueCatalog.scripts.length === 0 && queueCatalog.chains.length === 0 ? (
+            <small className="muted-inline">Keine Skripte oder Ketten konfiguriert. In den Settings anlegen.</small>
+          ) : null}
         </div>
       </Dialog>
     </div>

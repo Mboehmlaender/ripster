@@ -477,6 +477,20 @@ body {
   color: var(--rip-muted);
 }
 
+.hardware-storage-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.4rem;
+  align-items: baseline;
+  margin-top: 0.1rem;
+}
+
+.hardware-storage-label-tag {
+  color: var(--rip-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .pipeline-queue-meta {
   display: flex;
   gap: 0.45rem;
@@ -505,6 +519,39 @@ body {
   margin: 0;
 }
 
+.pipeline-queue-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.queue-add-entry-btn {
+  background: none;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.35rem;
+  color: var(--rip-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+  white-space: nowrap;
+}
+
+.queue-add-entry-btn:hover {
+  color: var(--rip-primary, #6366f1);
+  border-color: var(--rip-primary, #6366f1);
+  background: var(--rip-panel);
+}
+
+.queue-empty-hint {
+  color: var(--rip-muted);
+  font-size: 0.82rem;
+}
+
 .pipeline-queue-item {
   border: 1px dashed var(--rip-border);
   border-radius: 0.45rem;
@@ -519,9 +566,114 @@ body {
 }
 
 .pipeline-queue-item.queued {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.45rem;
+}
+
+.pipeline-queue-item.queued.non-job {
+  border-style: dotted;
+  background: var(--rip-surface);
+  opacity: 0.92;
+}
+
+.pipeline-queue-type-icon {
+  font-size: 0.82rem;
+  color: var(--rip-muted);
+  flex-shrink: 0;
+}
+
+.queue-job-tag {
+  font-size: 0.72rem;
+  color: var(--rip-muted);
+  margin-left: 0.3rem;
+  vertical-align: middle;
+}
+
+.pipeline-queue-entry-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.queue-insert-btn {
+  align-self: center;
+  background: none;
+  border: 1px dashed var(--rip-border);
+  border-radius: 999px;
+  color: var(--rip-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.1rem 0.5rem;
+  margin: 0.15rem auto;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.queue-insert-btn:hover {
+  opacity: 1;
+  color: var(--rip-primary, #6366f1);
+  border-color: var(--rip-primary, #6366f1);
+}
+
+.pipeline-queue-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.queue-insert-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.queue-insert-dialog-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--rip-muted);
+}
+
+.queue-insert-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rip-border);
+}
+
+.queue-insert-section:first-of-type {
+  border-top: none;
+}
+
+.queue-insert-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.queue-insert-option {
+  background: var(--rip-surface);
+  border: 1px solid var(--rip-border);
+  border-radius: 0.35rem;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.65rem;
+  transition: background 0.12s;
+}
+
+.queue-insert-option:hover {
+  background: var(--rip-panel);
+  border-color: var(--rip-primary, #6366f1);
+}
+
+.queue-insert-wait-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .pipeline-queue-item.queued.dragging {
