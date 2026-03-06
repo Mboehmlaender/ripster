@@ -66,6 +66,48 @@ Ripster's `progressParsers.js` parst diese Ausgabe für die Live-Fortschrittsanz
 
 ---
 
+## LibDriveIO-Modus (Pflicht)
+
+!!! danger "Laufwerk muss im LibDriveIO-Modus betrieben werden"
+    MakeMKV greift auf Discs über **LibDriveIO** zu – eine Bibliothek, die direkt auf Rohdaten des Laufwerks zugreift und den Standard-OS-Treiber umgeht. Ohne diesen Modus kann MakeMKV verschlüsselte Blu-rays (insbesondere UHD) **nicht lesen**.
+
+### Was ist LibDriveIO?
+
+LibDriveIO ist MakeMKVs interne Treiberschicht für den direkten Laufwerkszugriff. Sie ermöglicht:
+
+- Lesen von verschlüsselten Blu-ray-Sektoren (AACS, BD+, AACS2)
+- Zugriff auf Disc-Strukturen, die über Standard-OS-APIs nicht erreichbar sind
+- UHD-Blu-ray-Entschlüsselung ohne externe Bibliotheken
+
+### Voraussetzungen für den LibDriveIO-Modus
+
+Das Laufwerk muss **LibDriveIO-kompatibel** sein und entsprechend betrieben werden:
+
+1. **Kompatibles Laufwerk** – Nicht alle Laufwerke unterstützen den Rohdatenzugriff. UHD-kompatible Laufwerke (z. B. LG, Pioneer bestimmter Firmware-Versionen) sind erforderlich.
+
+2. **Laufwerk-Berechtigungen** – Der Prozess benötigt direkten Zugriff auf das Blockdevice:
+   ```bash
+   sudo chmod a+rw /dev/sr0
+   # oder dauerhaft über udev-Regel
+   ```
+
+3. **Kein OS-seitiger Disc-Mount** – Das Laufwerk darf beim Ripping **nicht** durch das OS automatisch gemountet sein (AutoMount deaktivieren):
+   ```bash
+   # Automount temporär deaktivieren (GNOME)
+   gsettings set org.gnome.desktop.media-handling automount false
+   ```
+
+### How-To: LibDriveIO einrichten
+
+Die vollständige Anleitung zur Einrichtung und zu kompatiblen Laufwerken findet sich im offiziellen MakeMKV-Forum:
+
+[:octicons-link-external-24: MakeMKV Forum – LibDriveIO How-To](https://www.makemkv.com/forum/viewtopic.php?t=18856){ .md-button }
+
+!!! tip "Prüfen ob LibDriveIO aktiv ist"
+    In der MakeMKV-Ausgabe erscheint beim Laufwerkszugriff `LibDriveIO` statt `LibMMMBD`, wenn der direkte Modus aktiv ist.
+
+---
+
 ## MakeMKV-Lizenz
 
 MakeMKV ist **Beta-Software** und kostenlos für den persönlichen Gebrauch während der Beta-Phase. Eine Beta-Lizenz ist regelmäßig im [MakeMKV-Forum](https://www.makemkv.com/forum/viewtopic.php?t=1053) verfügbar.

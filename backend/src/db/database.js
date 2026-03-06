@@ -9,6 +9,44 @@ const { errorToMeta } = require('../utils/errorMeta');
 const { setLogRootDir, getJobLogDir } = require('../services/logPathService');
 
 const schemaFilePath = path.resolve(__dirname, '../../../db/schema.sql');
+const LEGACY_PROFILE_SETTING_MIGRATIONS = [
+  {
+    legacyKey: 'mediainfo_extra_args',
+    profileKeys: ['mediainfo_extra_args_bluray', 'mediainfo_extra_args_dvd']
+  },
+  {
+    legacyKey: 'makemkv_rip_mode',
+    profileKeys: ['makemkv_rip_mode_bluray', 'makemkv_rip_mode_dvd']
+  },
+  {
+    legacyKey: 'makemkv_analyze_extra_args',
+    profileKeys: ['makemkv_analyze_extra_args_bluray', 'makemkv_analyze_extra_args_dvd']
+  },
+  {
+    legacyKey: 'makemkv_rip_extra_args',
+    profileKeys: ['makemkv_rip_extra_args_bluray', 'makemkv_rip_extra_args_dvd']
+  },
+  {
+    legacyKey: 'handbrake_preset',
+    profileKeys: ['handbrake_preset_bluray', 'handbrake_preset_dvd']
+  },
+  {
+    legacyKey: 'handbrake_extra_args',
+    profileKeys: ['handbrake_extra_args_bluray', 'handbrake_extra_args_dvd']
+  },
+  {
+    legacyKey: 'output_extension',
+    profileKeys: ['output_extension_bluray', 'output_extension_dvd']
+  },
+  {
+    legacyKey: 'filename_template',
+    profileKeys: ['filename_template_bluray', 'filename_template_dvd']
+  },
+  {
+    legacyKey: 'output_folder_template',
+    profileKeys: ['output_folder_template_bluray', 'output_folder_template_dvd']
+  }
+];
 
 let dbInstance;
 
@@ -484,6 +522,7 @@ async function openAndPrepareDatabase() {
   await applySchemaModel(dbInstance, schemaModel);
 
   await seedDefaultSettings(dbInstance);
+  await migrateLegacyProfiledToolSettings(dbInstance);
   await removeDeprecatedSettings(dbInstance);
   await ensurePipelineStateRow(dbInstance);
   const syncedLogRoot = await configureRuntimeLogRootFromSettings(dbInstance, { ensure: true });
@@ -573,6 +612,72 @@ async function seedDefaultSettings(db) {
   logger.info('seed:settings', { count: seeded });
 }
 
+async function readCurrentOrDefaultSettingValue(db, key) {
+  if (!key) {
+    return null;
+  }
+  return db.get(
+    `
+      SELECT
+        s.default_value AS defaultValue,
+        v.value AS currentValue,
+        COALESCE(v.value, s.default_value) AS effectiveValue
+      FROM settings_schema s
+      LEFT JOIN settings_values v ON v.key = s.key
+      WHERE s.key = ?
+      LIMIT 1
+    `,
+    [key]
+  );
+}
+
+async function migrateLegacyProfiledToolSettings(db) {
+  let copiedCount = 0;
+  for (const migration of LEGACY_PROFILE_SETTING_MIGRATIONS) {
+    const legacyRow = await readCurrentOrDefaultSettingValue(db, migration.legacyKey);
+    if (!legacyRow) {
+      continue;
+    }
+
+    for (const targetKey of migration.profileKeys || []) {
+      const targetRow = await readCurrentOrDefaultSettingValue(db, targetKey);
+      if (!targetRow) {
+        continue;
+      }
+
+      const currentValue = targetRow.currentValue;
+      const defaultValue = targetRow.defaultValue;
+      const shouldCopy = (
+        currentValue === null
+        || currentValue === undefined
+        || String(currentValue) === String(defaultValue ?? '')
+      );
+      if (!shouldCopy) {
+        continue;
+      }
+
+      await db.run(
+        `
+          INSERT INTO settings_values (key, value, updated_at)
+          VALUES (?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        [targetKey, legacyRow.effectiveValue ?? null]
+      );
+      copiedCount += 1;
+      logger.info('migrate:legacy-tool-setting-copied', {
+        from: migration.legacyKey,
+        to: targetKey
+      });
+    }
+  }
+  if (copiedCount > 0) {
+    logger.info('migrate:legacy-tool-settings:done', { copiedCount });
+  }
+}
+
 async function ensurePipelineStateRow(db) {
   await db.run(
     `
@@ -584,7 +689,19 @@ async function ensurePipelineStateRow(db) {
 }
 
 async function removeDeprecatedSettings(db) {
-  const deprecatedKeys = ['pushover_notify_disc_detected'];
+  const deprecatedKeys = [
+    'pushover_notify_disc_detected',
+    'mediainfo_extra_args',
+    'makemkv_rip_mode',
+    'makemkv_analyze_extra_args',
+    'makemkv_rip_extra_args',
+    'handbrake_preset',
+    'handbrake_extra_args',
+    'output_extension',
+    'filename_template',
+    'output_folder_template',
+    'makemkv_backup_mode'
+  ];
   for (const key of deprecatedKeys) {
     const result = await db.run('DELETE FROM settings_schema WHERE key = ?', [key]);
     if (result?.changes > 0) {

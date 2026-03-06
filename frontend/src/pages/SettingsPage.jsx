@@ -29,11 +29,12 @@ function isSameValue(a, b) {
 function injectHandBrakePresetOptions(categories, presetPayload) {
   const list = Array.isArray(categories) ? categories : [];
   const sourceOptions = Array.isArray(presetPayload?.options) ? presetPayload.options : [];
+  const presetSettingKeys = new Set(['handbrake_preset', 'handbrake_preset_bluray', 'handbrake_preset_dvd']);
 
   return list.map((category) => ({
     ...category,
     settings: (category?.settings || []).map((setting) => {
-      if (setting?.key !== 'handbrake_preset') {
+      if (!presetSettingKeys.has(String(setting?.key || '').trim().toLowerCase())) {
         return setting;
       }
 

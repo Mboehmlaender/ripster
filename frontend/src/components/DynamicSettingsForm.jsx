@@ -14,39 +14,41 @@ function normalizeSettingKey(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+const GENERAL_TOOL_KEYS = new Set([
+  'makemkv_command',
+  'makemkv_registration_key',
+  'makemkv_min_length_minutes',
+  'mediainfo_command',
+  'handbrake_command',
+  'handbrake_restart_delete_incomplete_output'
+]);
+
+const HANDBRAKE_PRESET_SETTING_KEYS = new Set([
+  'handbrake_preset',
+  'handbrake_preset_bluray',
+  'handbrake_preset_dvd'
+]);
+
 function buildToolSections(settings) {
   const list = Array.isArray(settings) ? settings : [];
-  const definitions = [
-    {
-      id: 'makemkv',
-      title: 'MakeMKV',
-      description: 'Disc-Analyse und Rip-Einstellungen.',
-      match: (key) => key.startsWith('makemkv_')
-    },
-    {
-      id: 'mediainfo',
-      title: 'MediaInfo',
-      description: 'Track-Analyse und zusätzliche mediainfo Parameter.',
-      match: (key) => key.startsWith('mediainfo_')
-    },
-    {
-      id: 'handbrake',
-      title: 'HandBrake',
-      description: 'Preset, Encoding-CLI und HandBrake-Optionen.',
-      match: (key) => key.startsWith('handbrake_')
-    },
-    {
-      id: 'output',
-      title: 'Output',
-      description: 'Container-Format sowie Datei- und Ordnernamen-Template.',
-      match: (key) => key === 'output_extension' || key === 'filename_template' || key === 'output_folder_template'
-    }
-  ];
-
-  const buckets = definitions.map((item) => ({
-    ...item,
+  const generalBucket = {
+    id: 'general',
+    title: 'General',
+    description: 'Gemeinsame Tool-Settings für alle Medien.',
     settings: []
-  }));
+  };
+  const blurayBucket = {
+    id: 'bluray',
+    title: 'BluRay',
+    description: 'Profil-spezifische Settings für Blu-ray.',
+    settings: []
+  };
+  const dvdBucket = {
+    id: 'dvd',
+    title: 'DVD',
+    description: 'Profil-spezifische Settings für DVD.',
+    settings: []
+  };
   const fallbackBucket = {
     id: 'other',
     title: 'Weitere Tool-Settings',
@@ -56,20 +58,26 @@ function buildToolSections(settings) {
 
   for (const setting of list) {
     const key = normalizeSettingKey(setting?.key);
-    let assigned = false;
-    for (const bucket of buckets) {
-      if (bucket.match(key)) {
-        bucket.settings.push(setting);
-        assigned = true;
-        break;
-      }
+    if (GENERAL_TOOL_KEYS.has(key)) {
+      generalBucket.settings.push(setting);
+      continue;
     }
-    if (!assigned) {
-      fallbackBucket.settings.push(setting);
+    if (key.endsWith('_bluray')) {
+      blurayBucket.settings.push(setting);
+      continue;
     }
+    if (key.endsWith('_dvd')) {
+      dvdBucket.settings.push(setting);
+      continue;
+    }
+    fallbackBucket.settings.push(setting);
   }
 
-  const sections = buckets.filter((item) => item.settings.length > 0);
+  const sections = [
+    generalBucket,
+    blurayBucket,
+    dvdBucket
+  ].filter((item) => item.settings.length > 0);
   if (fallbackBucket.settings.length > 0) {
     sections.push(fallbackBucket);
   }
@@ -96,7 +104,8 @@ function buildSectionsForCategory(categoryName, settings) {
 }
 
 function isHandBrakePresetSetting(setting) {
-  return String(setting?.key || '').trim().toLowerCase() === 'handbrake_preset';
+  const key = String(setting?.key || '').trim().toLowerCase();
+  return HANDBRAKE_PRESET_SETTING_KEYS.has(key);
 }
 
 export default function DynamicSettingsForm({

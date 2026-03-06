@@ -5,7 +5,9 @@
       "Bash(ls /home/michael/ripster/backend/*.sh)",
       "Bash(systemctl list-units --type=service)",
       "Bash(pip install -q -r requirements-docs.txt)",
-      "Bash(mkdocs build --strict)"
+      "Bash(mkdocs build --strict)",
+      "Read(//mnt/external/media/**)",
+      "WebFetch(domain:www.makemkv.com)"
     ]
   }
 }

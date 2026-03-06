@@ -12,6 +12,7 @@ import JobDetailDialog from '../components/JobDetailDialog';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import otherIndicatorIcon from '../assets/media-other.svg';
 import {
   getStatusLabel,
   getStatusSeverity,
@@ -21,7 +22,13 @@ import {
 
 function resolveMediaType(row) {
   const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
-  return raw === 'bluray' ? 'bluray' : 'disc';
+  if (raw === 'bluray') {
+    return 'bluray';
+  }
+  if (raw === 'dvd' || raw === 'disc') {
+    return 'dvd';
+  }
+  return 'other';
 }
 
 function normalizeJobId(value) {
@@ -573,10 +580,18 @@ export default function DatabasePage() {
   };
   const mediaBody = (row) => {
     const mediaType = resolveMediaType(row);
-    const src = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
-    const alt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
-    const title = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges Medium';
-    const label = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges';
+    const src = mediaType === 'bluray'
+      ? blurayIndicatorIcon
+      : (mediaType === 'dvd' ? discIndicatorIcon : otherIndicatorIcon);
+    const alt = mediaType === 'bluray'
+      ? 'Blu-ray'
+      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+    const title = mediaType === 'bluray'
+      ? 'Blu-ray'
+      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+    const label = mediaType === 'bluray'
+      ? 'Blu-ray'
+      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges');
     return (
       <span className="job-step-cell">
         <img src={src} alt={alt} title={title} className="media-indicator-icon" />

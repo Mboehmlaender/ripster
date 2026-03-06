@@ -3,6 +3,7 @@ import { Button } from 'primereact/button';
 import MediaInfoReviewPanel from './MediaInfoReviewPanel';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import otherIndicatorIcon from '../assets/media-other.svg';
 import { getStatusLabel } from '../utils/statusPresentation';
 
 function JsonView({ title, value }) {
@@ -14,9 +15,54 @@ function JsonView({ title, value }) {
   );
 }
 
+function ScriptResultRow({ result }) {
+  const status = String(result?.status || '').toUpperCase();
+  const isSuccess = status === 'SUCCESS';
+  const isError = status === 'ERROR';
+  const isSkipped = status.startsWith('SKIPPED');
+  const icon = isSuccess ? 'pi-check-circle' : isError ? 'pi-times-circle' : 'pi-minus-circle';
+  const tone = isSuccess ? 'success' : isError ? 'danger' : 'warning';
+  return (
+    <div className="script-result-row">
+      <span className={`job-step-inline-${isSuccess ? 'ok' : isError ? 'no' : 'warn'}`}>
+        <i className={`pi ${icon}`} aria-hidden="true" />
+      </span>
+      <span className="script-result-name">{result?.scriptName || result?.chainName || `#${result?.scriptId ?? result?.chainId ?? '?'}`}</span>
+      <span className={`script-result-status tone-${tone}`}>{status}</span>
+      {result?.error ? <span className="script-result-error">{result.error}</span> : null}
+    </div>
+  );
+}
+
+function ScriptSummarySection({ title, summary }) {
+  if (!summary || summary.configured === 0) return null;
+  const results = Array.isArray(summary.results) ? summary.results : [];
+  return (
+    <div className="script-summary-block">
+      <strong>{title}:</strong>
+      <span className="script-summary-counts">
+        {summary.succeeded > 0 ? <span className="tone-success">{summary.succeeded} OK</span> : null}
+        {summary.failed > 0 ? <span className="tone-danger">{summary.failed} Fehler</span> : null}
+        {summary.skipped > 0 ? <span className="tone-warning">{summary.skipped} übersprungen</span> : null}
+      </span>
+      {results.length > 0 ? (
+        <div className="script-result-list">
+          {results.map((r, i) => <ScriptResultRow key={i} result={r} />)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function resolveMediaType(job) {
   const raw = String(job?.mediaType || job?.media_type || '').trim().toLowerCase();
-  return raw === 'bluray' ? 'bluray' : 'disc';
+  if (raw === 'bluray') {
+    return 'bluray';
+  }
+  if (raw === 'dvd' || raw === 'disc') {
+    return 'dvd';
+  }
+  return 'other';
 }
 
 function statusBadgeMeta(status, queued = false) {
@@ -132,9 +178,15 @@ export default function JobDetailDialog({
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
   const logTruncated = Boolean(logMeta?.truncated);
   const mediaType = resolveMediaType(job);
-  const mediaTypeLabel = mediaType === 'bluray' ? 'Blu-ray' : 'Sonstiges Medium';
-  const mediaTypeIcon = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
-  const mediaTypeAlt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
+  const mediaTypeLabel = mediaType === 'bluray'
+    ? 'Blu-ray'
+    : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+  const mediaTypeIcon = mediaType === 'bluray'
+    ? blurayIndicatorIcon
+    : (mediaType === 'dvd' ? discIndicatorIcon : otherIndicatorIcon);
+  const mediaTypeAlt = mediaType === 'bluray'
+    ? 'Blu-ray'
+    : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
   const statusMeta = statusBadgeMeta(job?.status, queueLocked);
   const omdbInfo = job?.omdbInfo && typeof job.omdbInfo === 'object' ? job.omdbInfo : {};
 
@@ -266,6 +318,16 @@ export default function JobDetailDialog({
               </div>
             </div>
           </section>
+
+          {(job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
+            <section className="job-meta-block job-meta-block-full">
+              <h4>Skripte</h4>
+              <div className="script-results-grid">
+                <ScriptSummarySection title="Pre-Encode" summary={job.handbrakeInfo?.preEncodeScripts} />
+                <ScriptSummarySection title="Post-Encode" summary={job.handbrakeInfo?.postEncodeScripts} />
+              </div>
+            </section>
+          ) : null}
 
           <div className="job-json-grid">
             <JsonView title="OMDb Info" value={job.omdbInfo} />

@@ -32,16 +32,13 @@ function parseEta(line) {
 function parseMakeMkvProgress(line) {
   const prgv = line.match(/PRGV:(\d+),(\d+),(\d+)/);
   if (prgv) {
-    const a = Number(prgv[1]);
-    const b = Number(prgv[2]);
-    const c = Number(prgv[3]);
+    // Format: PRGV:current,total,max  (official makemkv docs)
+    // progress = current / max
+    const current = Number(prgv[1]);
+    const max = Number(prgv[3]);
 
-    if (c > 0) {
-      return { percent: clampPercent((a / c) * 100), eta: null };
-    }
-
-    if (b > 0) {
-      return { percent: clampPercent((a / b) * 100), eta: null };
+    if (max > 0) {
+      return { percent: clampPercent((current / max) * 100), eta: null };
     }
   }
 

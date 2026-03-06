@@ -106,15 +106,23 @@ mediainfo --Version
 
 Ripster benötigt ein physisches **DVD- oder Blu-ray-Laufwerk**.
 
-!!! info "Blu-ray unter Linux"
-    Für Blu-ray-Ripping unter Linux wird zusätzlich `libaacs` benötigt. MakeMKV bringt jedoch eine eigene Entschlüsselung mit, daher ist dies in den meisten Fällen nicht erforderlich.
+!!! danger "LibDriveIO-Modus erforderlich"
+    Das Laufwerk muss im **LibDriveIO-Modus** betrieben werden – MakeMKV greift direkt auf Rohdaten des Laufwerks zu. Ohne diesen Modus können verschlüsselte Blu-rays (insbesondere UHD) nicht gelesen werden.
+
+    Nicht alle Laufwerke unterstützen den direkten Zugriff. Eine Anleitung zur Einrichtung und Liste kompatibler Laufwerke findet sich im [MakeMKV-Forum](https://www.makemkv.com/forum/viewtopic.php?t=18856).
 
 ```bash
 # Laufwerk prüfen
 ls /dev/sr*
 # oder
 lsblk | grep rom
+
+# Laufwerk-Berechtigungen setzen (erforderlich für LibDriveIO)
+sudo chmod a+rw /dev/sr0
 ```
+
+!!! info "Blu-ray unter Linux"
+    MakeMKV bringt mit LibDriveIO eine eigene Entschlüsselung mit – externe Bibliotheken wie `libaacs` sind in der Regel nicht erforderlich.
 
 ---
 

@@ -11,6 +11,7 @@ import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import otherIndicatorIcon from '../assets/media-other.svg';
 import { getStatusLabel, getStatusSeverity, normalizeStatus } from '../utils/statusPresentation';
 
 const processingStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'];
@@ -179,7 +180,13 @@ function getAnalyzeContext(job) {
 
 function resolveMediaType(job) {
   const raw = String(job?.mediaType || job?.media_type || '').trim().toLowerCase();
-  return raw === 'bluray' ? 'bluray' : 'disc';
+  if (raw === 'bluray') {
+    return 'bluray';
+  }
+  if (raw === 'dvd' || raw === 'disc') {
+    return 'dvd';
+  }
+  return 'other';
 }
 
 function mediaIndicatorMeta(job) {
@@ -191,11 +198,18 @@ function mediaIndicatorMeta(job) {
       alt: 'Blu-ray',
       title: 'Blu-ray'
     }
+    : mediaType === 'dvd'
+      ? {
+        mediaType,
+        src: discIndicatorIcon,
+        alt: 'DVD',
+        title: 'DVD'
+      }
     : {
       mediaType,
-      src: discIndicatorIcon,
-      alt: 'Disc',
-      title: 'CD/sonstiges Medium'
+      src: otherIndicatorIcon,
+      alt: 'Sonstiges Medium',
+      title: 'Sonstiges Medium'
     };
 }
 

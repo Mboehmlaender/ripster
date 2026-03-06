@@ -28,6 +28,45 @@ const SUBTITLE_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-subtitles', '--first-s
 const SUBTITLE_FLAG_KEYS_WITH_VALUE = new Set(['--subtitle-burned', '--subtitle-default', '--subtitle-forced']);
 const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
 const LOG_DIR_SETTING_KEY = 'log_dir';
+const MEDIA_PROFILES = ['bluray', 'dvd', 'other'];
+const PROFILED_SETTINGS = {
+  mediainfo_extra_args: {
+    bluray: 'mediainfo_extra_args_bluray',
+    dvd: 'mediainfo_extra_args_dvd'
+  },
+  makemkv_rip_mode: {
+    bluray: 'makemkv_rip_mode_bluray',
+    dvd: 'makemkv_rip_mode_dvd'
+  },
+  makemkv_analyze_extra_args: {
+    bluray: 'makemkv_analyze_extra_args_bluray',
+    dvd: 'makemkv_analyze_extra_args_dvd'
+  },
+  makemkv_rip_extra_args: {
+    bluray: 'makemkv_rip_extra_args_bluray',
+    dvd: 'makemkv_rip_extra_args_dvd'
+  },
+  handbrake_preset: {
+    bluray: 'handbrake_preset_bluray',
+    dvd: 'handbrake_preset_dvd'
+  },
+  handbrake_extra_args: {
+    bluray: 'handbrake_extra_args_bluray',
+    dvd: 'handbrake_extra_args_dvd'
+  },
+  output_extension: {
+    bluray: 'output_extension_bluray',
+    dvd: 'output_extension_dvd'
+  },
+  filename_template: {
+    bluray: 'filename_template_bluray',
+    dvd: 'filename_template_dvd'
+  },
+  output_folder_template: {
+    bluray: 'output_folder_template_bluray',
+    dvd: 'output_folder_template_dvd'
+  }
+};
 
 function applyRuntimeLogDirSetting(rawValue) {
   const resolved = setLogRootDir(rawValue);
@@ -181,6 +220,37 @@ function uniquePresetEntries(entries) {
     unique.push({ name, category });
   }
   return unique;
+}
+
+function normalizeMediaProfileValue(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) {
+    return null;
+  }
+  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+    return 'bluray';
+  }
+  if (raw === 'dvd') {
+    return 'dvd';
+  }
+  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
+    return 'other';
+  }
+  return null;
+}
+
+function resolveProfileFallbackOrder(profile) {
+  const normalized = normalizeMediaProfileValue(profile);
+  if (normalized === 'bluray') {
+    return ['bluray', 'dvd'];
+  }
+  if (normalized === 'dvd') {
+    return ['dvd', 'bluray'];
+  }
+  if (normalized === 'other') {
+    return ['dvd', 'bluray'];
+  }
+  return ['dvd', 'bluray'];
 }
 
 function normalizePresetListLines(rawOutput) {
@@ -356,6 +426,42 @@ class SettingsService {
     }
 
     return map;
+  }
+
+  normalizeMediaProfile(value) {
+    return normalizeMediaProfileValue(value);
+  }
+
+  resolveEffectiveToolSettings(settingsMap = {}, mediaProfile = null) {
+    const sourceMap = settingsMap && typeof settingsMap === 'object' ? settingsMap : {};
+    const fallbackOrder = resolveProfileFallbackOrder(mediaProfile);
+    const resolvedMediaProfile = normalizeMediaProfileValue(mediaProfile) || fallbackOrder[0] || 'dvd';
+    const effective = {
+      ...sourceMap,
+      media_profile: resolvedMediaProfile
+    };
+
+    for (const [legacyKey, profileKeys] of Object.entries(PROFILED_SETTINGS)) {
+      let resolvedValue = sourceMap[legacyKey];
+      for (const profile of fallbackOrder) {
+        const profileKey = profileKeys?.[profile];
+        if (!profileKey) {
+          continue;
+        }
+        if (sourceMap[profileKey] !== undefined) {
+          resolvedValue = sourceMap[profileKey];
+          break;
+        }
+      }
+      effective[legacyKey] = resolvedValue;
+    }
+
+    return effective;
+  }
+
+  async getEffectiveSettingsMap(mediaProfile = null) {
+    const map = await this.getSettingsMap();
+    return this.resolveEffectiveToolSettings(map, mediaProfile);
   }
 
   async getFlatSettings() {
@@ -537,19 +643,24 @@ class SettingsService {
     }));
   }
 
-  async buildMakeMKVAnalyzeConfig(deviceInfo = null) {
-    const map = await this.getSettingsMap();
+  async buildMakeMKVAnalyzeConfig(deviceInfo = null, options = {}) {
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(
+      rawMap,
+      options?.mediaProfile || deviceInfo?.mediaProfile || null
+    );
     const cmd = map.makemkv_command;
-    const args = ['-r', 'info', this.resolveSourceArg(map, deviceInfo)];
+    const args = ['-r', 'info', this.resolveSourceArg(map, deviceInfo), ...splitArgs(map.makemkv_analyze_extra_args)];
     logger.debug('cli:makemkv:analyze', { cmd, args, deviceInfo });
     return { cmd, args };
   }
 
   async buildMakeMKVAnalyzePathConfig(sourcePath, options = {}) {
-    const map = await this.getSettingsMap();
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.makemkv_command;
     const sourceArg = `file:${sourcePath}`;
-    const args = ['-r', 'info', sourceArg];
+    const args = ['-r', 'info', sourceArg, ...splitArgs(map.makemkv_analyze_extra_args)];
     const titleIdRaw = Number(options?.titleId);
     // "makemkvcon info" supports only <source>; title filtering is done in app parser.
     logger.debug('cli:makemkv:analyze:path', {
@@ -562,7 +673,11 @@ class SettingsService {
   }
 
   async buildMakeMKVRipConfig(rawJobDir, deviceInfo = null, options = {}) {
-    const map = await this.getSettingsMap();
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(
+      rawMap,
+      options?.mediaProfile || deviceInfo?.mediaProfile || null
+    );
     const cmd = map.makemkv_command;
     const ripMode = String(map.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
       ? 'backup'
@@ -579,12 +694,16 @@ class SettingsService {
           ignored: parsedExtra
         });
       }
-      baseArgs = [
-        'backup',
-        '--decrypt',
-        sourceArg,
-        rawJobDir
-      ];
+      const normalizedProfile = normalizeMediaProfileValue(options?.mediaProfile || deviceInfo?.mediaProfile || null);
+      const isDvd = normalizedProfile === 'dvd';
+      if (isDvd) {
+        const isoBase = options?.isoOutputBase
+          ? path.join(rawJobDir, options.isoOutputBase)
+          : rawJobDir;
+        baseArgs = ['-r', '--progress=-same', 'backup', '--decrypt', '--noscan', sourceArg, isoBase];
+      } else {
+        baseArgs = ['-r', '--progress=-same', 'backup', '--decrypt', sourceArg, rawJobDir];
+      }
     } else {
       extra = parsedExtra;
       const minLength = Number(map.makemkv_min_length_minutes || 60);
@@ -592,6 +711,7 @@ class SettingsService {
       const targetTitle = hasExplicitTitle ? String(Math.trunc(rawSelectedTitleId)) : 'all';
       if (hasExplicitTitle) {
         baseArgs = [
+          '-r', '--progress=-same',
           'mkv',
           sourceArg,
           targetTitle,
@@ -599,6 +719,7 @@ class SettingsService {
         ];
       } else {
         baseArgs = [
+          '-r', '--progress=-same',
           '--minlength=' + Math.round(minLength * 60),
           'mkv',
           sourceArg,
@@ -637,8 +758,9 @@ class SettingsService {
     };
   }
 
-  async buildMediaInfoConfig(inputPath) {
-    const map = await this.getSettingsMap();
+  async buildMediaInfoConfig(inputPath, options = {}) {
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.mediainfo_command || 'mediainfo';
     const baseArgs = ['--Output=JSON'];
     const extra = splitArgs(map.mediainfo_extra_args);
@@ -648,7 +770,8 @@ class SettingsService {
   }
 
   async buildHandBrakeConfig(inputFile, outputFile, options = {}) {
-    const map = await this.getSettingsMap();
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.handbrake_command;
     const rawTitleId = Number(options?.titleId);
     const selectedTitleId = Number.isFinite(rawTitleId) && rawTitleId > 0
@@ -752,8 +875,12 @@ class SettingsService {
     return '/dev/sr0';
   }
 
-  async buildHandBrakeScanConfig(deviceInfo = null) {
-    const map = await this.getSettingsMap();
+  async buildHandBrakeScanConfig(deviceInfo = null, options = {}) {
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(
+      rawMap,
+      options?.mediaProfile || deviceInfo?.mediaProfile || null
+    );
     const cmd = map.handbrake_command || 'HandBrakeCLI';
     const sourceArg = this.resolveHandBrakeSourceArg(map, deviceInfo);
     // Match legacy rip.sh behavior: scan all titles, then decide in app logic.
@@ -767,7 +894,8 @@ class SettingsService {
   }
 
   async buildHandBrakeScanConfigForInput(inputPath, options = {}) {
-    const map = await this.getSettingsMap();
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.handbrake_command || 'HandBrakeCLI';
     // RAW backup folders must be scanned as full BD source to get usable title list.
     const rawTitleId = Number(options?.titleId);
@@ -785,7 +913,8 @@ class SettingsService {
   }
 
   async buildHandBrakePresetProfile(sampleInputPath = null, options = {}) {
-    const map = await this.getSettingsMap();
+    const rawMap = options?.settingsMap || await this.getSettingsMap();
+    const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.handbrake_command || 'HandBrakeCLI';
     const presetName = map.handbrake_preset || null;
     const rawTitleId = Number(options?.titleId);
@@ -917,10 +1046,12 @@ class SettingsService {
 
   async getHandBrakePresetOptions() {
     const map = await this.getSettingsMap();
-    const configuredPreset = String(map.handbrake_preset || '').trim();
-    const fallbackOptions = configuredPreset
-      ? [{ label: configuredPreset, value: configuredPreset }]
-      : [];
+    const configuredPresets = uniqueOrderedValues([
+      map.handbrake_preset_bluray,
+      map.handbrake_preset_dvd,
+      map.handbrake_preset
+    ]);
+    const fallbackOptions = configuredPresets.map((preset) => ({ label: preset, value: preset }));
     const rawCommand = String(map.handbrake_command || 'HandBrakeCLI').trim();
     const commandTokens = splitArgs(rawCommand);
     const cmd = commandTokens[0] || 'HandBrakeCLI';
@@ -963,7 +1094,7 @@ class SettingsService {
           options: fallbackOptions
         };
       }
-      if (!configuredPreset) {
+      if (configuredPresets.length === 0) {
         return {
           source: 'handbrake-cli',
           message: null,
@@ -971,8 +1102,10 @@ class SettingsService {
         };
       }
 
-      const hasConfiguredPreset = options.some((option) => option.value === configuredPreset);
-      if (hasConfiguredPreset) {
+      const missingConfiguredPresets = configuredPresets.filter(
+        (preset) => !options.some((option) => option.value === preset)
+      );
+      if (missingConfiguredPresets.length === 0) {
         return {
           source: 'handbrake-cli',
           message: null,
@@ -982,8 +1115,11 @@ class SettingsService {
 
       return {
         source: 'handbrake-cli',
-        message: `Aktuell gesetztes Preset "${configuredPreset}" wurde in HandBrakeCLI -z nicht gefunden.`,
-        options: [{ label: configuredPreset, value: configuredPreset }, ...options]
+        message: `Konfigurierte Presets wurden in HandBrakeCLI -z nicht gefunden: ${missingConfiguredPresets.join(', ')}`,
+        options: [
+          ...missingConfiguredPresets.map((preset) => ({ label: preset, value: preset })),
+          ...options
+        ]
       };
     } catch (error) {
       return {

@@ -19,8 +19,27 @@ const { analyzePlaylistObfuscation, normalizePlaylistId } = require('../utils/pl
 const { errorToMeta } = require('../utils/errorMeta');
 
 const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK']);
-const REVIEW_REFRESH_SETTING_PREFIXES = ['handbrake_', 'mediainfo_'];
-const REVIEW_REFRESH_SETTING_KEYS = new Set(['makemkv_min_length_minutes']);
+const REVIEW_REFRESH_SETTING_PREFIXES = [
+  'handbrake_',
+  'mediainfo_',
+  'makemkv_rip_',
+  'makemkv_analyze_',
+  'output_extension_',
+  'filename_template_',
+  'output_folder_template_'
+];
+const REVIEW_REFRESH_SETTING_KEYS = new Set([
+  'makemkv_min_length_minutes',
+  'handbrake_preset',
+  'handbrake_extra_args',
+  'mediainfo_extra_args',
+  'makemkv_rip_mode',
+  'makemkv_analyze_extra_args',
+  'makemkv_rip_extra_args',
+  'output_extension',
+  'filename_template',
+  'output_folder_template'
+]);
 const QUEUE_ACTIONS = {
   START_PREPARED: 'START_PREPARED',
   RETRY: 'RETRY',
@@ -35,9 +54,120 @@ const QUEUE_ACTION_LABELS = {
   [QUEUE_ACTIONS.RESTART_ENCODE]: 'Encode neu starten',
   [QUEUE_ACTIONS.RESTART_REVIEW]: 'Review neu berechnen'
 };
+const PRE_ENCODE_PROGRESS_RESERVE = 10;
+const POST_ENCODE_PROGRESS_RESERVE = 10;
+const POST_ENCODE_FINISH_BUFFER = 1;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeMediaProfile(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) {
+    return null;
+  }
+  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+    return 'bluray';
+  }
+  if (raw === 'dvd') {
+    return 'dvd';
+  }
+  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
+    return 'other';
+  }
+  return null;
+}
+
+function inferMediaProfileFromRawPath(rawPath) {
+  const source = String(rawPath || '').trim();
+  if (!source) {
+    return null;
+  }
+  const bdmvPath = path.join(source, 'BDMV');
+  const bdmvStreamPath = path.join(bdmvPath, 'STREAM');
+  try {
+    if (fs.existsSync(bdmvStreamPath) || fs.existsSync(bdmvPath)) {
+      return 'bluray';
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
+  const videoTsPath = path.join(source, 'VIDEO_TS');
+  try {
+    if (fs.existsSync(videoTsPath)) {
+      return 'dvd';
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
+  try {
+    const entries = fs.readdirSync(source, { withFileTypes: true });
+    const hasIso = entries.some(
+      (e) => e.isFile() && path.extname(e.name).toLowerCase() === '.iso'
+    );
+    if (hasIso) {
+      return 'dvd';
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
+  return null;
+}
+
+function inferMediaProfileFromDeviceInfo(deviceInfo = null) {
+  const device = deviceInfo && typeof deviceInfo === 'object'
+    ? deviceInfo
+    : null;
+  if (!device) {
+    return null;
+  }
+
+  const explicit = normalizeMediaProfile(
+    device.mediaProfile || device.profile || device.type || null
+  );
+  if (explicit) {
+    return explicit;
+  }
+
+  const markerText = [
+    device.discLabel,
+    device.label,
+    device.fstype
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+
+  if (/(^|[\s_-])bdmv($|[\s_-])|blu[\s-]?ray|bd-rom|bd-r|bd-re/.test(markerText)) {
+    return 'bluray';
+  }
+  if (/(^|[\s_-])video_ts($|[\s_-])|dvd/.test(markerText)) {
+    return 'dvd';
+  }
+
+  const mountpoint = String(device.mountpoint || '').trim();
+  if (mountpoint) {
+    try {
+      if (fs.existsSync(path.join(mountpoint, 'BDMV'))) {
+        return 'bluray';
+      }
+    } catch (_error) {
+      // ignore fs errors
+    }
+    try {
+      if (fs.existsSync(path.join(mountpoint, 'VIDEO_TS'))) {
+        return 'dvd';
+      }
+    } catch (_error) {
+      // ignore fs errors
+    }
+  }
+
+  return null;
 }
 
 function fileTimestamp() {
@@ -225,6 +355,136 @@ function composeStatusText(stage, percent, detail) {
   }
 
   return base;
+}
+
+function clampProgressPercent(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function composeEncodeScriptStatusText(percent, phase, itemType, index, total, label, statusWord = null) {
+  const phaseLabel = phase === 'pre' ? 'Pre-Encode' : 'Post-Encode';
+  const itemLabel = itemType === 'chain' ? 'Kette' : 'Skript';
+  const position = Number.isFinite(index) && Number.isFinite(total) && total > 0
+    ? ` ${index}/${total}`
+    : '';
+  const status = statusWord ? ` ${statusWord}` : '';
+  const detail = String(label || '').trim();
+  return `ENCODING ${percent.toFixed(2)}% - ${phaseLabel} ${itemLabel}${position}${status}${detail ? `: ${detail}` : ''}`;
+}
+
+function createEncodeScriptProgressTracker({
+  jobId,
+  preSteps = 0,
+  postSteps = 0,
+  updateProgress
+}) {
+  const preTotal = Math.max(0, Math.trunc(Number(preSteps) || 0));
+  const postTotal = Math.max(0, Math.trunc(Number(postSteps) || 0));
+  const hasPre = preTotal > 0;
+  const hasPost = postTotal > 0;
+  const preReserve = hasPre ? PRE_ENCODE_PROGRESS_RESERVE : 0;
+  const postReserve = hasPost ? POST_ENCODE_PROGRESS_RESERVE : 0;
+  const finalPercentBeforeFinish = hasPost ? (100 - POST_ENCODE_FINISH_BUFFER) : 100;
+  const handBrakeStart = preReserve;
+  const handBrakeEnd = Math.max(handBrakeStart, finalPercentBeforeFinish - postReserve);
+
+  let preCompleted = 0;
+  let postCompleted = 0;
+
+  const clampPhasePercent = (value) => {
+    const clamped = clampProgressPercent(value);
+    if (clamped === null) {
+      return 0;
+    }
+    return Number(clamped.toFixed(2));
+  };
+
+  const calculatePrePercent = () => {
+    if (preTotal <= 0) {
+      return clampPhasePercent(handBrakeStart);
+    }
+    return clampPhasePercent((preCompleted / preTotal) * preReserve);
+  };
+
+  const calculatePostPercent = () => {
+    if (postTotal <= 0) {
+      return clampPhasePercent(handBrakeEnd);
+    }
+    return clampPhasePercent(handBrakeEnd + ((postCompleted / postTotal) * postReserve));
+  };
+
+  const callProgress = async (percent, statusText) => {
+    if (typeof updateProgress !== 'function') {
+      return;
+    }
+    await updateProgress('ENCODING', percent, null, statusText, jobId);
+  };
+
+  return {
+    hasScriptSteps: hasPre || hasPost,
+    handBrakeStart,
+    handBrakeEnd,
+
+    mapHandBrakePercent(percent) {
+      if (!this.hasScriptSteps) {
+        return percent;
+      }
+      const normalized = clampProgressPercent(percent);
+      if (normalized === null) {
+        return percent;
+      }
+      const ratio = normalized / 100;
+      return clampPhasePercent(handBrakeStart + ((handBrakeEnd - handBrakeStart) * ratio));
+    },
+
+    async onStepStart(phase, itemType, index, total, label) {
+      if (phase === 'pre' && preTotal <= 0) {
+        return;
+      }
+      if (phase === 'post' && postTotal <= 0) {
+        return;
+      }
+      const percent = phase === 'pre'
+        ? calculatePrePercent()
+        : calculatePostPercent();
+      await callProgress(percent, composeEncodeScriptStatusText(percent, phase, itemType, index, total, label, 'startet'));
+    },
+
+    async onStepComplete(phase, itemType, index, total, label, success = true) {
+      if (phase === 'pre' && preTotal <= 0) {
+        return;
+      }
+      if (phase === 'post' && postTotal <= 0) {
+        return;
+      }
+
+      if (phase === 'pre') {
+        preCompleted = Math.min(preTotal, preCompleted + 1);
+      } else {
+        postCompleted = Math.min(postTotal, postCompleted + 1);
+      }
+
+      const percent = phase === 'pre'
+        ? calculatePrePercent()
+        : calculatePostPercent();
+      await callProgress(
+        percent,
+        composeEncodeScriptStatusText(
+          percent,
+          phase,
+          itemType,
+          index,
+          total,
+          label,
+          success ? 'OK' : 'Fehler'
+        )
+      );
+    }
+  };
 }
 
 function shouldKeepHighlight(line) {
@@ -997,6 +1257,7 @@ function buildDiscScanReview({
   playlistAnalysis = null,
   selectedPlaylistId = null,
   selectedMakemkvTitleId = null,
+  mediaProfile = null,
   sourceArg = null,
   mode = 'pre_rip',
   preRip = true,
@@ -1164,6 +1425,7 @@ function buildDiscScanReview({
   return {
     generatedAt: nowIso(),
     mode,
+    mediaProfile: normalizeMediaProfile(mediaProfile) || null,
     preRip: Boolean(preRip),
     reviewConfirmed: false,
     minLengthMinutes,
@@ -1964,8 +2226,42 @@ function buildPlaylistSegmentFileSet(playlistAnalysis, selectedPlaylistId = null
   return set;
 }
 
+function ensureDvdBackupIso(rawDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(rawDir, { withFileTypes: true });
+  } catch (_error) {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const ext = path.extname(entry.name).toLowerCase();
+    if (ext === '.iso') {
+      return path.join(rawDir, entry.name);
+    }
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const ext = path.extname(entry.name).toLowerCase();
+    const oldPath = path.join(rawDir, entry.name);
+    const newName = ext ? entry.name.slice(0, -ext.length) + '.iso' : entry.name + '.iso';
+    const newPath = path.join(rawDir, newName);
+    try {
+      fs.renameSync(oldPath, newPath);
+      return newPath;
+    } catch (_error) {
+      return null;
+    }
+  }
+  return null;
+}
+
 function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedPlaylistId = null } = {}) {
-  const primary = findMediaFiles(rawPath, ['.mkv', '.mp4']);
+  const primary = findMediaFiles(rawPath, ['.mkv', '.mp4', '.iso']);
   if (primary.length > 0) {
     return {
       mediaFiles: primary,
@@ -1977,6 +2273,14 @@ function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedP
   const backupRoot = fs.existsSync(streamDir) ? streamDir : rawPath;
   let backupFiles = findMediaFiles(backupRoot, ['.m2ts']);
   if (backupFiles.length === 0) {
+    const videoTsDir = path.join(rawPath, 'VIDEO_TS');
+    if (fs.existsSync(videoTsDir)) {
+      const vobFiles = findMediaFiles(videoTsDir, ['.vob']);
+      return {
+        mediaFiles: vobFiles,
+        source: 'dvd'
+      };
+    }
     return {
       mediaFiles: [],
       source: 'none'
@@ -2779,24 +3083,35 @@ class PipelineService extends EventEmitter {
   }
 
   async onDiscInserted(deviceInfo) {
+    const rawDevice = deviceInfo && typeof deviceInfo === 'object'
+      ? deviceInfo
+      : {};
+    const resolvedMediaProfile = normalizeMediaProfile(rawDevice.mediaProfile)
+      || inferMediaProfileFromDeviceInfo(rawDevice)
+      || 'other';
+    const resolvedDevice = {
+      ...rawDevice,
+      mediaProfile: resolvedMediaProfile
+    };
+
     const previousDevice = this.snapshot.context?.device || this.detectedDisc;
     const previousState = this.snapshot.state;
     const previousJobId = this.snapshot.context?.jobId || this.snapshot.activeJobId || null;
-    const discChanged = previousDevice ? !this.isSameDisc(previousDevice, deviceInfo) : false;
+    const discChanged = previousDevice ? !this.isSameDisc(previousDevice, resolvedDevice) : false;
 
-    this.detectedDisc = deviceInfo;
-    logger.info('disc:inserted', { deviceInfo });
+    this.detectedDisc = resolvedDevice;
+    logger.info('disc:inserted', { deviceInfo: resolvedDevice, mediaProfile: resolvedMediaProfile });
 
     wsService.broadcast('DISC_DETECTED', {
-      device: deviceInfo
+      device: resolvedDevice
     });
 
     if (discChanged && !RUNNING_STATES.has(previousState) && previousState !== 'DISC_DETECTED' && previousState !== 'READY_TO_ENCODE') {
-      const message = `Disk gewechselt (${deviceInfo.discLabel || deviceInfo.path || 'unbekannt'}). Bitte neu analysieren.`;
+      const message = `Disk gewechselt (${resolvedDevice.discLabel || resolvedDevice.path || 'unbekannt'}). Bitte neu analysieren.`;
       logger.info('disc:changed:reset', {
         fromState: previousState,
         previousDevice,
-        newDevice: deviceInfo,
+        newDevice: resolvedDevice,
         previousJobId
       });
 
@@ -2816,7 +3131,7 @@ class PipelineService extends EventEmitter {
         eta: null,
         statusText: 'Neue Disk erkannt',
         context: {
-          device: deviceInfo
+          device: resolvedDevice
         }
       });
       return;
@@ -2829,7 +3144,7 @@ class PipelineService extends EventEmitter {
         eta: null,
         statusText: 'Neue Disk erkannt',
         context: {
-          device: deviceInfo
+          device: resolvedDevice
         }
       });
     }
@@ -2877,6 +3192,81 @@ class PipelineService extends EventEmitter {
       return true;
     }
     return Number(this.snapshot.activeJobId) === Number(jobId);
+  }
+
+  withAnalyzeContextMediaProfile(makemkvInfo, mediaProfile) {
+    const normalizedProfile = normalizeMediaProfile(mediaProfile);
+    const base = makemkvInfo && typeof makemkvInfo === 'object'
+      ? makemkvInfo
+      : {};
+    return {
+      ...base,
+      analyzeContext: {
+        ...(base.analyzeContext || {}),
+        mediaProfile: normalizedProfile || null
+      }
+    };
+  }
+
+  resolveMediaProfileForJob(job, options = {}) {
+    const explicitProfile = normalizeMediaProfile(options?.mediaProfile);
+    if (explicitProfile) {
+      return explicitProfile;
+    }
+
+    const encodePlan = options?.encodePlan && typeof options.encodePlan === 'object'
+      ? options.encodePlan
+      : null;
+    const profileFromPlan = normalizeMediaProfile(encodePlan?.mediaProfile);
+    if (profileFromPlan) {
+      return profileFromPlan;
+    }
+
+    const mkInfo = options?.makemkvInfo && typeof options.makemkvInfo === 'object'
+      ? options.makemkvInfo
+      : this.safeParseJson(job?.makemkv_info_json);
+    const analyzeContext = mkInfo?.analyzeContext || {};
+    const profileFromAnalyze = normalizeMediaProfile(
+      analyzeContext.mediaProfile || mkInfo?.mediaProfile
+    );
+    if (profileFromAnalyze) {
+      return profileFromAnalyze;
+    }
+
+    const currentContextProfile = (
+      Number(this.snapshot.context?.jobId) === Number(job?.id)
+        ? normalizeMediaProfile(this.snapshot.context?.mediaProfile)
+        : null
+    );
+    if (currentContextProfile) {
+      return currentContextProfile;
+    }
+
+    const deviceProfile = inferMediaProfileFromDeviceInfo(
+      options?.deviceInfo
+      || this.detectedDisc
+      || this.snapshot.context?.device
+      || null
+    );
+    if (deviceProfile) {
+      return deviceProfile;
+    }
+
+    const rawPathProfile = inferMediaProfileFromRawPath(options?.rawPath || job?.raw_path || null);
+    if (rawPathProfile) {
+      return rawPathProfile;
+    }
+
+    return 'other';
+  }
+
+  async getEffectiveSettingsForJob(job, options = {}) {
+    const mediaProfile = this.resolveMediaProfileForJob(job, options);
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+    return {
+      settings,
+      mediaProfile
+    };
   }
 
   async ensureMakeMKVRegistration(jobId, stage) {
@@ -3078,6 +3468,13 @@ class PipelineService extends EventEmitter {
       || device.model
       || 'Unknown Disc'
     ).trim();
+    const mediaProfile = normalizeMediaProfile(device?.mediaProfile)
+      || inferMediaProfileFromDeviceInfo(device)
+      || 'other';
+    const deviceWithProfile = {
+      ...device,
+      mediaProfile
+    };
 
     const job = await historyService.createJob({
       discDevice: device.path,
@@ -3097,7 +3494,7 @@ class PipelineService extends EventEmitter {
         status: 'METADATA_SELECTION',
         last_state: 'METADATA_SELECTION',
         detected_title: detectedTitle,
-        makemkv_info_json: JSON.stringify({
+        makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile({
           phase: 'PREPARE',
           preparedAt: nowIso(),
           analyzeContext: {
@@ -3106,7 +3503,7 @@ class PipelineService extends EventEmitter {
             selectedPlaylist: null,
             selectedTitleId: null
           }
-        })
+        }, mediaProfile))
       });
       await historyService.appendLog(
         job.id,
@@ -3125,10 +3522,11 @@ class PipelineService extends EventEmitter {
           statusText: 'Metadaten auswählen',
           context: {
             jobId: job.id,
-            device,
+            device: deviceWithProfile,
             detectedTitle,
             detectedTitleSource: device.discLabel ? 'discLabel' : 'fallback',
             omdbCandidates,
+            mediaProfile,
             playlistAnalysis: null,
             playlistDecisionRequired: false,
             playlistCandidates: [],
@@ -3178,9 +3576,13 @@ class PipelineService extends EventEmitter {
       error.statusCode = 404;
       throw error;
     }
-
-    const settings = await settingsService.getSettingsMap();
     const mkInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      mediaProfile: options?.mediaProfile,
+      deviceInfo,
+      makemkvInfo: mkInfo
+    });
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const analyzeContext = mkInfo?.analyzeContext || {};
     const playlistAnalysis = analyzeContext.playlistAnalysis || this.snapshot.context?.playlistAnalysis || null;
     const selectedPlaylistId = normalizePlaylistId(
@@ -3212,6 +3614,7 @@ class PipelineService extends EventEmitter {
         jobId,
         reviewConfirmed: false,
         mode: 'pre_rip',
+        mediaProfile,
         selectedMetadata
       }
     });
@@ -3220,6 +3623,7 @@ class PipelineService extends EventEmitter {
       status: 'MEDIAINFO_CHECK',
       last_state: 'MEDIAINFO_CHECK',
       error_message: null,
+      makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile(mkInfo, mediaProfile)),
       mediainfo_info_json: null,
       encode_plan_json: null,
       encode_input_path: null,
@@ -3227,7 +3631,7 @@ class PipelineService extends EventEmitter {
     });
 
     const lines = [];
-    const scanConfig = await settingsService.buildHandBrakeScanConfig(deviceInfo);
+    const scanConfig = await settingsService.buildHandBrakeScanConfig(deviceInfo, { mediaProfile });
     logger.info('disc-track-review:command', {
       jobId,
       cmd: scanConfig.cmd,
@@ -3259,6 +3663,7 @@ class PipelineService extends EventEmitter {
       playlistAnalysis,
       selectedPlaylistId,
       selectedMakemkvTitleId,
+      mediaProfile,
       sourceArg: scanConfig.sourceArg
     });
 
@@ -3302,6 +3707,7 @@ class PipelineService extends EventEmitter {
         hasEncodableTitle: Boolean(review.encodeInputTitleId),
         reviewConfirmed: false,
         mode: 'pre_rip',
+        mediaProfile,
         mediaInfoReview: review,
         selectedMetadata
       }
@@ -3389,8 +3795,13 @@ class PipelineService extends EventEmitter {
 
     const mode = String(options?.mode || 'rip').trim().toLowerCase() || 'rip';
     const forcePlaylistReselection = Boolean(options?.forcePlaylistReselection);
-    const settings = await settingsService.getSettingsMap();
     const mkInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      mediaProfile: options?.mediaProfile,
+      rawPath,
+      makemkvInfo: mkInfo
+    });
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const analyzeContext = mkInfo?.analyzeContext || {};
     let playlistAnalysis = analyzeContext.playlistAnalysis || this.snapshot.context?.playlistAnalysis || null;
     let handBrakePlaylistScan = normalizeHandBrakePlaylistScanCache(analyzeContext.handBrakePlaylistScan || null);
@@ -3428,6 +3839,7 @@ class PipelineService extends EventEmitter {
           hasEncodableTitle: false,
           reviewConfirmed: false,
           mode,
+          mediaProfile,
           sourceJobId: options.sourceJobId || null,
           selectedMetadata
         }
@@ -3438,6 +3850,7 @@ class PipelineService extends EventEmitter {
       status: 'MEDIAINFO_CHECK',
       last_state: 'MEDIAINFO_CHECK',
       error_message: null,
+      makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile(mkInfo, mediaProfile)),
       mediainfo_info_json: null,
       encode_plan_json: null,
       encode_input_path: null,
@@ -3475,7 +3888,7 @@ class PipelineService extends EventEmitter {
       );
     } else {
       const analyzeLines = [];
-      const analyzeConfig = await settingsService.buildMakeMKVAnalyzePathConfig(rawPath);
+      const analyzeConfig = await settingsService.buildMakeMKVAnalyzePathConfig(rawPath, { mediaProfile });
       logger.info('backup-track-review:makemkv-analyze-command', {
         jobId,
         cmd: analyzeConfig.cmd,
@@ -3537,7 +3950,7 @@ class PipelineService extends EventEmitter {
         );
         try {
           const resolveScanLines = [];
-          const resolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(rawPath);
+          const resolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(rawPath, { mediaProfile });
           logger.info('backup-track-review:handbrake-predecision-command', {
             jobId,
             cmd: resolveScanConfig.cmd,
@@ -3608,6 +4021,7 @@ class PipelineService extends EventEmitter {
       ...mkInfo,
       analyzeContext: {
         ...(mkInfo?.analyzeContext || {}),
+        mediaProfile,
         playlistAnalysis: playlistAnalysis || null,
         playlistDecisionRequired,
         selectedPlaylist: selectedPlaylistId || null,
@@ -3685,6 +4099,7 @@ class PipelineService extends EventEmitter {
           hasEncodableTitle: false,
           reviewConfirmed: false,
           mode,
+          mediaProfile,
           sourceJobId: options.sourceJobId || null,
           selectedMetadata,
           playlistAnalysis: playlistAnalysis || null,
@@ -3811,7 +4226,7 @@ class PipelineService extends EventEmitter {
     } else {
       try {
         const resolveScanLines = [];
-        const resolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(rawPath);
+        const resolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(rawPath, { mediaProfile });
         logger.info('backup-track-review:handbrake-resolve-command', {
           jobId,
           cmd: resolveScanConfig.cmd,
@@ -3902,7 +4317,8 @@ class PipelineService extends EventEmitter {
     let presetProfile = null;
     try {
       presetProfile = await settingsService.buildHandBrakePresetProfile(rawPath, {
-        titleId: resolvedHandBrakeTitleId
+        titleId: resolvedHandBrakeTitleId,
+        mediaProfile
       });
     } catch (error) {
       logger.warn('backup-track-review:preset-profile-failed', {
@@ -3963,6 +4379,7 @@ class PipelineService extends EventEmitter {
     review = {
       ...review,
       mode,
+      mediaProfile,
       sourceJobId: options.sourceJobId || null,
       reviewConfirmed: false,
       partial: false,
@@ -4050,6 +4467,7 @@ class PipelineService extends EventEmitter {
           hasEncodableTitle,
           reviewConfirmed: false,
           mode,
+          mediaProfile,
           sourceJobId: options.sourceJobId || null,
           mediaInfoReview: review,
           selectedMetadata,
@@ -4095,6 +4513,8 @@ class PipelineService extends EventEmitter {
       error.statusCode = 404;
       throw error;
     }
+    const mkInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, { makemkvInfo: mkInfo });
 
     const normalizedSelectedPlaylist = normalizePlaylistId(selectedPlaylist);
     const waitingForPlaylistSelection = (
@@ -4109,11 +4529,11 @@ class PipelineService extends EventEmitter {
       || (fromOmdb !== null && fromOmdb !== undefined)
     );
     if (normalizedSelectedPlaylist && waitingForPlaylistSelection && job.raw_path && !hasExplicitMetadataPayload) {
-      const currentMkInfo = this.safeParseJson(job.makemkv_info_json);
+      const currentMkInfo = mkInfo;
       const currentAnalyzeContext = currentMkInfo?.analyzeContext || {};
       const currentPlaylistAnalysis = currentAnalyzeContext.playlistAnalysis || this.snapshot.context?.playlistAnalysis || null;
       const selectedTitleId = pickTitleIdForPlaylist(currentPlaylistAnalysis, normalizedSelectedPlaylist);
-      const updatedMkInfo = {
+      const updatedMkInfo = this.withAnalyzeContextMediaProfile({
         ...currentMkInfo,
         analyzeContext: {
           ...currentAnalyzeContext,
@@ -4122,7 +4542,7 @@ class PipelineService extends EventEmitter {
           selectedPlaylist: normalizedSelectedPlaylist,
           selectedTitleId: selectedTitleId ?? null
         }
-      };
+      }, mediaProfile);
 
       await historyService.updateJob(jobId, {
         status: 'MEDIAINFO_CHECK',
@@ -4144,7 +4564,8 @@ class PipelineService extends EventEmitter {
         await this.runBackupTrackReviewForJob(jobId, job.raw_path, {
           mode: 'rip',
           selectedPlaylist: normalizedSelectedPlaylist,
-          selectedTitleId: selectedTitleId ?? null
+          selectedTitleId: selectedTitleId ?? null,
+          mediaProfile
         });
       } catch (error) {
         logger.error('metadata:playlist-selection:review-failed', {
@@ -4198,7 +4619,7 @@ class PipelineService extends EventEmitter {
       imdbId: effectiveImdbId,
       poster: posterValue
     };
-    const settings = await settingsService.getSettingsMap();
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const ripMode = String(settings.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
       ? 'backup'
       : 'mkv';
@@ -4229,8 +4650,7 @@ class PipelineService extends EventEmitter {
     );
     const nextStatus = requiresManualPlaylistSelection ? 'WAITING_FOR_USER_DECISION' : 'READY_TO_START';
 
-    const mkInfo = this.safeParseJson(job.makemkv_info_json);
-    const updatedMakemkvInfo = {
+    const updatedMakemkvInfo = this.withAnalyzeContextMediaProfile({
       ...mkInfo,
       analyzeContext: {
         ...(mkInfo?.analyzeContext || {}),
@@ -4239,7 +4659,7 @@ class PipelineService extends EventEmitter {
         selectedPlaylist: playlistDecision.selectedPlaylist || null,
         selectedTitleId: playlistDecision.selectedTitleId ?? null
       }
-    };
+    }, mediaProfile);
 
     await historyService.updateJob(jobId, {
       title: effectiveTitle,
@@ -4286,6 +4706,7 @@ class PipelineService extends EventEmitter {
           ...(this.snapshot.context || {}),
           jobId,
           rawPath: updatedRawPath,
+          mediaProfile,
           selectedMetadata,
           playlistAnalysis: playlistDecision.playlistAnalysis || null,
           playlistDecisionRequired: Boolean(playlistDecision.playlistDecisionRequired),
@@ -4485,7 +4906,10 @@ class PipelineService extends EventEmitter {
     }
 
     const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job);
-    const settings = await settingsService.getSettingsMap();
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan: encodePlanForReadyState
+    });
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const ripMode = String(settings.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
       ? 'backup'
       : 'mkv';
@@ -4538,7 +4962,8 @@ class PipelineService extends EventEmitter {
       );
 
       this.runReviewForRawJob(jobId, job.raw_path, {
-        mode: 'rip'
+        mode: 'rip',
+        mediaProfile
       }).catch((error) => {
         logger.error('startPreparedJob:review-background-failed', { jobId, error: errorToMeta(error) });
         this.failJob(jobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
@@ -4811,7 +5236,8 @@ class PipelineService extends EventEmitter {
     this.runReviewForRawJob(sourceJobId, sourceJob.raw_path, {
       mode: 'reencode',
       sourceJobId,
-      forcePlaylistReselection: true
+      forcePlaylistReselection: true,
+      mediaProfile: this.resolveMediaProfileForJob(sourceJob, { makemkvInfo: mkInfo, rawPath: sourceJob.raw_path })
     }).catch((error) => {
       logger.error('reencodeFromRaw:background-failed', { jobId: sourceJobId, sourceJobId, error: errorToMeta(error) });
       this.failJob(sourceJobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
@@ -4831,9 +5257,12 @@ class PipelineService extends EventEmitter {
     };
   }
 
-  async runMediainfoForFile(jobId, inputPath) {
+  async runMediainfoForFile(jobId, inputPath, options = {}) {
     const lines = [];
-    const config = await settingsService.buildMediaInfoConfig(inputPath);
+    const config = await settingsService.buildMediaInfoConfig(inputPath, {
+      mediaProfile: options?.mediaProfile || null,
+      settingsMap: options?.settingsMap || null
+    });
     logger.info('mediainfo:command', { jobId, inputPath, cmd: config.cmd, args: config.args });
 
     const runInfo = await this.runCommand({
@@ -4870,8 +5299,13 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    const settings = await settingsService.getSettingsMap();
     const mkInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      mediaProfile: options?.mediaProfile,
+      makemkvInfo: mkInfo,
+      rawPath
+    });
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const analyzeContext = mkInfo?.analyzeContext || {};
     const selectedPlaylistId = normalizePlaylistId(
       analyzeContext.selectedPlaylist
@@ -4899,7 +5333,10 @@ class PipelineService extends EventEmitter {
     );
     let presetProfile = null;
     try {
-      presetProfile = await settingsService.buildHandBrakePresetProfile(mediaFiles[0].path);
+      presetProfile = await settingsService.buildHandBrakePresetProfile(mediaFiles[0].path, {
+        mediaProfile,
+        settingsMap: settings
+      });
     } catch (error) {
       logger.warn('mediainfo:review:preset-profile-failed', {
         jobId,
@@ -4929,6 +5366,7 @@ class PipelineService extends EventEmitter {
           rawPath,
           reviewConfirmed: false,
           mode: options.mode || 'rip',
+          mediaProfile,
           sourceJobId: options.sourceJobId || null,
           selectedMetadata
         }
@@ -4937,7 +5375,8 @@ class PipelineService extends EventEmitter {
 
     await historyService.updateJob(jobId, {
       status: 'MEDIAINFO_CHECK',
-      last_state: 'MEDIAINFO_CHECK'
+      last_state: 'MEDIAINFO_CHECK',
+      makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile(mkInfo, mediaProfile))
     });
 
     const mediaInfoByPath = {};
@@ -4963,6 +5402,7 @@ class PipelineService extends EventEmitter {
           selectedMakemkvTitleId: preferredEncodeTitleId
         }),
         mode: options.mode || 'rip',
+        mediaProfile,
         sourceJobId: options.sourceJobId || null,
         reviewConfirmed: false,
         partial: processedFiles.length < mediaFiles.length,
@@ -4976,7 +5416,10 @@ class PipelineService extends EventEmitter {
       const percent = Number((((i + 1) / mediaFiles.length) * 100).toFixed(2));
       await this.updateProgress('MEDIAINFO_CHECK', percent, null, `Mediainfo ${i + 1}/${mediaFiles.length}: ${path.basename(file.path)}`);
 
-      const result = await this.runMediainfoForFile(jobId, file.path);
+      const result = await this.runMediainfoForFile(jobId, file.path, {
+        mediaProfile,
+        settingsMap: settings
+      });
       mediaInfoByPath[file.path] = result.parsed;
       mediaInfoRuns.push({
         filePath: file.path,
@@ -4997,6 +5440,7 @@ class PipelineService extends EventEmitter {
             hasEncodableTitle: Boolean(partialReview?.encodeInputPath),
             reviewConfirmed: false,
             mode: options.mode || 'rip',
+            mediaProfile,
             sourceJobId: options.sourceJobId || null,
             mediaInfoReview: partialReview,
             selectedMetadata
@@ -5019,6 +5463,7 @@ class PipelineService extends EventEmitter {
     const enrichedReview = {
       ...review,
       mode: options.mode || 'rip',
+      mediaProfile,
       sourceJobId: options.sourceJobId || null,
       reviewConfirmed: false,
       partial: false,
@@ -5070,6 +5515,7 @@ class PipelineService extends EventEmitter {
           hasEncodableTitle,
           reviewConfirmed: false,
           mode: options.mode || 'rip',
+          mediaProfile,
           sourceJobId: options.sourceJobId || null,
           mediaInfoReview: enrichedReview,
           selectedMetadata
@@ -5085,7 +5531,7 @@ class PipelineService extends EventEmitter {
     return enrichedReview;
   }
 
-  async runEncodeChains(jobId, chainIds, context = {}, phase = 'post') {
+  async runEncodeChains(jobId, chainIds, context = {}, phase = 'post', progressTracker = null) {
     const ids = Array.isArray(chainIds) ? chainIds.map(Number).filter((id) => Number.isFinite(id) && id > 0) : [];
     if (ids.length === 0) {
       return { configured: 0, succeeded: 0, failed: 0, results: [] };
@@ -5093,7 +5539,12 @@ class PipelineService extends EventEmitter {
     const results = [];
     let succeeded = 0;
     let failed = 0;
-    for (const chainId of ids) {
+    for (let index = 0; index < ids.length; index += 1) {
+      const chainId = ids[index];
+      const chainLabel = `#${chainId}`;
+      if (progressTracker?.onStepStart) {
+        await progressTracker.onStepStart(phase, 'chain', index + 1, ids.length, chainLabel);
+      }
       await historyService.appendLog(jobId, 'SYSTEM', `${phase === 'pre' ? 'Pre' : 'Post'}-Encode Kette startet (ID ${chainId})...`);
       try {
         const chainResult = await scriptChainService.executeChain(chainId, {
@@ -5109,18 +5560,31 @@ class PipelineService extends EventEmitter {
           succeeded += 1;
           await historyService.appendLog(jobId, 'SYSTEM', `${phase === 'pre' ? 'Pre' : 'Post'}-Encode Kette "${chainResult.chainName}" erfolgreich.`);
         }
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete(
+            phase,
+            'chain',
+            index + 1,
+            ids.length,
+            chainResult.chainName || chainLabel,
+            !(chainResult.aborted || chainResult.failed > 0)
+          );
+        }
         results.push({ chainId, ...chainResult });
       } catch (error) {
         failed += 1;
         results.push({ chainId, success: false, error: error.message });
         await historyService.appendLog(jobId, 'ERROR', `${phase === 'pre' ? 'Pre' : 'Post'}-Encode Kette ${chainId} Fehler: ${error.message}`);
         logger.warn(`encode:${phase}-chain:failed`, { jobId, chainId, error: errorToMeta(error) });
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete(phase, 'chain', index + 1, ids.length, chainLabel, false);
+        }
       }
     }
     return { configured: ids.length, succeeded, failed, results };
   }
 
-  async runPreEncodeScripts(jobId, encodePlan, context = {}) {
+  async runPreEncodeScripts(jobId, encodePlan, context = {}, progressTracker = null) {
     const scriptIds = normalizeScriptIdList(encodePlan?.preEncodeScriptIds || []);
     const chainIds = Array.isArray(encodePlan?.preEncodeChainIds) ? encodePlan.preEncodeChainIds : [];
     if (scriptIds.length === 0 && chainIds.length === 0) {
@@ -5138,11 +5602,18 @@ class PipelineService extends EventEmitter {
     for (let index = 0; index < scriptIds.length; index += 1) {
       const scriptId = scriptIds[index];
       const script = scriptById.get(Number(scriptId));
+      const scriptLabel = script?.name || `#${scriptId}`;
+      if (progressTracker?.onStepStart) {
+        await progressTracker.onStepStart('pre', 'script', index + 1, scriptIds.length, scriptLabel);
+      }
       if (!script) {
         failed += 1;
         aborted = true;
         results.push({ scriptId, scriptName: null, status: 'ERROR', error: 'missing' });
         await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript #${scriptId} nicht gefunden. Kette abgebrochen.`);
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('pre', 'script', index + 1, scriptIds.length, scriptLabel, false);
+        }
         break;
       }
       await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript startet (${index + 1}/${scriptIds.length}): ${script.name}`);
@@ -5168,12 +5639,18 @@ class PipelineService extends EventEmitter {
         succeeded += 1;
         results.push({ scriptId: script.id, scriptName: script.name, status: 'SUCCESS', runInfo });
         await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript erfolgreich: ${script.name}`);
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('pre', 'script', index + 1, scriptIds.length, script.name, true);
+        }
       } catch (error) {
         failed += 1;
         aborted = true;
         results.push({ scriptId: script.id, scriptName: script.name, status: 'ERROR', error: error?.message || 'unknown' });
         await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript fehlgeschlagen: ${script.name} (${error?.message || 'unknown'})`);
         logger.warn('encode:pre-script:failed', { jobId, scriptId: script.id, error: errorToMeta(error) });
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('pre', 'script', index + 1, scriptIds.length, script.name, false);
+        }
         break;
       } finally {
         if (prepared?.cleanup) {
@@ -5183,7 +5660,7 @@ class PipelineService extends EventEmitter {
     }
 
     if (!aborted && chainIds.length > 0) {
-      const chainResult = await this.runEncodeChains(jobId, chainIds, context, 'pre');
+      const chainResult = await this.runEncodeChains(jobId, chainIds, context, 'pre', progressTracker);
       if (chainResult.failed > 0) {
         aborted = true;
         failed += chainResult.failed;
@@ -5213,7 +5690,7 @@ class PipelineService extends EventEmitter {
     };
   }
 
-  async runPostEncodeScripts(jobId, encodePlan, context = {}) {
+  async runPostEncodeScripts(jobId, encodePlan, context = {}, progressTracker = null) {
     const scriptIds = normalizeScriptIdList(encodePlan?.postEncodeScriptIds || []);
     const chainIds = Array.isArray(encodePlan?.postEncodeChainIds) ? encodePlan.postEncodeChainIds : [];
     if (scriptIds.length === 0 && chainIds.length === 0) {
@@ -5242,6 +5719,10 @@ class PipelineService extends EventEmitter {
     for (let index = 0; index < scriptIds.length; index += 1) {
       const scriptId = scriptIds[index];
       const script = scriptById.get(Number(scriptId));
+      const scriptLabel = script?.name || `#${scriptId}`;
+      if (progressTracker?.onStepStart) {
+        await progressTracker.onStepStart('post', 'script', index + 1, scriptIds.length, scriptLabel);
+      }
       if (!script) {
         failed += 1;
         aborted = true;
@@ -5255,6 +5736,9 @@ class PipelineService extends EventEmitter {
           status: 'ERROR',
           error: 'missing'
         });
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('post', 'script', index + 1, scriptIds.length, scriptLabel, false);
+        }
         break;
       }
 
@@ -5296,6 +5780,9 @@ class PipelineService extends EventEmitter {
           'SYSTEM',
           `Post-Encode Skript erfolgreich: ${script.name}`
         );
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('post', 'script', index + 1, scriptIds.length, script.name, true);
+        }
       } catch (error) {
         failed += 1;
         aborted = true;
@@ -5319,6 +5806,9 @@ class PipelineService extends EventEmitter {
           scriptName: script.name,
           error: errorToMeta(error)
         });
+        if (progressTracker?.onStepComplete) {
+          await progressTracker.onStepComplete('post', 'script', index + 1, scriptIds.length, script.name, false);
+        }
         break;
       } finally {
         if (prepared?.cleanup) {
@@ -5355,7 +5845,7 @@ class PipelineService extends EventEmitter {
     }
 
     if (!aborted && chainIds.length > 0) {
-      const chainResult = await this.runEncodeChains(jobId, chainIds, context, 'post');
+      const chainResult = await this.runEncodeChains(jobId, chainIds, context, 'post', progressTracker);
       if (chainResult.failed > 0) {
         aborted = true;
         failed += chainResult.failed;
@@ -5387,10 +5877,6 @@ class PipelineService extends EventEmitter {
     this.ensureNotBusy('startEncodingFromPrepared', jobId);
     logger.info('encode:start-from-prepared', { jobId });
 
-    const settings = await settingsService.getSettingsMap();
-    const movieDir = settings.movie_dir;
-    ensureDir(movieDir);
-
     const job = await historyService.getJobById(jobId);
     if (!job) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
@@ -5399,6 +5885,13 @@ class PipelineService extends EventEmitter {
     }
 
     const encodePlan = this.safeParseJson(job.encode_plan_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan,
+      rawPath: job.raw_path
+    });
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+    const movieDir = settings.movie_dir;
+    ensureDir(movieDir);
     const mode = encodePlan?.mode || this.snapshot.context?.mode || 'rip';
     let inputPath = job.encode_input_path || encodePlan?.encodeInputPath || this.snapshot.context?.inputPath || null;
 
@@ -5437,6 +5930,7 @@ class PipelineService extends EventEmitter {
         inputPath,
         outputPath: incompleteOutputPath,
         reviewConfirmed: true,
+        mediaProfile,
         mediaInfoReview: encodePlan || null,
         selectedMetadata: {
           title: job.title || job.detected_title || null,
@@ -5477,14 +5971,35 @@ class PipelineService extends EventEmitter {
       jobId,
       jobTitle: job.title || job.detected_title || null,
       inputPath,
-      rawPath: job.raw_path || null
+      rawPath: job.raw_path || null,
+      mediaProfile
     };
     const preScriptIds = normalizeScriptIdList(encodePlan?.preEncodeScriptIds || []);
     const preChainIds = Array.isArray(encodePlan?.preEncodeChainIds) ? encodePlan.preEncodeChainIds : [];
+    const postScriptIds = normalizeScriptIdList(encodePlan?.postEncodeScriptIds || []);
+    const postChainIds = Array.isArray(encodePlan?.postEncodeChainIds) ? encodePlan.postEncodeChainIds : [];
+    const normalizedPreChainIds = Array.isArray(preChainIds)
+      ? preChainIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+    const normalizedPostChainIds = Array.isArray(postChainIds)
+      ? postChainIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+    const encodeScriptProgressTracker = createEncodeScriptProgressTracker({
+      jobId,
+      preSteps: preScriptIds.length + normalizedPreChainIds.length,
+      postSteps: postScriptIds.length + normalizedPostChainIds.length,
+      updateProgress: this.updateProgress.bind(this)
+    });
+    let preEncodeScriptsSummary = { configured: 0, attempted: 0, succeeded: 0, failed: 0, skipped: 0, results: [] };
     if (preScriptIds.length > 0 || preChainIds.length > 0) {
       await historyService.appendLog(jobId, 'SYSTEM', 'Pre-Encode Skripte/Ketten werden ausgeführt...');
       try {
-        await this.runPreEncodeScripts(jobId, encodePlan, preEncodeContext);
+        preEncodeScriptsSummary = await this.runPreEncodeScripts(
+          jobId,
+          encodePlan,
+          preEncodeContext,
+          encodeScriptProgressTracker
+        );
       } catch (preError) {
         if (preError.preEncodeFailed) {
           await this.failJob(jobId, 'ENCODING', preError);
@@ -5527,7 +6042,10 @@ class PipelineService extends EventEmitter {
         );
         if (!handBrakeTitleId && selectedPlaylistId) {
           const titleResolveScanLines = [];
-          const titleResolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(inputPath);
+          const titleResolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(inputPath, {
+            mediaProfile,
+            settingsMap: settings
+          });
           logger.info('encoding:title-resolve-scan:command', {
             jobId,
             cmd: titleResolveScanConfig.cmd,
@@ -5567,7 +6085,9 @@ class PipelineService extends EventEmitter {
       }
       const handBrakeConfig = await settingsService.buildHandBrakeConfig(inputPath, incompleteOutputPath, {
         trackSelection,
-        titleId: handBrakeTitleId
+        titleId: handBrakeTitleId,
+        mediaProfile,
+        settingsMap: settings
       });
       if (trackSelection) {
         await historyService.appendLog(
@@ -5584,13 +6104,25 @@ class PipelineService extends EventEmitter {
         );
       }
       logger.info('encoding:command', { jobId, cmd: handBrakeConfig.cmd, args: handBrakeConfig.args });
+      const handBrakeProgressParser = encodeScriptProgressTracker.hasScriptSteps
+        ? (line) => {
+          const parsed = parseHandBrakeProgress(line);
+          if (!parsed || parsed.percent === null || parsed.percent === undefined) {
+            return parsed;
+          }
+          return {
+            ...parsed,
+            percent: encodeScriptProgressTracker.mapHandBrakePercent(parsed.percent)
+          };
+        }
+        : parseHandBrakeProgress;
       const handbrakeInfo = await this.runCommand({
         jobId,
         stage: 'ENCODING',
         source: 'HANDBRAKE',
         cmd: handBrakeConfig.cmd,
         args: handBrakeConfig.args,
-        parser: parseHandBrakeProgress
+        parser: handBrakeProgressParser
       });
       const outputFinalization = finalizeOutputPathForCompletedEncode(
         incompleteOutputPath,
@@ -5624,7 +6156,7 @@ class PipelineService extends EventEmitter {
           inputPath,
           outputPath: finalizedOutputPath,
           rawPath: job.raw_path || null
-        });
+        }, encodeScriptProgressTracker);
       } catch (error) {
         logger.warn('encode:post-script:summary-failed', {
           jobId,
@@ -5645,6 +6177,7 @@ class PipelineService extends EventEmitter {
       }
       const handbrakeInfoWithPostScripts = {
         ...handbrakeInfo,
+        preEncodeScripts: preEncodeScriptsSummary,
         postEncodeScripts: postEncodeScriptsSummary
       };
 
@@ -5741,12 +6274,18 @@ class PipelineService extends EventEmitter {
       ? (Array.isArray(preRipPlanBeforeRip?.preEncodeChainIds) ? preRipPlanBeforeRip.preEncodeChainIds : [])
         .map(Number).filter((id) => Number.isFinite(id) && id > 0)
       : [];
+    const mkInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan: preRipPlanBeforeRip,
+      makemkvInfo: mkInfo,
+      deviceInfo: this.detectedDisc || this.snapshot.context?.device || null
+    });
     const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job);
     const selectedTitleId = playlistDecision.selectedTitleId;
     const selectedPlaylist = playlistDecision.selectedPlaylist;
     const selectedPlaylistFile = toPlaylistFile(selectedPlaylist);
 
-    const settings = await settingsService.getSettingsMap();
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const rawBaseDir = settings.raw_dir;
     const ripMode = String(settings.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
       ? 'backup'
@@ -5783,9 +6322,16 @@ class PipelineService extends EventEmitter {
     ensureDir(rawJobDir);
     logger.info('rip:raw-dir-created', { jobId, rawJobDir });
 
-    const device = this.detectedDisc || this.snapshot.context?.device || {
+    const deviceCandidate = this.detectedDisc || this.snapshot.context?.device || {
       path: job.disc_device,
       index: Number(settings.makemkv_source_index || 0)
+    };
+    const deviceProfile = normalizeMediaProfile(deviceCandidate?.mediaProfile)
+      || inferMediaProfileFromDeviceInfo(deviceCandidate)
+      || mediaProfile;
+    const device = {
+      ...deviceCandidate,
+      mediaProfile: deviceProfile
     };
     const devicePath = device.path || null;
 
@@ -5797,6 +6343,7 @@ class PipelineService extends EventEmitter {
       context: {
         jobId,
         device,
+        mediaProfile,
         ripMode,
         playlistDecisionRequired: Boolean(playlistDecision.playlistDecisionRequired),
         playlistCandidates: playlistDecision.candidatePlaylists,
@@ -5836,8 +6383,14 @@ class PipelineService extends EventEmitter {
     try {
       await this.ensureMakeMKVRegistration(jobId, 'RIPPING');
 
+      const isoOutputBase = ripMode === 'backup' && mediaProfile === 'dvd'
+        ? sanitizeFileName(job.title || job.detected_title || `disc-${jobId}`)
+        : null;
       const ripConfig = await settingsService.buildMakeMKVRipConfig(rawJobDir, device, {
-        selectedTitleId: effectiveSelectedTitleId
+        selectedTitleId: effectiveSelectedTitleId,
+        mediaProfile,
+        settingsMap: settings,
+        isoOutputBase
       });
       logger.info('rip:command', {
         jobId,
@@ -5899,15 +6452,27 @@ class PipelineService extends EventEmitter {
           });
         }
       }
+      if (ripMode === 'backup' && mediaProfile === 'dvd') {
+        const isoPath = ensureDvdBackupIso(rawJobDir);
+        if (isoPath) {
+          await historyService.appendLog(jobId, 'SYSTEM', `DVD-Backup ISO: ${path.basename(isoPath)}`);
+        } else {
+          logger.warn('rip:dvd-backup:no-iso', { jobId, rawJobDir });
+        }
+      }
+
       const mkInfoBeforeRip = this.safeParseJson(job.makemkv_info_json);
       await historyService.updateJob(jobId, {
-        makemkv_info_json: JSON.stringify({
+        makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile({
           ...makemkvInfo,
           analyzeContext: mkInfoBeforeRip?.analyzeContext || null
-        })
+        }, mediaProfile))
       });
 
-      const review = await this.runReviewForRawJob(jobId, rawJobDir, { mode: 'rip' });
+      const review = await this.runReviewForRawJob(jobId, rawJobDir, {
+        mode: 'rip',
+        mediaProfile
+      });
       logger.info('rip:review-ready', {
         jobId,
         encodeInputPath: review.encodeInputPath,
@@ -5941,10 +6506,10 @@ class PipelineService extends EventEmitter {
       if (error.runInfo && error.runInfo.source === 'MAKEMKV_RIP') {
         const mkInfoBeforeRip = this.safeParseJson(job.makemkv_info_json);
         await historyService.updateJob(jobId, {
-          makemkv_info_json: JSON.stringify({
+          makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile({
             ...error.runInfo,
             analyzeContext: mkInfoBeforeRip?.analyzeContext || null
-          })
+          }, mediaProfile))
         });
       }
       if (

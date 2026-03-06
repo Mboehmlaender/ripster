@@ -135,26 +135,102 @@ function hasBlurayStructure(rawPath) {
   return false;
 }
 
+function hasDvdStructure(rawPath) {
+  const basePath = String(rawPath || '').trim();
+  if (!basePath) {
+    return false;
+  }
+
+  const videoTsPath = path.join(basePath, 'VIDEO_TS');
+  try {
+    if (fs.existsSync(videoTsPath)) {
+      const stat = fs.statSync(videoTsPath);
+      if (stat.isDirectory()) {
+        return true;
+      }
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
+  try {
+    if (fs.existsSync(basePath)) {
+      const stat = fs.statSync(basePath);
+      if (stat.isDirectory()) {
+        const entries = fs.readdirSync(basePath);
+        if (entries.some((entry) => /^vts_\d{2}_\d\.(ifo|vob|bup)$/i.test(entry) || /^video_ts\.(ifo|vob|bup)$/i.test(entry))) {
+          return true;
+        }
+      } else if (stat.isFile()) {
+        return /(^|\/)video_ts\/.+\.(ifo|vob|bup)$/i.test(basePath) || /\.(ifo|vob|bup)$/i.test(basePath);
+      }
+    }
+  } catch (_error) {
+    // ignore fs errors and fallback to path checks
+  }
+
+  if (/(^|\/)video_ts(\/|$)/i.test(basePath)) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeMediaTypeValue(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) {
+    return null;
+  }
+  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+    return 'bluray';
+  }
+  if (raw === 'dvd') {
+    return 'dvd';
+  }
+  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
+    return 'other';
+  }
+  return null;
+}
+
 function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan) {
   const mkInfo = parseInfoFromValue(makemkvInfo, null);
   const miInfo = parseInfoFromValue(mediainfoInfo, null);
   const plan = parseInfoFromValue(encodePlan, null);
   const rawPath = String(job?.raw_path || '').trim();
   const encodeInputPath = String(job?.encode_input_path || plan?.encodeInputPath || '').trim();
+  const profileHint = normalizeMediaTypeValue(
+    plan?.mediaProfile
+    || mkInfo?.analyzeContext?.mediaProfile
+    || mkInfo?.mediaProfile
+    || miInfo?.mediaProfile
+    || job?.media_type
+    || job?.mediaType
+  );
+
+  if (profileHint === 'bluray' || profileHint === 'dvd') {
+    return profileHint;
+  }
 
   if (hasBlurayStructure(rawPath)) {
     return 'bluray';
   }
+  if (hasDvdStructure(rawPath)) {
+    return 'dvd';
+  }
 
   const mkSource = String(mkInfo?.source || '').trim().toLowerCase();
   const mkRipMode = String(mkInfo?.ripMode || mkInfo?.rip_mode || '').trim().toLowerCase();
-  if (
-    mkRipMode === 'backup'
-    || mkSource.includes('backup')
-    || mkSource.includes('raw_backup')
-    || Boolean(mkInfo?.analyzeContext?.playlistAnalysis)
-  ) {
+  if (Boolean(mkInfo?.analyzeContext?.playlistAnalysis)) {
     return 'bluray';
+  }
+  if (mkRipMode === 'backup' || mkSource.includes('backup') || mkSource.includes('raw_backup')) {
+    if (hasDvdStructure(rawPath) || hasDvdStructure(encodeInputPath)) {
+      return 'dvd';
+    }
+    if (hasBlurayStructure(rawPath) || hasBlurayStructure(encodeInputPath)) {
+      return 'bluray';
+    }
   }
 
   const planMode = String(plan?.mode || '').trim().toLowerCase();
@@ -163,8 +239,16 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan) {
   }
 
   const mediainfoSource = String(miInfo?.source || '').trim().toLowerCase();
-  if (mediainfoSource.includes('raw_backup') || Number(miInfo?.handbrakeTitleId) > 0) {
+  if (Number(miInfo?.handbrakeTitleId) > 0) {
     return 'bluray';
+  }
+  if (mediainfoSource.includes('raw_backup')) {
+    if (hasDvdStructure(rawPath) || hasDvdStructure(encodeInputPath)) {
+      return 'dvd';
+    }
+    if (hasBlurayStructure(rawPath) || hasBlurayStructure(encodeInputPath)) {
+      return 'bluray';
+    }
   }
 
   if (
@@ -174,8 +258,15 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan) {
   ) {
     return 'bluray';
   }
+  if (
+    /(^|\/)video_ts(\/|$)/i.test(rawPath)
+    || /(^|\/)video_ts(\/|$)/i.test(encodeInputPath)
+    || /\.(ifo|vob|bup)(\.|$)/i.test(encodeInputPath)
+  ) {
+    return 'dvd';
+  }
 
-  return 'disc';
+  return profileHint || 'other';
 }
 
 function toProcessLogPath(jobId) {
@@ -199,11 +290,39 @@ function toProcessLogStreamKey(jobId) {
   return String(Math.trunc(normalizedId));
 }
 
-function enrichJobRow(job) {
-  const rawStatus = inspectDirectory(job.raw_path);
-  const outputStatus = inspectOutputFile(job.output_path);
-  const movieDir = job.output_path ? path.dirname(job.output_path) : null;
-  const movieDirStatus = inspectDirectory(movieDir);
+function resolveEffectiveRawPath(storedPath, rawDir) {
+  const stored = String(storedPath || '').trim();
+  if (!stored || !rawDir) return stored;
+  const folderName = path.basename(stored);
+  if (!folderName) return stored;
+  return path.join(String(rawDir).trim(), folderName);
+}
+
+function resolveEffectiveOutputPath(storedPath, movieDir) {
+  const stored = String(storedPath || '').trim();
+  if (!stored || !movieDir) return stored;
+  // output_path structure: {movie_dir}/{folderName}/{fileName}
+  const fileName = path.basename(stored);
+  const folderName = path.basename(path.dirname(stored));
+  if (!fileName || !folderName || folderName === '.') return stored;
+  return path.join(String(movieDir).trim(), folderName, fileName);
+}
+
+function enrichJobRow(job, settings = null) {
+  const rawDir = String(settings?.raw_dir || '').trim();
+  const movieDir = String(settings?.movie_dir || '').trim();
+
+  const effectiveRawPath = rawDir && job.raw_path
+    ? resolveEffectiveRawPath(job.raw_path, rawDir)
+    : (job.raw_path || null);
+  const effectiveOutputPath = movieDir && job.output_path
+    ? resolveEffectiveOutputPath(job.output_path, movieDir)
+    : (job.output_path || null);
+
+  const rawStatus = inspectDirectory(effectiveRawPath);
+  const outputStatus = inspectOutputFile(effectiveOutputPath);
+  const movieDirPath = effectiveOutputPath ? path.dirname(effectiveOutputPath) : null;
+  const movieDirStatus = inspectDirectory(movieDirPath);
   const makemkvInfo = parseJsonSafe(job.makemkv_info_json, null);
   const handbrakeInfo = parseJsonSafe(job.handbrake_info_json, null);
   const mediainfoInfo = parseJsonSafe(job.mediainfo_info_json, null);
@@ -215,6 +334,8 @@ function enrichJobRow(job) {
 
   return {
     ...job,
+    raw_path: effectiveRawPath,
+    output_path: effectiveOutputPath,
     makemkvInfo,
     handbrakeInfo,
     mediainfoInfo,
@@ -547,19 +668,22 @@ class HistoryService {
 
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
-    const jobs = await db.all(
-      `
+    const [jobs, settings] = await Promise.all([
+      db.all(
+        `
         SELECT j.*
         FROM jobs j
         ${whereClause}
         ORDER BY j.created_at DESC
         LIMIT 500
       `,
-      values
-    );
+        values
+      ),
+      settingsService.getSettingsMap()
+    ]);
 
     return jobs.map((job) => ({
-      ...enrichJobRow(job),
+      ...enrichJobRow(job, settings),
       log_count: hasProcessLogFile(job.id) ? 1 : 0
     }));
   }
@@ -575,57 +699,68 @@ class HistoryService {
       return [];
     }
 
-    const db = await getDb();
-    const placeholders = ids.map(() => '?').join(', ');
-    const rows = await db.all(
-      `SELECT * FROM jobs WHERE id IN (${placeholders})`,
-      ids
-    );
+    const [rows, settings] = await Promise.all([
+      (async () => {
+        const db = await getDb();
+        const placeholders = ids.map(() => '?').join(', ');
+        return db.all(`SELECT * FROM jobs WHERE id IN (${placeholders})`, ids);
+      })(),
+      settingsService.getSettingsMap()
+    ]);
     const byId = new Map(rows.map((row) => [Number(row.id), row]));
     return ids
       .map((id) => byId.get(id))
       .filter(Boolean)
       .map((job) => ({
-        ...enrichJobRow(job),
+        ...enrichJobRow(job, settings),
         log_count: hasProcessLogFile(job.id) ? 1 : 0
       }));
   }
 
   async getRunningJobs() {
     const db = await getDb();
-    const rows = await db.all(
-      `
+    const [rows, settings] = await Promise.all([
+      db.all(
+        `
         SELECT *
         FROM jobs
         WHERE status IN ('RIPPING', 'ENCODING')
         ORDER BY updated_at ASC, id ASC
       `
-    );
+      ),
+      settingsService.getSettingsMap()
+    ]);
     return rows.map((job) => ({
-      ...enrichJobRow(job),
+      ...enrichJobRow(job, settings),
       log_count: hasProcessLogFile(job.id) ? 1 : 0
     }));
   }
 
   async getRunningEncodeJobs() {
     const db = await getDb();
-    const rows = await db.all(
-      `
+    const [rows, settings] = await Promise.all([
+      db.all(
+        `
         SELECT *
         FROM jobs
         WHERE status = 'ENCODING'
         ORDER BY updated_at ASC, id ASC
       `
-    );
+      ),
+      settingsService.getSettingsMap()
+    ]);
     return rows.map((job) => ({
-      ...enrichJobRow(job),
+      ...enrichJobRow(job, settings),
       log_count: hasProcessLogFile(job.id) ? 1 : 0
     }));
   }
 
   async getJobWithLogs(jobId, options = {}) {
     const db = await getDb();
-    const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
+    const [job, settings] = await Promise.all([
+      db.get('SELECT * FROM jobs WHERE id = ?', [jobId]),
+      settingsService.getSettingsMap()
+    ]);
     if (!job) {
       return null;
     }
@@ -643,7 +778,7 @@ class HistoryService {
 
     if (!shouldLoadLogs) {
       return {
-        ...enrichJobRow(job),
+        ...enrichJobRow(job, settings),
         log_count: baseLogCount,
         logs: [],
         log: '',
@@ -662,7 +797,7 @@ class HistoryService {
     });
 
     return {
-      ...enrichJobRow(job),
+      ...enrichJobRow(job, settings),
       log_count: processLog.exists ? processLog.total : 0,
       logs: [],
       log: processLog.lines.join('\n'),
@@ -909,7 +1044,7 @@ class HistoryService {
     });
 
     const imported = await this.getJobById(created.id);
-    return enrichJobRow(imported);
+    return enrichJobRow(imported, settings);
   }
 
   async assignOmdbMetadata(jobId, payload = {}) {
@@ -967,8 +1102,11 @@ class HistoryService {
         : `Metadaten manuell aktualisiert: title="${title || '-'}", year="${year || '-'}", imdb="${imdbId || '-'}"`
     );
 
-    const updated = await this.getJobById(jobId);
-    return enrichJobRow(updated);
+    const [updated, settings] = await Promise.all([
+      this.getJobById(jobId),
+      settingsService.getSettingsMap()
+    ]);
+    return enrichJobRow(updated, settings);
   }
 
   async deleteJobFiles(jobId, target = 'both') {
@@ -987,6 +1125,12 @@ class HistoryService {
     }
 
     const settings = await settingsService.getSettingsMap();
+    const effectiveRawPath = settings.raw_dir && job.raw_path
+      ? resolveEffectiveRawPath(job.raw_path, settings.raw_dir)
+      : job.raw_path;
+    const effectiveOutputPath = settings.movie_dir && job.output_path
+      ? resolveEffectiveOutputPath(job.output_path, settings.movie_dir)
+      : job.output_path;
     const summary = {
       target,
       raw: { attempted: false, deleted: false, filesDeleted: 0, dirsRemoved: 0, reason: null },
@@ -995,16 +1139,16 @@ class HistoryService {
 
     if (target === 'raw' || target === 'both') {
       summary.raw.attempted = true;
-      if (!job.raw_path) {
+      if (!effectiveRawPath) {
         summary.raw.reason = 'Kein raw_path im Job gesetzt.';
-      } else if (!isPathInside(settings.raw_dir, job.raw_path)) {
-        const error = new Error(`RAW-Pfad liegt außerhalb von raw_dir: ${job.raw_path}`);
+      } else if (!isPathInside(settings.raw_dir, effectiveRawPath)) {
+        const error = new Error(`RAW-Pfad liegt außerhalb von raw_dir: ${effectiveRawPath}`);
         error.statusCode = 400;
         throw error;
-      } else if (!fs.existsSync(job.raw_path)) {
+      } else if (!fs.existsSync(effectiveRawPath)) {
         summary.raw.reason = 'RAW-Pfad existiert nicht.';
       } else {
-        const result = deleteFilesRecursively(job.raw_path, true);
+        const result = deleteFilesRecursively(effectiveRawPath, true);
         summary.raw.deleted = true;
         summary.raw.filesDeleted = result.filesDeleted;
         summary.raw.dirsRemoved = result.dirsRemoved;
@@ -1013,16 +1157,16 @@ class HistoryService {
 
     if (target === 'movie' || target === 'both') {
       summary.movie.attempted = true;
-      if (!job.output_path) {
+      if (!effectiveOutputPath) {
         summary.movie.reason = 'Kein output_path im Job gesetzt.';
-      } else if (!isPathInside(settings.movie_dir, job.output_path)) {
-        const error = new Error(`Movie-Pfad liegt außerhalb von movie_dir: ${job.output_path}`);
+      } else if (!isPathInside(settings.movie_dir, effectiveOutputPath)) {
+        const error = new Error(`Movie-Pfad liegt außerhalb von movie_dir: ${effectiveOutputPath}`);
         error.statusCode = 400;
         throw error;
-      } else if (!fs.existsSync(job.output_path)) {
+      } else if (!fs.existsSync(effectiveOutputPath)) {
         summary.movie.reason = 'Movie-Datei/Pfad existiert nicht.';
       } else {
-        const outputPath = normalizeComparablePath(job.output_path);
+        const outputPath = normalizeComparablePath(effectiveOutputPath);
         const movieRoot = normalizeComparablePath(settings.movie_dir);
         const stat = fs.lstatSync(outputPath);
         if (stat.isDirectory()) {
@@ -1061,10 +1205,13 @@ class HistoryService {
     );
     logger.info('job:delete-files', { jobId, summary });
 
-    const updated = await this.getJobById(jobId);
+    const [updated, enrichSettings] = await Promise.all([
+      this.getJobById(jobId),
+      settingsService.getSettingsMap()
+    ]);
     return {
       summary,
-      job: enrichJobRow(updated)
+      job: enrichJobRow(updated, enrichSettings)
     };
   }
 

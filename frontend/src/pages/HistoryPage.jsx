@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card } from 'primereact/card';
-import { DataTable } from 'primereact/datatable';
-import { Column } from 'primereact/column';
+import { DataView, DataViewLayoutOptions } from 'primereact/dataview';
 import { InputText } from 'primereact/inputtext';
 import { Dropdown } from 'primereact/dropdown';
 import { Button } from 'primereact/button';
@@ -11,17 +10,79 @@ import { api } from '../api/client';
 import JobDetailDialog from '../components/JobDetailDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
+import otherIndicatorIcon from '../assets/media-other.svg';
 import {
   getStatusLabel,
   getStatusSeverity,
-  getProcessStatusLabel,
   normalizeStatus,
   STATUS_FILTER_OPTIONS
 } from '../utils/statusPresentation';
 
+const MEDIA_FILTER_OPTIONS = [
+  { label: 'Alle Medien', value: '' },
+  { label: 'Blu-ray', value: 'bluray' },
+  { label: 'DVD', value: 'dvd' },
+  { label: 'Sonstiges', value: 'other' }
+];
+
+const BASE_SORT_FIELD_OPTIONS = [
+  { label: 'Startzeit', value: 'start_time' },
+  { label: 'Endzeit', value: 'end_time' },
+  { label: 'Titel', value: 'title' },
+  { label: 'Medium', value: 'mediaType' }
+];
+
+const OPTIONAL_SORT_FIELD_OPTIONS = [
+  { label: 'Keine', value: '' },
+  ...BASE_SORT_FIELD_OPTIONS
+];
+
+const SORT_DIRECTION_OPTIONS = [
+  { label: 'Aufsteigend', value: 1 },
+  { label: 'Absteigend', value: -1 }
+];
+
+const MEDIA_SORT_RANK = {
+  bluray: 0,
+  dvd: 1,
+  other: 2
+};
+
 function resolveMediaType(row) {
   const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
-  return raw === 'bluray' ? 'bluray' : 'disc';
+  if (raw === 'bluray') {
+    return 'bluray';
+  }
+  if (raw === 'dvd' || raw === 'disc') {
+    return 'dvd';
+  }
+  return 'other';
+}
+
+function resolveMediaTypeMeta(row) {
+  const mediaType = resolveMediaType(row);
+  if (mediaType === 'bluray') {
+    return {
+      mediaType,
+      icon: blurayIndicatorIcon,
+      label: 'Blu-ray',
+      alt: 'Blu-ray'
+    };
+  }
+  if (mediaType === 'dvd') {
+    return {
+      mediaType,
+      icon: discIndicatorIcon,
+      label: 'DVD',
+      alt: 'DVD'
+    };
+  }
+  return {
+    mediaType,
+    icon: otherIndicatorIcon,
+    label: 'Sonstiges',
+    alt: 'Sonstiges Medium'
+  };
 }
 
 function normalizeJobId(value) {
@@ -36,10 +97,126 @@ function getQueueActionResult(response) {
   return response?.result && typeof response.result === 'object' ? response.result : {};
 }
 
+function normalizeSortText(value) {
+  return String(value || '').trim().toLocaleLowerCase('de-DE');
+}
+
+function normalizeSortDate(value) {
+  if (!value) {
+    return null;
+  }
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function compareSortValues(a, b) {
+  const aMissing = a === null || a === undefined || a === '';
+  const bMissing = b === null || b === undefined || b === '';
+  if (aMissing && bMissing) {
+    return 0;
+  }
+  if (aMissing) {
+    return 1;
+  }
+  if (bMissing) {
+    return -1;
+  }
+
+  if (typeof a === 'number' && typeof b === 'number') {
+    if (a === b) {
+      return 0;
+    }
+    return a > b ? 1 : -1;
+  }
+
+  return String(a).localeCompare(String(b), 'de', {
+    sensitivity: 'base',
+    numeric: true
+  });
+}
+
+function resolveSortValue(row, field) {
+  switch (field) {
+    case 'start_time':
+      return normalizeSortDate(row?.start_time);
+    case 'end_time':
+      return normalizeSortDate(row?.end_time);
+    case 'title':
+      return normalizeSortText(row?.title || row?.detected_title || '');
+    case 'mediaType': {
+      const mediaType = resolveMediaType(row);
+      return MEDIA_SORT_RANK[mediaType] ?? MEDIA_SORT_RANK.other;
+    }
+    default:
+      return null;
+  }
+}
+
+function sanitizeRating(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.toUpperCase() === 'N/A') {
+    return null;
+  }
+  return raw;
+}
+
+function findOmdbRatingBySource(omdbInfo, sourceName) {
+  const ratings = Array.isArray(omdbInfo?.Ratings) ? omdbInfo.Ratings : [];
+  const source = String(sourceName || '').trim().toLowerCase();
+  const entry = ratings.find((item) => String(item?.Source || '').trim().toLowerCase() === source);
+  return sanitizeRating(entry?.Value);
+}
+
+function resolveRatings(row) {
+  const omdbInfo = row?.omdbInfo && typeof row.omdbInfo === 'object' ? row.omdbInfo : null;
+  if (!omdbInfo) {
+    return [];
+  }
+
+  const imdb = sanitizeRating(omdbInfo?.imdbRating)
+    || findOmdbRatingBySource(omdbInfo, 'Internet Movie Database');
+  const rotten = findOmdbRatingBySource(omdbInfo, 'Rotten Tomatoes');
+  const metascore = sanitizeRating(omdbInfo?.Metascore);
+
+  const ratings = [];
+  if (imdb) {
+    ratings.push({ key: 'imdb', label: 'IMDb', value: imdb });
+  }
+  if (rotten) {
+    ratings.push({ key: 'rt', label: 'RT', value: rotten });
+  }
+  if (metascore) {
+    ratings.push({ key: 'meta', label: 'Meta', value: metascore });
+  }
+  return ratings;
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return '-';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toLocaleString('de-DE', {
+    dateStyle: 'short',
+    timeStyle: 'short'
+  });
+}
+
 export default function HistoryPage() {
   const [jobs, setJobs] = useState([]);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  const [mediumFilter, setMediumFilter] = useState('');
+  const [layout, setLayout] = useState('list');
+  const [sortPrimaryField, setSortPrimaryField] = useState('start_time');
+  const [sortPrimaryOrder, setSortPrimaryOrder] = useState(-1);
+  const [sortSecondaryField, setSortSecondaryField] = useState('title');
+  const [sortSecondaryOrder, setSortSecondaryOrder] = useState(1);
+  const [sortTertiaryField, setSortTertiaryField] = useState('mediaType');
+  const [sortTertiaryOrder, setSortTertiaryOrder] = useState(1);
   const [selectedJob, setSelectedJob] = useState(null);
   const [detailVisible, setDetailVisible] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -49,6 +226,7 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(false);
   const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
+
   const queuedJobIdSet = useMemo(() => {
     const next = new Set();
     for (const value of Array.isArray(queuedJobIds) ? queuedJobIds : []) {
@@ -59,6 +237,52 @@ export default function HistoryPage() {
     }
     return next;
   }, [queuedJobIds]);
+
+  const sortDescriptors = useMemo(() => {
+    const seen = new Set();
+    const rawDescriptors = [
+      { field: String(sortPrimaryField || '').trim(), order: Number(sortPrimaryOrder || -1) >= 0 ? 1 : -1 },
+      { field: String(sortSecondaryField || '').trim(), order: Number(sortSecondaryOrder || -1) >= 0 ? 1 : -1 },
+      { field: String(sortTertiaryField || '').trim(), order: Number(sortTertiaryOrder || -1) >= 0 ? 1 : -1 }
+    ];
+
+    const descriptors = [];
+    for (const descriptor of rawDescriptors) {
+      if (!descriptor.field || seen.has(descriptor.field)) {
+        continue;
+      }
+      seen.add(descriptor.field);
+      descriptors.push(descriptor);
+    }
+    return descriptors;
+  }, [sortPrimaryField, sortPrimaryOrder, sortSecondaryField, sortSecondaryOrder, sortTertiaryField, sortTertiaryOrder]);
+
+  const visibleJobs = useMemo(() => {
+    const filtered = mediumFilter
+      ? jobs.filter((job) => resolveMediaType(job) === mediumFilter)
+      : [...jobs];
+
+    if (sortDescriptors.length === 0) {
+      return filtered;
+    }
+
+    filtered.sort((a, b) => {
+      for (const descriptor of sortDescriptors) {
+        const valueA = resolveSortValue(a, descriptor.field);
+        const valueB = resolveSortValue(b, descriptor.field);
+        const compared = compareSortValues(valueA, valueB);
+        if (compared !== 0) {
+          return compared * descriptor.order;
+        }
+      }
+
+      const idA = Number(a?.id || 0);
+      const idB = Number(b?.id || 0);
+      return idB - idA;
+    });
+
+    return filtered;
+  }, [jobs, mediumFilter, sortDescriptors]);
 
   const load = async () => {
     setLoading(true);
@@ -211,8 +435,8 @@ export default function HistoryPage() {
     const title = row.title || row.detected_title || `Job #${row.id}`;
     if (row?.encodeSuccess) {
       const confirmed = window.confirm(
-        `Encode für "${title}" ist bereits erfolgreich abgeschlossen. Wirklich erneut encodieren?\n` +
-        'Es wird eine neue Datei mit Kollisionsprüfung angelegt.'
+        `Encode für "${title}" ist bereits erfolgreich abgeschlossen. Wirklich erneut encodieren?\n`
+        + 'Es wird eine neue Datei mit Kollisionsprüfung angelegt.'
       );
       if (!confirmed) {
         return;
@@ -279,7 +503,7 @@ export default function HistoryPage() {
     }
   };
 
-  const statusBody = (row) => {
+  const renderStatusTag = (row) => {
     const normalizedStatus = normalizeStatus(row?.status);
     const rowId = normalizeJobId(row?.id);
     const isQueued = Boolean(rowId && queuedJobIdSet.has(rowId));
@@ -290,88 +514,297 @@ export default function HistoryPage() {
       />
     );
   };
-  const mkBody = (row) => (
-    <span className="job-step-cell">
-      {row?.backupSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Backup erfolgreich" title="Backup erfolgreich" /> : null}
-      <span>
-        {row.makemkvInfo
-          ? `${getProcessStatusLabel(row.makemkvInfo.status)} ${typeof row.makemkvInfo.lastProgress === 'number' ? `${row.makemkvInfo.lastProgress.toFixed(1)}%` : ''}`
-          : '-'}
-      </span>
-    </span>
-  );
-  const hbBody = (row) => (
-    <span className="job-step-cell">
-      {row?.encodeSuccess ? <i className="pi pi-check-circle job-step-ok-icon" aria-label="Encode erfolgreich" title="Encode erfolgreich" /> : null}
-      <span>
-        {row.handbrakeInfo
-          ? `${getProcessStatusLabel(row.handbrakeInfo.status)} ${typeof row.handbrakeInfo.lastProgress === 'number' ? `${row.handbrakeInfo.lastProgress.toFixed(1)}%` : ''}`
-          : '-'}
-      </span>
-    </span>
-  );
-  const mediaBody = (row) => {
-    const mediaType = resolveMediaType(row);
-    const src = mediaType === 'bluray' ? blurayIndicatorIcon : discIndicatorIcon;
-    const alt = mediaType === 'bluray' ? 'Blu-ray' : 'Disc';
-    const title = mediaType === 'bluray' ? 'Blu-ray' : 'CD/sonstiges Medium';
-    return <img src={src} alt={alt} title={title} className="media-indicator-icon" />;
+
+  const renderPoster = (row, className = 'history-dv-poster') => {
+    const title = row?.title || row?.detected_title || 'Poster';
+    if (row?.poster_url && row.poster_url !== 'N/A') {
+      return <img src={row.poster_url} alt={title} className={className} loading="lazy" />;
+    }
+    return <div className="history-dv-poster-fallback">Kein Poster</div>;
   };
-  const posterBody = (row) =>
-    row.poster_url && row.poster_url !== 'N/A' ? (
-      <img src={row.poster_url} alt={row.title || row.detected_title || 'Poster'} className="poster-thumb" />
-    ) : (
-      <span>-</span>
+
+  const renderPresenceChip = (label, available) => (
+    <span className={`history-dv-chip ${available ? 'tone-ok' : 'tone-no'}`}>
+      <i className={`pi ${available ? 'pi-check-circle' : 'pi-times-circle'}`} aria-hidden="true" />
+      <span>{label}: {available ? 'Ja' : 'Nein'}</span>
+    </span>
+  );
+
+  const renderRatings = (row) => {
+    const ratings = resolveRatings(row);
+    if (ratings.length === 0) {
+      return <span className="history-dv-subtle">Keine Ratings</span>;
+    }
+    return ratings.map((rating) => (
+      <span key={`${row?.id}-${rating.key}`} className="history-dv-rating-chip">
+        <strong>{rating.label}</strong>
+        <span>{rating.value}</span>
+      </span>
+    ));
+  };
+
+  const onItemKeyDown = (event, row) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void openDetail(row);
+    }
+  };
+
+  const renderListItem = (row) => {
+    const mediaMeta = resolveMediaTypeMeta(row);
+    const title = row?.title || row?.detected_title || '-';
+    const imdb = row?.imdb_id || '-';
+
+    return (
+      <div
+        className="history-dv-item history-dv-item-list"
+        role="button"
+        tabIndex={0}
+        onKeyDown={(event) => onItemKeyDown(event, row)}
+        onClick={() => {
+          void openDetail(row);
+        }}
+      >
+        <div className="history-dv-poster-wrap">
+          {renderPoster(row)}
+        </div>
+
+        <div className="history-dv-main">
+          <div className="history-dv-head">
+            <div className="history-dv-title-block">
+              <strong className="history-dv-title">{title}</strong>
+              <small className="history-dv-subtle">
+                #{row?.id || '-'} | {row?.year || '-'} | {imdb}
+              </small>
+            </div>
+            {renderStatusTag(row)}
+          </div>
+
+          <div className="history-dv-meta-row">
+            <span className="job-step-cell">
+              <img src={mediaMeta.icon} alt={mediaMeta.alt} title={mediaMeta.label} className="media-indicator-icon" />
+              <span>{mediaMeta.label}</span>
+            </span>
+            <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
+            <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
+          </div>
+
+          <div className="history-dv-flags-row">
+            {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+            {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+            {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+          </div>
+
+          <div className="history-dv-ratings-row">
+            {renderRatings(row)}
+          </div>
+        </div>
+
+        <div className="history-dv-actions">
+          <Button
+            label="Details"
+            icon="pi pi-search"
+            size="small"
+            onClick={(event) => {
+              event.stopPropagation();
+              void openDetail(row);
+            }}
+          />
+        </div>
+      </div>
     );
+  };
+
+  const renderGridItem = (row) => {
+    const mediaMeta = resolveMediaTypeMeta(row);
+    const title = row?.title || row?.detected_title || '-';
+
+    return (
+      <div className="history-dv-grid-cell">
+        <div
+          className="history-dv-item history-dv-item-grid"
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => onItemKeyDown(event, row)}
+          onClick={() => {
+            void openDetail(row);
+          }}
+        >
+          <div className="history-dv-grid-head">
+            {renderPoster(row, 'history-dv-poster-lg')}
+            <div className="history-dv-grid-title-wrap">
+              <strong className="history-dv-title">{title}</strong>
+              <small className="history-dv-subtle">
+                #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
+              </small>
+              <span className="job-step-cell">
+                <img src={mediaMeta.icon} alt={mediaMeta.alt} title={mediaMeta.label} className="media-indicator-icon" />
+                <span>{mediaMeta.label}</span>
+              </span>
+            </div>
+          </div>
+
+          <div className="history-dv-grid-status-row">
+            {renderStatusTag(row)}
+          </div>
+
+          <div className="history-dv-grid-time-row">
+            <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
+            <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
+          </div>
+
+          <div className="history-dv-flags-row">
+            {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+            {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+            {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+          </div>
+
+          <div className="history-dv-ratings-row">
+            {renderRatings(row)}
+          </div>
+
+          <div className="history-dv-actions history-dv-actions-grid">
+            <Button
+              label="Details"
+              icon="pi pi-search"
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                void openDetail(row);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const itemTemplate = (row, currentLayout) => {
+    if (!row) {
+      return null;
+    }
+    if (currentLayout === 'grid') {
+      return renderGridItem(row);
+    }
+    return renderListItem(row);
+  };
+
+  const dataViewHeader = (
+    <div>
+      <div className="history-dv-toolbar">
+        <InputText
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Suche nach Titel oder IMDb"
+        />
+        <Dropdown
+          value={status}
+          options={STATUS_FILTER_OPTIONS}
+          optionLabel="label"
+          optionValue="value"
+          onChange={(event) => setStatus(event.value)}
+          placeholder="Status"
+        />
+        <Dropdown
+          value={mediumFilter}
+          options={MEDIA_FILTER_OPTIONS}
+          optionLabel="label"
+          optionValue="value"
+          onChange={(event) => setMediumFilter(event.value || '')}
+          placeholder="Medium"
+        />
+        <Button label="Neu laden" icon="pi pi-refresh" onClick={load} loading={loading} />
+        <div className="history-dv-layout-toggle">
+          <DataViewLayoutOptions
+            layout={layout}
+            onChange={(event) => setLayout(event.value)}
+          />
+        </div>
+      </div>
+
+      <div className="history-dv-sortbar">
+        <div className="history-dv-sort-rule">
+          <strong>1.</strong>
+          <Dropdown
+            value={sortPrimaryField}
+            options={BASE_SORT_FIELD_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortPrimaryField(event.value || 'start_time')}
+            placeholder="Primär"
+          />
+          <Dropdown
+            value={sortPrimaryOrder}
+            options={SORT_DIRECTION_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortPrimaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
+            placeholder="Richtung"
+          />
+        </div>
+
+        <div className="history-dv-sort-rule">
+          <strong>2.</strong>
+          <Dropdown
+            value={sortSecondaryField}
+            options={OPTIONAL_SORT_FIELD_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortSecondaryField(event.value || '')}
+            placeholder="Sekundär"
+          />
+          <Dropdown
+            value={sortSecondaryOrder}
+            options={SORT_DIRECTION_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortSecondaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
+            placeholder="Richtung"
+            disabled={!sortSecondaryField}
+          />
+        </div>
+
+        <div className="history-dv-sort-rule">
+          <strong>3.</strong>
+          <Dropdown
+            value={sortTertiaryField}
+            options={OPTIONAL_SORT_FIELD_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortTertiaryField(event.value || '')}
+            placeholder="Tertiär"
+          />
+          <Dropdown
+            value={sortTertiaryOrder}
+            options={SORT_DIRECTION_OPTIONS}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(event) => setSortTertiaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
+            placeholder="Richtung"
+            disabled={!sortTertiaryField}
+          />
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="page-grid">
       <Toast ref={toastRef} />
 
-      <Card title="Historie" subTitle="Alle Jobs mit Details und Logs">
-        <div className="table-filters">
-          <InputText
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Suche nach Titel oder IMDb"
-          />
-          <Dropdown
-            value={status}
-            options={STATUS_FILTER_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setStatus(event.value)}
-            placeholder="Status"
-          />
-          <Button label="Neu laden" icon="pi pi-refresh" onClick={load} loading={loading} />
-        </div>
-
-        <div className="table-scroll-wrap table-scroll-wide">
-          <DataTable
-            value={jobs}
-            dataKey="id"
-            paginator
-            rows={10}
-            loading={loading}
-            onRowClick={(event) => openDetail(event.data)}
-            className="clickable-table"
-            emptyMessage="Keine Einträge"
-            responsiveLayout="scroll"
-          >
-            <Column field="id" header="#" style={{ width: '5rem' }} />
-            <Column header="Medium" body={mediaBody} style={{ width: '6rem' }} />
-            <Column header="Poster" body={posterBody} style={{ width: '7rem' }} />
-            <Column field="title" header="Titel" body={(row) => row.title || row.detected_title || '-'} />
-            <Column field="year" header="Jahr" style={{ width: '6rem' }} />
-            <Column field="imdb_id" header="IMDb" style={{ width: '10rem' }} />
-            <Column field="status" header="Status" body={statusBody} style={{ width: '12rem' }} />
-            <Column header="MakeMKV" body={mkBody} style={{ width: '12rem' }} />
-            <Column header="HandBrake" body={hbBody} style={{ width: '12rem' }} />
-            <Column field="start_time" header="Start" style={{ width: '16rem' }} />
-            <Column field="end_time" header="Ende" style={{ width: '16rem' }} />
-            <Column field="output_path" header="Output" />
-          </DataTable>
-        </div>
+      <Card title="Historie" subTitle="DataView mit Poster, Status, Dateiverfügbarkeit, Encode-Status und Ratings">
+        <DataView
+          value={visibleJobs}
+          layout={layout}
+          itemTemplate={itemTemplate}
+          paginator
+          rows={12}
+          rowsPerPageOptions={[12, 24, 48]}
+          header={dataViewHeader}
+          loading={loading}
+          emptyMessage="Keine Einträge"
+          className="history-dataview"
+        />
       </Card>
 
       <JobDetailDialog

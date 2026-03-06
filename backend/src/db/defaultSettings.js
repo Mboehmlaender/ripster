@@ -147,18 +147,6 @@ const defaultSchema = [
     orderIndex: 205
   },
   {
-    key: 'mediainfo_extra_args',
-    category: 'Tools',
-    label: 'Mediainfo Extra Args',
-    type: 'string',
-    required: 0,
-    description: 'Zusätzliche CLI-Parameter für mediainfo.',
-    defaultValue: '',
-    options: [],
-    validation: {},
-    orderIndex: 206
-  },
-  {
     key: 'makemkv_min_length_minutes',
     category: 'Tools',
     label: 'Minimale Titellänge (Minuten)',
@@ -171,57 +159,6 @@ const defaultSchema = [
     orderIndex: 210
   },
   {
-    key: 'pipeline_max_parallel_jobs',
-    category: 'Tools',
-    label: 'Parallele Jobs',
-    type: 'number',
-    required: 1,
-    description: 'Maximale Anzahl parallel laufender Jobs. Weitere Starts landen in der Queue.',
-    defaultValue: '1',
-    options: [],
-    validation: { min: 1, max: 12 },
-    orderIndex: 211
-  },
-  {
-    key: 'makemkv_rip_mode',
-    category: 'Tools',
-    label: 'MakeMKV Rip Modus',
-    type: 'select',
-    required: 1,
-    description: 'mkv: direkte MKV-Dateien; backup: vollständige Blu-ray Struktur im RAW-Ordner.',
-    defaultValue: 'backup',
-    options: [
-      { label: 'MKV', value: 'mkv' },
-      { label: 'Backup', value: 'backup' }
-    ],
-    validation: {},
-    orderIndex: 212
-  },
-  {
-    key: 'makemkv_analyze_extra_args',
-    category: 'Tools',
-    label: 'MakeMKV Analyze Extra Args',
-    type: 'string',
-    required: 0,
-    description: 'Zusätzliche CLI-Parameter für Analyze.',
-    defaultValue: '',
-    options: [],
-    validation: {},
-    orderIndex: 220
-  },
-  {
-    key: 'makemkv_rip_extra_args',
-    category: 'Tools',
-    label: 'MakeMKV Rip Extra Args',
-    type: 'string',
-    required: 0,
-    description: 'Zusätzliche CLI-Parameter für Rip.',
-    defaultValue: '',
-    options: [],
-    validation: {},
-    orderIndex: 230
-  },
-  {
     key: 'handbrake_command',
     category: 'Tools',
     label: 'HandBrake Kommando',
@@ -231,31 +168,7 @@ const defaultSchema = [
     defaultValue: 'HandBrakeCLI',
     options: [],
     validation: { minLength: 1 },
-    orderIndex: 300
-  },
-  {
-    key: 'handbrake_preset',
-    category: 'Tools',
-    label: 'HandBrake Preset',
-    type: 'string',
-    required: 1,
-    description: 'Preset Name für -Z.',
-    defaultValue: 'H.264 MKV 1080p30',
-    options: [],
-    validation: { minLength: 1 },
-    orderIndex: 310
-  },
-  {
-    key: 'handbrake_extra_args',
-    category: 'Tools',
-    label: 'HandBrake Extra Args',
-    type: 'string',
-    required: 0,
-    description: 'Zusätzliche CLI-Argumente.',
-    defaultValue: '--audio-lang-list deu,eng --first-audio --subtitle-lang-list deu,eng --first-subtitle --aencoder copy --audio-copy-mask ac3,eac3,dts --audio-fallback ac3 --encoder-preset slow --quality 18 --encoder-tune film --encoder-profile high --encoder-level 4.1',
-    options: [],
-    validation: {},
-    orderIndex: 320
+    orderIndex: 215
   },
   {
     key: 'handbrake_restart_delete_incomplete_output',
@@ -267,15 +180,102 @@ const defaultSchema = [
     defaultValue: 'true',
     options: [],
     validation: {},
+    orderIndex: 220
+  },
+  {
+    key: 'pipeline_max_parallel_jobs',
+    category: 'Tools',
+    label: 'Parallele Jobs',
+    type: 'number',
+    required: 1,
+    description: 'Maximale Anzahl parallel laufender Jobs. Weitere Starts landen in der Queue.',
+    defaultValue: '1',
+    options: [],
+    validation: { min: 1, max: 12 },
+    orderIndex: 225
+  },
+  {
+    key: 'mediainfo_extra_args_bluray',
+    category: 'Tools',
+    label: 'Mediainfo Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für mediainfo (Blu-ray).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 300
+  },
+  {
+    key: 'makemkv_rip_mode_bluray',
+    category: 'Tools',
+    label: 'MakeMKV Rip Modus',
+    type: 'select',
+    required: 1,
+    description: 'mkv: direkte MKV-Dateien; backup: vollständige Blu-ray Struktur im RAW-Ordner.',
+    defaultValue: 'backup',
+    options: [
+      { label: 'MKV', value: 'mkv' },
+      { label: 'Backup', value: 'backup' }
+    ],
+    validation: {},
+    orderIndex: 305
+  },
+  {
+    key: 'makemkv_analyze_extra_args_bluray',
+    category: 'Tools',
+    label: 'MakeMKV Analyze Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für Analyze (Blu-ray).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 310
+  },
+  {
+    key: 'makemkv_rip_extra_args_bluray',
+    category: 'Tools',
+    label: 'MakeMKV Rip Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für Rip (Blu-ray).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 315
+  },
+  {
+    key: 'handbrake_preset_bluray',
+    category: 'Tools',
+    label: 'HandBrake Preset',
+    type: 'string',
+    required: 1,
+    description: 'Preset Name für -Z (Blu-ray).',
+    defaultValue: 'H.264 MKV 1080p30',
+    options: [],
+    validation: { minLength: 1 },
+    orderIndex: 320
+  },
+  {
+    key: 'handbrake_extra_args_bluray',
+    category: 'Tools',
+    label: 'HandBrake Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Argumente (Blu-ray).',
+    defaultValue: '--audio-lang-list deu,eng --first-audio --subtitle-lang-list deu,eng --first-subtitle --aencoder copy --audio-copy-mask ac3,eac3,dts --audio-fallback ac3 --encoder-preset slow --quality 18 --encoder-tune film --encoder-profile high --encoder-level 4.1',
+    options: [],
+    validation: {},
     orderIndex: 325
   },
   {
-    key: 'output_extension',
+    key: 'output_extension_bluray',
     category: 'Tools',
     label: 'Ausgabeformat',
     type: 'select',
     required: 1,
-    description: 'Dateiendung für finale Datei.',
+    description: 'Dateiendung für finale Datei (Blu-ray).',
     defaultValue: 'mkv',
     options: [
       { label: 'MKV', value: 'mkv' },
@@ -285,28 +285,142 @@ const defaultSchema = [
     orderIndex: 330
   },
   {
-    key: 'filename_template',
+    key: 'filename_template_bluray',
     category: 'Tools',
     label: 'Dateiname Template',
     type: 'string',
     required: 1,
-    description: 'Verfügbare Tokens: ${title}, ${year}, ${imdbId}.',
+    description: 'Verfügbare Tokens: ${title}, ${year}, ${imdbId} (Blu-ray).',
     defaultValue: '${title} (${year})',
     options: [],
     validation: { minLength: 1 },
-    orderIndex: 340
+    orderIndex: 335
   },
   {
-    key: 'output_folder_template',
+    key: 'output_folder_template_bluray',
     category: 'Tools',
     label: 'Ordnername Template',
     type: 'string',
     required: 0,
-    description: 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template verwenden.',
+    description: 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template (Blu-ray).',
     defaultValue: '',
     options: [],
     validation: {},
-    orderIndex: 345
+    orderIndex: 340
+  },
+  {
+    key: 'mediainfo_extra_args_dvd',
+    category: 'Tools',
+    label: 'Mediainfo Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für mediainfo (DVD).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 500
+  },
+  {
+    key: 'makemkv_rip_mode_dvd',
+    category: 'Tools',
+    label: 'MakeMKV Rip Modus',
+    type: 'select',
+    required: 1,
+    description: 'mkv: direkte MKV-Dateien; backup: vollständige Disc-Struktur im RAW-Ordner.',
+    defaultValue: 'mkv',
+    options: [
+      { label: 'MKV', value: 'mkv' },
+      { label: 'Backup', value: 'backup' }
+    ],
+    validation: {},
+    orderIndex: 505
+  },
+  {
+    key: 'makemkv_analyze_extra_args_dvd',
+    category: 'Tools',
+    label: 'MakeMKV Analyze Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für Analyze (DVD).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 510
+  },
+  {
+    key: 'makemkv_rip_extra_args_dvd',
+    category: 'Tools',
+    label: 'MakeMKV Rip Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Parameter für Rip (DVD).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 515
+  },
+  {
+    key: 'handbrake_preset_dvd',
+    category: 'Tools',
+    label: 'HandBrake Preset',
+    type: 'string',
+    required: 1,
+    description: 'Preset Name für -Z (DVD).',
+    defaultValue: 'H.264 MKV 480p30',
+    options: [],
+    validation: { minLength: 1 },
+    orderIndex: 520
+  },
+  {
+    key: 'handbrake_extra_args_dvd',
+    category: 'Tools',
+    label: 'HandBrake Extra Args',
+    type: 'string',
+    required: 0,
+    description: 'Zusätzliche CLI-Argumente (DVD).',
+    defaultValue: '--audio-lang-list deu,eng --first-audio --subtitle-lang-list deu,eng --first-subtitle --aencoder copy --audio-copy-mask ac3,eac3,dts --audio-fallback ac3 --encoder-preset slow --quality 18 --encoder-tune film --encoder-profile high --encoder-level 4.1',
+    options: [],
+    validation: {},
+    orderIndex: 525
+  },
+  {
+    key: 'output_extension_dvd',
+    category: 'Tools',
+    label: 'Ausgabeformat',
+    type: 'select',
+    required: 1,
+    description: 'Dateiendung für finale Datei (DVD).',
+    defaultValue: 'mkv',
+    options: [
+      { label: 'MKV', value: 'mkv' },
+      { label: 'MP4', value: 'mp4' }
+    ],
+    validation: {},
+    orderIndex: 530
+  },
+  {
+    key: 'filename_template_dvd',
+    category: 'Tools',
+    label: 'Dateiname Template',
+    type: 'string',
+    required: 1,
+    description: 'Verfügbare Tokens: ${title}, ${year}, ${imdbId} (DVD).',
+    defaultValue: '${title} (${year})',
+    options: [],
+    validation: { minLength: 1 },
+    orderIndex: 535
+  },
+  {
+    key: 'output_folder_template_dvd',
+    category: 'Tools',
+    label: 'Ordnername Template',
+    type: 'string',
+    required: 0,
+    description: 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template (DVD).',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 540
   },
   {
     key: 'omdb_api_key',

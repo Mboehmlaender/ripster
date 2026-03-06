@@ -685,27 +685,19 @@ export default function MediaInfoReviewPanel({
   allowTrackSelection = false,
   trackSelectionByTitle = {},
   onTrackSelectionChange = null,
-  availablePostScripts = [],
-  selectedPostEncodeScriptIds = [],
-  allowPostScriptSelection = false,
-  onAddPostEncodeScript = null,
-  onChangePostEncodeScript = null,
-  onRemovePostEncodeScript = null,
-  onReorderPostEncodeScript = null,
-  availablePreScripts = [],
-  selectedPreEncodeScriptIds = [],
-  allowPreScriptSelection = false,
-  onAddPreEncodeScript = null,
-  onChangePreEncodeScript = null,
-  onRemovePreEncodeScript = null,
+  availableScripts = [],
   availableChains = [],
-  selectedPreEncodeChainIds = [],
-  selectedPostEncodeChainIds = [],
-  allowChainSelection = false,
-  onAddPreEncodeChain = null,
-  onRemovePreEncodeChain = null,
-  onAddPostEncodeChain = null,
-  onRemovePostEncodeChain = null
+  preEncodeItems = [],
+  postEncodeItems = [],
+  allowEncodeItemSelection = false,
+  onAddPreEncodeItem = null,
+  onChangePreEncodeItem = null,
+  onRemovePreEncodeItem = null,
+  onReorderPreEncodeItem = null,
+  onAddPostEncodeItem = null,
+  onChangePostEncodeItem = null,
+  onRemovePostEncodeItem = null,
+  onReorderPostEncodeItem = null
 }) {
   if (!review) {
     return <p>Keine Mediainfo-Daten vorhanden.</p>;
@@ -718,29 +710,32 @@ export default function MediaInfoReviewPanel({
   const totalFiles = Number(review.totalFiles || titles.length || 0);
   const playlistRecommendation = review.playlistRecommendation || null;
   const presetLabel = String(presetDisplayValue || review.selectors?.preset || '').trim() || '-';
-  const scriptRows = normalizeScriptIdList(selectedPostEncodeScriptIds);
-  const scriptCatalog = (Array.isArray(availablePostScripts) ? availablePostScripts : [])
+  const scriptCatalog = (Array.isArray(availableScripts) ? availableScripts : [])
     .map((item) => ({
       id: normalizeScriptId(item?.id),
       name: String(item?.name || '').trim()
     }))
     .filter((item) => item.id !== null && item.name.length > 0);
   const scriptById = new Map(scriptCatalog.map((item) => [item.id, item]));
-  const canAddScriptRow = allowPostScriptSelection && scriptCatalog.length > 0 && scriptRows.length < scriptCatalog.length;
-  const canReorderScriptRows = allowPostScriptSelection && scriptRows.length > 1;
+  const chainCatalog = (Array.isArray(availableChains) ? availableChains : [])
+    .map((item) => ({ id: Number(item?.id), name: String(item?.name || '').trim() }))
+    .filter((item) => Number.isFinite(item.id) && item.id > 0 && item.name.length > 0);
+  const chainById = new Map(chainCatalog.map((item) => [item.id, item]));
 
-  const handleScriptDrop = (event, targetIndex) => {
-    if (!allowPostScriptSelection || typeof onReorderPostEncodeScript !== 'function') {
+  const makeHandleDrop = (items, onReorder) => (event, targetIndex) => {
+    if (!allowEncodeItemSelection || typeof onReorder !== 'function' || items.length < 2) {
       return;
     }
     event.preventDefault();
-    const fromText = event.dataTransfer?.getData('text/plain');
-    const fromIndex = Number(fromText);
+    const fromIndex = Number(event.dataTransfer?.getData('text/plain'));
     if (!Number.isInteger(fromIndex)) {
       return;
     }
-    onReorderPostEncodeScript(fromIndex, targetIndex);
+    onReorder(fromIndex, targetIndex);
   };
+
+  const handlePreDrop = makeHandleDrop(preEncodeItems, onReorderPreEncodeItem);
+  const handlePostDrop = makeHandleDrop(postEncodeItems, onReorderPostEncodeItem);
 
   return (
     <div className="media-review-wrap">
@@ -780,215 +775,196 @@ export default function MediaInfoReviewPanel({
         </div>
       ) : null}
 
-      {/* Pre-Encode Scripts */}
-      {(allowPreScriptSelection || normalizeScriptIdList(selectedPreEncodeScriptIds).length > 0) ? (
+      {/* Pre-Encode Items (scripts + chains unified) */}
+      {(allowEncodeItemSelection || preEncodeItems.length > 0) ? (
         <div className="post-script-box">
-          <h4>Pre-Encode Scripte (optional)</h4>
-          {(Array.isArray(availablePreScripts) ? availablePreScripts : []).length === 0 ? (
-            <small>Keine Scripte konfiguriert. In den Settings unter "Scripte" anlegen.</small>
+          <h4>Pre-Encode Ausführungen (optional)</h4>
+          {scriptCatalog.length === 0 && chainCatalog.length === 0 ? (
+            <small>Keine Skripte oder Ketten konfiguriert. In den Settings anlegen.</small>
           ) : null}
-          {normalizeScriptIdList(selectedPreEncodeScriptIds).length === 0 ? (
-            <small>Keine Pre-Encode Scripte ausgewählt.</small>
+          {preEncodeItems.length === 0 ? (
+            <small>Keine Pre-Encode Ausführungen ausgewählt.</small>
           ) : null}
-          {normalizeScriptIdList(selectedPreEncodeScriptIds).map((scriptId, rowIndex) => {
-            const preCatalog = (Array.isArray(availablePreScripts) ? availablePreScripts : [])
-              .map((item) => ({ id: normalizeScriptId(item?.id), name: String(item?.name || '') }))
-              .filter((item) => item.id !== null);
-            const preById = new Map(preCatalog.map((item) => [item.id, item]));
-            const script = preById.get(scriptId) || null;
-            const selectedElsewhere = new Set(
-              normalizeScriptIdList(selectedPreEncodeScriptIds).filter((_, i) => i !== rowIndex).map((id) => String(id))
+          {preEncodeItems.map((item, rowIndex) => {
+            const isScript = item.type === 'script';
+            const canDrag = allowEncodeItemSelection && preEncodeItems.length > 1;
+            const scriptObj = isScript ? (scriptById.get(normalizeScriptId(item.id)) || null) : null;
+            const chainObj = !isScript ? (chainById.get(Number(item.id)) || null) : null;
+            const name = isScript
+              ? (scriptObj?.name || `Skript #${item.id}`)
+              : (chainObj?.name || `Kette #${item.id}`);
+            const usedScriptIds = new Set(
+              preEncodeItems.filter((it, i) => it.type === 'script' && i !== rowIndex).map((it) => String(normalizeScriptId(it.id)))
             );
-            const options = preCatalog.map((item) => ({
-              label: item.name,
-              value: item.id,
-              disabled: selectedElsewhere.has(String(item.id))
+            const scriptOptions = scriptCatalog.map((s) => ({
+              label: s.name,
+              value: s.id,
+              disabled: usedScriptIds.has(String(s.id))
             }));
             return (
-              <div key={`pre-script-row-${rowIndex}-${scriptId}`} className={`post-script-row${allowPreScriptSelection ? ' editable' : ''}`}>
-                {allowPreScriptSelection ? (
+              <div
+                key={`pre-item-${rowIndex}-${item.type}-${item.id}`}
+                className={`post-script-row${allowEncodeItemSelection ? ' editable' : ''}`}
+                onDragOver={(event) => {
+                  if (!canDrag) return;
+                  event.preventDefault();
+                  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(event) => handlePreDrop(event, rowIndex)}
+              >
+                {allowEncodeItemSelection ? (
                   <>
-                    <Dropdown
-                      value={scriptId}
-                      options={options}
-                      optionLabel="label"
-                      optionValue="value"
-                      optionDisabled="disabled"
-                      onChange={(event) => onChangePreEncodeScript?.(rowIndex, event.value)}
-                      className="full-width"
+                    <span
+                      className={`post-script-drag-handle pi pi-bars${canDrag ? '' : ' disabled'}`}
+                      title={canDrag ? 'Ziehen zum Umordnen' : 'Mindestens zwei Einträge zum Umordnen'}
+                      draggable={canDrag}
+                      onDragStart={(event) => {
+                        if (!canDrag) return;
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', String(rowIndex));
+                      }}
                     />
-                    <Button
-                      icon="pi pi-times"
-                      severity="danger"
-                      outlined
-                      onClick={() => onRemovePreEncodeScript?.(rowIndex)}
-                    />
+                    <i className={`post-script-type-icon pi ${isScript ? 'pi-code' : 'pi-link'}`} title={isScript ? 'Skript' : 'Kette'} />
+                    {isScript ? (
+                      <Dropdown
+                        value={normalizeScriptId(item.id)}
+                        options={scriptOptions}
+                        optionLabel="label"
+                        optionValue="value"
+                        optionDisabled="disabled"
+                        onChange={(event) => onChangePreEncodeItem?.(rowIndex, 'script', event.value)}
+                        className="full-width"
+                      />
+                    ) : (
+                      <span className="post-script-chain-name">{name}</span>
+                    )}
+                    <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePreEncodeItem?.(rowIndex)} />
                   </>
                 ) : (
-                  <small>{`${rowIndex + 1}. ${script?.name || `Script #${scriptId}`}`}</small>
+                  <small><i className={`pi ${isScript ? 'pi-code' : 'pi-link'}`} /> {`${rowIndex + 1}. ${name}`}</small>
                 )}
               </div>
             );
           })}
-          {allowPreScriptSelection && (Array.isArray(availablePreScripts) ? availablePreScripts : []).length > normalizeScriptIdList(selectedPreEncodeScriptIds).length ? (
-            <Button
-              label="Pre-Script hinzufügen"
-              icon="pi pi-plus"
-              severity="secondary"
-              outlined
-              onClick={() => onAddPreEncodeScript?.()}
-            />
-          ) : null}
-          <small>Diese Scripte werden vor dem Encoding ausgeführt. Bei Fehler wird der Encode abgebrochen.</small>
-        </div>
-      ) : null}
-
-      {/* Chain Selections */}
-      {(allowChainSelection || selectedPreEncodeChainIds.length > 0 || selectedPostEncodeChainIds.length > 0) ? (
-        <div className="post-script-box">
-          <h4>Skriptketten (optional)</h4>
-          {(Array.isArray(availableChains) ? availableChains : []).length === 0 ? (
-            <small>Keine Skriptketten konfiguriert. In den Settings unter "Skriptketten" anlegen.</small>
-          ) : null}
-          {(Array.isArray(availableChains) ? availableChains : []).length > 0 ? (
-            <div className="chain-selection-groups">
-              <div className="chain-selection-group">
-                <strong>Pre-Encode Ketten</strong>
-                {selectedPreEncodeChainIds.length === 0 ? <small>Keine ausgewählt.</small> : null}
-                {selectedPreEncodeChainIds.map((chainId, index) => {
-                  const chain = (Array.isArray(availableChains) ? availableChains : []).find((c) => Number(c.id) === chainId);
-                  return (
-                    <div key={`pre-chain-${index}-${chainId}`} className="post-script-row editable">
-                      <small>{`${index + 1}. ${chain?.name || `Kette #${chainId}`}`}</small>
-                      {allowChainSelection ? (
-                        <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePreEncodeChain?.(index)} />
-                      ) : null}
-                    </div>
-                  );
-                })}
-                {allowChainSelection ? (
-                  <Dropdown
-                    value={null}
-                    options={(Array.isArray(availableChains) ? availableChains : [])
-                      .filter((c) => !selectedPreEncodeChainIds.includes(Number(c.id)))
-                      .map((c) => ({ label: c.name, value: c.id }))}
-                    onChange={(e) => onAddPreEncodeChain?.(e.value)}
-                    placeholder="Kette hinzufügen..."
-                    className="chain-add-dropdown"
-                  />
-                ) : null}
-              </div>
-
-              <div className="chain-selection-group">
-                <strong>Post-Encode Ketten</strong>
-                {selectedPostEncodeChainIds.length === 0 ? <small>Keine ausgewählt.</small> : null}
-                {selectedPostEncodeChainIds.map((chainId, index) => {
-                  const chain = (Array.isArray(availableChains) ? availableChains : []).find((c) => Number(c.id) === chainId);
-                  return (
-                    <div key={`post-chain-${index}-${chainId}`} className="post-script-row editable">
-                      <small>{`${index + 1}. ${chain?.name || `Kette #${chainId}`}`}</small>
-                      {allowChainSelection ? (
-                        <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePostEncodeChain?.(index)} />
-                      ) : null}
-                    </div>
-                  );
-                })}
-                {allowChainSelection ? (
-                  <Dropdown
-                    value={null}
-                    options={(Array.isArray(availableChains) ? availableChains : [])
-                      .filter((c) => !selectedPostEncodeChainIds.includes(Number(c.id)))
-                      .map((c) => ({ label: c.name, value: c.id }))}
-                    onChange={(e) => onAddPostEncodeChain?.(e.value)}
-                    placeholder="Kette hinzufügen..."
-                    className="chain-add-dropdown"
-                  />
-                ) : null}
-              </div>
+          {allowEncodeItemSelection ? (
+            <div className="encode-item-add-row">
+              {scriptCatalog.length > preEncodeItems.filter((i) => i.type === 'script').length ? (
+                <Button
+                  label="Skript hinzufügen"
+                  icon="pi pi-code"
+                  severity="secondary"
+                  outlined
+                  onClick={() => onAddPreEncodeItem?.('script')}
+                />
+              ) : null}
+              {chainCatalog.length > preEncodeItems.filter((i) => i.type === 'chain').length ? (
+                <Button
+                  label="Kette hinzufügen"
+                  icon="pi pi-link"
+                  severity="secondary"
+                  outlined
+                  onClick={() => onAddPreEncodeItem?.('chain')}
+                />
+              ) : null}
             </div>
           ) : null}
+          <small>Ausführung vor dem Encoding, strikt nacheinander. Bei Fehler wird der Encode abgebrochen.</small>
         </div>
       ) : null}
 
+      {/* Post-Encode Items (scripts + chains unified) */}
       <div className="post-script-box">
-        <h4>Post-Encode Scripte (optional)</h4>
-        {scriptCatalog.length === 0 ? (
-          <small>Keine Scripte konfiguriert. In den Settings unter "Scripte" anlegen.</small>
+        <h4>Post-Encode Ausführungen (optional)</h4>
+        {scriptCatalog.length === 0 && chainCatalog.length === 0 ? (
+          <small>Keine Skripte oder Ketten konfiguriert. In den Settings anlegen.</small>
         ) : null}
-        {scriptRows.length === 0 ? (
-          <small>Keine Post-Encode Scripte ausgewählt.</small>
+        {postEncodeItems.length === 0 ? (
+          <small>Keine Post-Encode Ausführungen ausgewählt.</small>
         ) : null}
-        {scriptRows.map((scriptId, rowIndex) => {
-          const script = scriptById.get(scriptId) || null;
-          const selectedInOtherRows = new Set(
-            scriptRows.filter((id, index) => index !== rowIndex).map((id) => String(id))
+        {postEncodeItems.map((item, rowIndex) => {
+          const isScript = item.type === 'script';
+          const canDrag = allowEncodeItemSelection && postEncodeItems.length > 1;
+          const scriptObj = isScript ? (scriptById.get(normalizeScriptId(item.id)) || null) : null;
+          const chainObj = !isScript ? (chainById.get(Number(item.id)) || null) : null;
+          const name = isScript
+            ? (scriptObj?.name || `Skript #${item.id}`)
+            : (chainObj?.name || `Kette #${item.id}`);
+          const usedScriptIds = new Set(
+            postEncodeItems.filter((it, i) => it.type === 'script' && i !== rowIndex).map((it) => String(normalizeScriptId(it.id)))
           );
-          const options = scriptCatalog.map((item) => ({
-            label: item.name,
-            value: item.id,
-            disabled: selectedInOtherRows.has(String(item.id))
+          const scriptOptions = scriptCatalog.map((s) => ({
+            label: s.name,
+            value: s.id,
+            disabled: usedScriptIds.has(String(s.id))
           }));
           return (
             <div
-              key={`post-script-row-${rowIndex}-${scriptId}`}
-              className={`post-script-row${allowPostScriptSelection ? ' editable' : ''}`}
+              key={`post-item-${rowIndex}-${item.type}-${item.id}`}
+              className={`post-script-row${allowEncodeItemSelection ? ' editable' : ''}`}
               onDragOver={(event) => {
-                if (!canReorderScriptRows) {
-                  return;
-                }
+                if (!canDrag) return;
                 event.preventDefault();
-                if (event.dataTransfer) {
-                  event.dataTransfer.dropEffect = 'move';
-                }
+                if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
               }}
-              onDrop={(event) => handleScriptDrop(event, rowIndex)}
+              onDrop={(event) => handlePostDrop(event, rowIndex)}
             >
-              {allowPostScriptSelection ? (
+              {allowEncodeItemSelection ? (
                 <>
                   <span
-                    className={`post-script-drag-handle pi pi-bars${canReorderScriptRows ? '' : ' disabled'}`}
-                    title={canReorderScriptRows ? 'Ziehen zum Umordnen' : 'Mindestens zwei Scripte zum Umordnen'}
-                    draggable={canReorderScriptRows}
+                    className={`post-script-drag-handle pi pi-bars${canDrag ? '' : ' disabled'}`}
+                    title={canDrag ? 'Ziehen zum Umordnen' : 'Mindestens zwei Einträge zum Umordnen'}
+                    draggable={canDrag}
                     onDragStart={(event) => {
-                      if (!canReorderScriptRows) {
-                        return;
-                      }
+                      if (!canDrag) return;
                       event.dataTransfer.effectAllowed = 'move';
                       event.dataTransfer.setData('text/plain', String(rowIndex));
                     }}
                   />
-                  <Dropdown
-                    value={scriptId}
-                    options={options}
-                    optionLabel="label"
-                    optionValue="value"
-                    optionDisabled="disabled"
-                    onChange={(event) => onChangePostEncodeScript?.(rowIndex, event.value)}
-                    className="full-width"
-                  />
-                  <Button
-                    icon="pi pi-times"
-                    severity="danger"
-                    outlined
-                    onClick={() => onRemovePostEncodeScript?.(rowIndex)}
-                  />
+                  <i className={`post-script-type-icon pi ${isScript ? 'pi-code' : 'pi-link'}`} title={isScript ? 'Skript' : 'Kette'} />
+                  {isScript ? (
+                    <Dropdown
+                      value={normalizeScriptId(item.id)}
+                      options={scriptOptions}
+                      optionLabel="label"
+                      optionValue="value"
+                      optionDisabled="disabled"
+                      onChange={(event) => onChangePostEncodeItem?.(rowIndex, 'script', event.value)}
+                      className="full-width"
+                    />
+                  ) : (
+                    <span className="post-script-chain-name">{name}</span>
+                  )}
+                  <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePostEncodeItem?.(rowIndex)} />
                 </>
               ) : (
-                <small>{`${rowIndex + 1}. ${script?.name || `Script #${scriptId}`}`}</small>
+                <small><i className={`pi ${isScript ? 'pi-code' : 'pi-link'}`} /> {`${rowIndex + 1}. ${name}`}</small>
               )}
             </div>
           );
         })}
-        {canAddScriptRow ? (
-          <Button
-            label="Script hinzufügen"
-            icon="pi pi-plus"
-            severity="secondary"
-            outlined
-            onClick={() => onAddPostEncodeScript?.()}
-          />
+        {allowEncodeItemSelection ? (
+          <div className="encode-item-add-row">
+            {scriptCatalog.length > postEncodeItems.filter((i) => i.type === 'script').length ? (
+              <Button
+                label="Skript hinzufügen"
+                icon="pi pi-code"
+                severity="secondary"
+                outlined
+                onClick={() => onAddPostEncodeItem?.('script')}
+              />
+            ) : null}
+            {chainCatalog.length > postEncodeItems.filter((i) => i.type === 'chain').length ? (
+              <Button
+                label="Kette hinzufügen"
+                icon="pi pi-link"
+                severity="secondary"
+                outlined
+                onClick={() => onAddPostEncodeItem?.('chain')}
+              />
+            ) : null}
+          </div>
         ) : null}
-        <small>Ausführung erfolgt nur nach erfolgreichem Encode, strikt nacheinander in genau dieser Reihenfolge (Drag-and-Drop möglich).</small>
+        <small>Ausführung nach erfolgreichem Encode, strikt nacheinander (Drag-and-Drop möglich).</small>
       </div>
 
       <h4>Titel</h4>

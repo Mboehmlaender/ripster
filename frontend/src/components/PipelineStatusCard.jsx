@@ -78,6 +78,14 @@ function normalizeScriptIdList(values) {
   return output;
 }
 
+function normalizeChainId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
 function isBurnedSubtitleTrack(track) {
   const flags = Array.isArray(track?.subtitlePreviewFlags)
     ? track.subtitlePreviewFlags
@@ -225,10 +233,9 @@ export default function PipelineStatusCard({
   const [presetDisplayMap, setPresetDisplayMap] = useState({});
   const [scriptCatalog, setScriptCatalog] = useState([]);
   const [chainCatalog, setChainCatalog] = useState([]);
-  const [selectedPostEncodeScriptIds, setSelectedPostEncodeScriptIds] = useState([]);
-  const [selectedPreEncodeScriptIds, setSelectedPreEncodeScriptIds] = useState([]);
-  const [selectedPostEncodeChainIds, setSelectedPostEncodeChainIds] = useState([]);
-  const [selectedPreEncodeChainIds, setSelectedPreEncodeChainIds] = useState([]);
+  // Unified ordered lists: [{type: 'script'|'chain', id: number}]
+  const [preEncodeItems, setPreEncodeItems] = useState([]);
+  const [postEncodeItems, setPostEncodeItems] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -282,20 +289,15 @@ export default function PipelineStatusCard({
     const fromReview = normalizeTitleId(mediaInfoReview?.encodeInputTitleId);
     setSelectedEncodeTitleId(fromReview);
     setTrackSelectionByTitle(buildDefaultTrackSelection(mediaInfoReview));
-    setSelectedPostEncodeScriptIds(
-      normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || [])
-    );
-    setSelectedPreEncodeScriptIds(
-      normalizeScriptIdList(mediaInfoReview?.preEncodeScriptIds || [])
-    );
-    setSelectedPostEncodeChainIds(
-      (Array.isArray(mediaInfoReview?.postEncodeChainIds) ? mediaInfoReview.postEncodeChainIds : [])
-        .map(Number).filter((id) => Number.isFinite(id) && id > 0)
-    );
-    setSelectedPreEncodeChainIds(
-      (Array.isArray(mediaInfoReview?.preEncodeChainIds) ? mediaInfoReview.preEncodeChainIds : [])
-        .map(Number).filter((id) => Number.isFinite(id) && id > 0)
-    );
+    const normChain = (raw) => (Array.isArray(raw) ? raw : []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+    setPreEncodeItems([
+      ...normalizeScriptIdList(mediaInfoReview?.preEncodeScriptIds || []).map((id) => ({ type: 'script', id })),
+      ...normChain(mediaInfoReview?.preEncodeChainIds).map((id) => ({ type: 'chain', id }))
+    ]);
+    setPostEncodeItems([
+      ...normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || []).map((id) => ({ type: 'script', id })),
+      ...normChain(mediaInfoReview?.postEncodeChainIds).map((id) => ({ type: 'chain', id }))
+    ]);
   }, [mediaInfoReview?.encodeInputTitleId, mediaInfoReview?.generatedAt, retryJobId]);
 
   useEffect(() => {
@@ -454,17 +456,17 @@ export default function PipelineStatusCard({
         }
       }
       : null;
-    const selectedPostScriptIds = normalizeScriptIdList(selectedPostEncodeScriptIds);
-    const selectedPreScriptIds = normalizeScriptIdList(selectedPreEncodeScriptIds);
-    const normalizeChainIdList = (raw) =>
-      (Array.isArray(raw) ? raw : []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+    const selectedPostScriptIds = postEncodeItems.filter((i) => i.type === 'script').map((i) => i.id);
+    const selectedPreScriptIds = preEncodeItems.filter((i) => i.type === 'script').map((i) => i.id);
+    const selectedPostChainIds = postEncodeItems.filter((i) => i.type === 'chain').map((i) => i.id);
+    const selectedPreChainIds = preEncodeItems.filter((i) => i.type === 'chain').map((i) => i.id);
     return {
       encodeTitleId,
       selectedTrackSelection,
       selectedPostScriptIds,
       selectedPreScriptIds,
-      selectedPostChainIds: normalizeChainIdList(selectedPostEncodeChainIds),
-      selectedPreChainIds: normalizeChainIdList(selectedPreEncodeChainIds)
+      selectedPostChainIds,
+      selectedPreChainIds
     };
   };
 
@@ -776,142 +778,218 @@ export default function PipelineStatusCard({
                 };
               });
             }}
-            availablePostScripts={scriptCatalog}
-            selectedPostEncodeScriptIds={selectedPostEncodeScriptIds}
-            allowPostScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
-            onAddPostEncodeScript={() => {
-              setSelectedPostEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                const selectedSet = new Set(normalizedCurrent.map((id) => String(id)));
+            availableScripts={scriptCatalog}
+            availableChains={chainCatalog}
+            preEncodeItems={preEncodeItems}
+            postEncodeItems={postEncodeItems}
+            allowEncodeItemSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            onAddPreEncodeItem={(itemType) => {
+              setPreEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                if (itemType === 'chain') {
+                  const selectedSet = new Set(
+                    current
+                      .filter((item) => item?.type === 'chain')
+                      .map((item) => normalizeChainId(item?.id))
+                      .filter((id) => id !== null)
+                      .map((id) => String(id))
+                  );
+                  const nextCandidate = (Array.isArray(chainCatalog) ? chainCatalog : [])
+                    .map((item) => normalizeChainId(item?.id))
+                    .find((id) => id !== null && !selectedSet.has(String(id)));
+                  if (nextCandidate === undefined || nextCandidate === null) {
+                    return current;
+                  }
+                  return [...current, { type: 'chain', id: nextCandidate }];
+                }
+                const selectedSet = new Set(
+                  current
+                    .filter((item) => item?.type === 'script')
+                    .map((item) => normalizeScriptId(item?.id))
+                    .filter((id) => id !== null)
+                    .map((id) => String(id))
+                );
                 const nextCandidate = (Array.isArray(scriptCatalog) ? scriptCatalog : [])
                   .map((item) => normalizeScriptId(item?.id))
                   .find((id) => id !== null && !selectedSet.has(String(id)));
                 if (nextCandidate === undefined || nextCandidate === null) {
-                  return normalizedCurrent;
+                  return current;
                 }
-                return [...normalizedCurrent, nextCandidate];
+                return [...current, { type: 'script', id: nextCandidate }];
               });
             }}
-            onChangePostEncodeScript={(rowIndex, nextScriptId) => {
-              setSelectedPostEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
-                  return normalizedCurrent;
+            onChangePreEncodeItem={(rowIndex, itemType, nextId) => {
+              setPreEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                const index = Number(rowIndex);
+                if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+                  return current;
                 }
-                const normalizedScriptId = normalizeScriptId(nextScriptId);
-                if (normalizedScriptId === null) {
-                  return normalizedCurrent;
+                const type = itemType === 'chain' ? 'chain' : 'script';
+                if (type === 'chain') {
+                  const normalizedId = normalizeChainId(nextId);
+                  if (normalizedId === null) {
+                    return current;
+                  }
+                  const duplicate = current.some((item, idx) =>
+                    idx !== index
+                    && item?.type === 'chain'
+                    && String(normalizeChainId(item?.id)) === String(normalizedId)
+                  );
+                  if (duplicate) {
+                    return current;
+                  }
+                  const next = [...current];
+                  next[index] = { type: 'chain', id: normalizedId };
+                  return next;
                 }
-                const duplicateAtOtherIndex = normalizedCurrent.some((id, idx) =>
-                  idx !== rowIndex && String(id) === String(normalizedScriptId)
+                const normalizedId = normalizeScriptId(nextId);
+                if (normalizedId === null) {
+                  return current;
+                }
+                const duplicate = current.some((item, idx) =>
+                  idx !== index
+                  && item?.type === 'script'
+                  && String(normalizeScriptId(item?.id)) === String(normalizedId)
                 );
-                if (duplicateAtOtherIndex) {
-                  return normalizedCurrent;
+                if (duplicate) {
+                  return current;
                 }
-                const next = [...normalizedCurrent];
-                next[rowIndex] = normalizedScriptId;
+                const next = [...current];
+                next[index] = { type: 'script', id: normalizedId };
                 return next;
               });
             }}
-            onRemovePostEncodeScript={(rowIndex) => {
-              setSelectedPostEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
-                  return normalizedCurrent;
+            onRemovePreEncodeItem={(rowIndex) => {
+              setPreEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                const index = Number(rowIndex);
+                if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+                  return current;
                 }
-                return normalizedCurrent.filter((_, idx) => idx !== rowIndex);
+                return current.filter((_, idx) => idx !== index);
               });
             }}
-            onReorderPostEncodeScript={(fromIndex, toIndex) => {
-              setSelectedPostEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
+            onReorderPreEncodeItem={(fromIndex, toIndex) => {
+              setPreEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
                 const from = Number(fromIndex);
                 const to = Number(toIndex);
                 if (!Number.isInteger(from) || !Number.isInteger(to)) {
-                  return normalizedCurrent;
+                  return current;
                 }
-                if (from < 0 || to < 0 || from >= normalizedCurrent.length || to >= normalizedCurrent.length) {
-                  return normalizedCurrent;
+                if (from < 0 || to < 0 || from >= current.length || to >= current.length || from === to) {
+                  return current;
                 }
-                if (from === to) {
-                  return normalizedCurrent;
-                }
-                const next = [...normalizedCurrent];
+                const next = [...current];
                 const [moved] = next.splice(from, 1);
                 next.splice(to, 0, moved);
                 return next;
               });
             }}
-            availablePreScripts={scriptCatalog}
-            selectedPreEncodeScriptIds={selectedPreEncodeScriptIds}
-            allowPreScriptSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
-            onAddPreEncodeScript={() => {
-              setSelectedPreEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                const selectedSet = new Set(normalizedCurrent.map((id) => String(id)));
+            onAddPostEncodeItem={(itemType) => {
+              setPostEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                if (itemType === 'chain') {
+                  const selectedSet = new Set(
+                    current
+                      .filter((item) => item?.type === 'chain')
+                      .map((item) => normalizeChainId(item?.id))
+                      .filter((id) => id !== null)
+                      .map((id) => String(id))
+                  );
+                  const nextCandidate = (Array.isArray(chainCatalog) ? chainCatalog : [])
+                    .map((item) => normalizeChainId(item?.id))
+                    .find((id) => id !== null && !selectedSet.has(String(id)));
+                  if (nextCandidate === undefined || nextCandidate === null) {
+                    return current;
+                  }
+                  return [...current, { type: 'chain', id: nextCandidate }];
+                }
+                const selectedSet = new Set(
+                  current
+                    .filter((item) => item?.type === 'script')
+                    .map((item) => normalizeScriptId(item?.id))
+                    .filter((id) => id !== null)
+                    .map((id) => String(id))
+                );
                 const nextCandidate = (Array.isArray(scriptCatalog) ? scriptCatalog : [])
                   .map((item) => normalizeScriptId(item?.id))
                   .find((id) => id !== null && !selectedSet.has(String(id)));
                 if (nextCandidate === undefined || nextCandidate === null) {
-                  return normalizedCurrent;
+                  return current;
                 }
-                return [...normalizedCurrent, nextCandidate];
+                return [...current, { type: 'script', id: nextCandidate }];
               });
             }}
-            onChangePreEncodeScript={(rowIndex, nextScriptId) => {
-              setSelectedPreEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
-                  return normalizedCurrent;
+            onChangePostEncodeItem={(rowIndex, itemType, nextId) => {
+              setPostEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                const index = Number(rowIndex);
+                if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+                  return current;
                 }
-                const normalizedScriptId = normalizeScriptId(nextScriptId);
-                if (normalizedScriptId === null) {
-                  return normalizedCurrent;
+                const type = itemType === 'chain' ? 'chain' : 'script';
+                if (type === 'chain') {
+                  const normalizedId = normalizeChainId(nextId);
+                  if (normalizedId === null) {
+                    return current;
+                  }
+                  const duplicate = current.some((item, idx) =>
+                    idx !== index
+                    && item?.type === 'chain'
+                    && String(normalizeChainId(item?.id)) === String(normalizedId)
+                  );
+                  if (duplicate) {
+                    return current;
+                  }
+                  const next = [...current];
+                  next[index] = { type: 'chain', id: normalizedId };
+                  return next;
                 }
-                if (normalizedCurrent.some((id, idx) => idx !== rowIndex && String(id) === String(normalizedScriptId))) {
-                  return normalizedCurrent;
+                const normalizedId = normalizeScriptId(nextId);
+                if (normalizedId === null) {
+                  return current;
                 }
-                const next = [...normalizedCurrent];
-                next[rowIndex] = normalizedScriptId;
+                const duplicate = current.some((item, idx) =>
+                  idx !== index
+                  && item?.type === 'script'
+                  && String(normalizeScriptId(item?.id)) === String(normalizedId)
+                );
+                if (duplicate) {
+                  return current;
+                }
+                const next = [...current];
+                next[index] = { type: 'script', id: normalizedId };
                 return next;
               });
             }}
-            onRemovePreEncodeScript={(rowIndex) => {
-              setSelectedPreEncodeScriptIds((prev) => {
-                const normalizedCurrent = normalizeScriptIdList(prev);
-                if (!Number.isFinite(Number(rowIndex)) || rowIndex < 0 || rowIndex >= normalizedCurrent.length) {
-                  return normalizedCurrent;
+            onRemovePostEncodeItem={(rowIndex) => {
+              setPostEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                const index = Number(rowIndex);
+                if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+                  return current;
                 }
-                return normalizedCurrent.filter((_, idx) => idx !== rowIndex);
+                return current.filter((_, idx) => idx !== index);
               });
             }}
-            availableChains={chainCatalog}
-            selectedPreEncodeChainIds={selectedPreEncodeChainIds}
-            selectedPostEncodeChainIds={selectedPostEncodeChainIds}
-            allowChainSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
-            onAddPreEncodeChain={(chainId) => {
-              setSelectedPreEncodeChainIds((prev) => {
-                const id = Number(chainId);
-                if (!Number.isFinite(id) || id <= 0 || prev.includes(id)) {
-                  return prev;
+            onReorderPostEncodeItem={(fromIndex, toIndex) => {
+              setPostEncodeItems((prev) => {
+                const current = Array.isArray(prev) ? prev : [];
+                const from = Number(fromIndex);
+                const to = Number(toIndex);
+                if (!Number.isInteger(from) || !Number.isInteger(to)) {
+                  return current;
                 }
-                return [...prev, id];
-              });
-            }}
-            onRemovePreEncodeChain={(index) => {
-              setSelectedPreEncodeChainIds((prev) => prev.filter((_, i) => i !== index));
-            }}
-            onAddPostEncodeChain={(chainId) => {
-              setSelectedPostEncodeChainIds((prev) => {
-                const id = Number(chainId);
-                if (!Number.isFinite(id) || id <= 0 || prev.includes(id)) {
-                  return prev;
+                if (from < 0 || to < 0 || from >= current.length || to >= current.length || from === to) {
+                  return current;
                 }
-                return [...prev, id];
+                const next = [...current];
+                const [moved] = next.splice(from, 1);
+                next.splice(to, 0, moved);
+                return next;
               });
-            }}
-            onRemovePostEncodeChain={(index) => {
-              setSelectedPostEncodeChainIds((prev) => prev.filter((_, i) => i !== index));
             }}
           />
         </div>
