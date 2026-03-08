@@ -20,6 +20,7 @@ function parseJsonSafe(raw, fallback = null) {
 
 const PROCESS_LOG_TAIL_MAX_BYTES = 1024 * 1024;
 const processLogStreams = new Map();
+const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'other'];
 
 function inspectDirectory(dirPath) {
   if (!dirPath) {
@@ -181,10 +182,28 @@ function normalizeMediaTypeValue(value) {
   if (!raw) {
     return null;
   }
-  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+  if (
+    raw === 'bluray'
+    || raw === 'blu-ray'
+    || raw === 'blu_ray'
+    || raw === 'bd'
+    || raw === 'bdmv'
+    || raw === 'bdrom'
+    || raw === 'bd-rom'
+    || raw === 'bd-r'
+    || raw === 'bd-re'
+  ) {
     return 'bluray';
   }
-  if (raw === 'dvd') {
+  if (
+    raw === 'dvd'
+    || raw === 'dvdvideo'
+    || raw === 'dvd-video'
+    || raw === 'dvdrom'
+    || raw === 'dvd-rom'
+    || raw === 'video_ts'
+    || raw === 'iso9660'
+  ) {
     return 'dvd';
   }
   if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
@@ -308,40 +327,83 @@ function resolveEffectiveOutputPath(storedPath, movieDir) {
   return path.join(String(movieDir).trim(), folderName, fileName);
 }
 
-function enrichJobRow(job, settings = null) {
-  const rawDir = String(settings?.raw_dir || '').trim();
-  const movieDir = String(settings?.movie_dir || '').trim();
+function getConfiguredMediaPathList(settings = {}, baseKey) {
+  const source = settings && typeof settings === 'object' ? settings : {};
+  const candidates = [source[baseKey], ...PROFILE_PATH_SUFFIXES.map((suffix) => source[`${baseKey}_${suffix}`])];
+  const unique = [];
+  const seen = new Set();
 
-  const effectiveRawPath = rawDir && job.raw_path
+  for (const candidate of candidates) {
+    const rawPath = String(candidate || '').trim();
+    if (!rawPath) {
+      continue;
+    }
+    const normalized = normalizeComparablePath(rawPath);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+
+  return unique;
+}
+
+function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = {}) {
+  const mkInfo = parsed?.makemkvInfo || parseJsonSafe(job?.makemkv_info_json, null);
+  const miInfo = parsed?.mediainfoInfo || parseJsonSafe(job?.mediainfo_info_json, null);
+  const plan = parsed?.encodePlan || parseJsonSafe(job?.encode_plan_json, null);
+  const mediaType = inferMediaType(job, mkInfo, miInfo, plan);
+  const effectiveSettings = settingsService.resolveEffectiveToolSettings(settings || {}, mediaType);
+  const rawDir = String(effectiveSettings?.raw_dir || '').trim();
+  const movieDir = String(effectiveSettings?.movie_dir || '').trim();
+  const effectiveRawPath = rawDir && job?.raw_path
     ? resolveEffectiveRawPath(job.raw_path, rawDir)
-    : (job.raw_path || null);
-  const effectiveOutputPath = movieDir && job.output_path
+    : (job?.raw_path || null);
+  const effectiveOutputPath = movieDir && job?.output_path
     ? resolveEffectiveOutputPath(job.output_path, movieDir)
-    : (job.output_path || null);
+    : (job?.output_path || null);
 
-  const rawStatus = inspectDirectory(effectiveRawPath);
-  const outputStatus = inspectOutputFile(effectiveOutputPath);
-  const movieDirPath = effectiveOutputPath ? path.dirname(effectiveOutputPath) : null;
-  const movieDirStatus = inspectDirectory(movieDirPath);
-  const makemkvInfo = parseJsonSafe(job.makemkv_info_json, null);
+  return {
+    mediaType,
+    rawDir,
+    movieDir,
+    effectiveRawPath,
+    effectiveOutputPath,
+    makemkvInfo: mkInfo,
+    mediainfoInfo: miInfo,
+    encodePlan: plan
+  };
+}
+
+function enrichJobRow(job, settings = null) {
   const handbrakeInfo = parseJsonSafe(job.handbrake_info_json, null);
-  const mediainfoInfo = parseJsonSafe(job.mediainfo_info_json, null);
   const omdbInfo = parseJsonSafe(job.omdb_json, null);
-  const encodePlan = parseJsonSafe(job.encode_plan_json, null);
-  const mediaType = inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan);
-  const backupSuccess = String(makemkvInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
+  const rawStatus = inspectDirectory(resolvedPaths.effectiveRawPath);
+  const outputStatus = inspectOutputFile(resolvedPaths.effectiveOutputPath);
+  const movieDirPath = resolvedPaths.effectiveOutputPath ? path.dirname(resolvedPaths.effectiveOutputPath) : null;
+  const movieDirStatus = inspectDirectory(movieDirPath);
+  const makemkvInfo = resolvedPaths.makemkvInfo;
+  const mediainfoInfo = resolvedPaths.mediainfoInfo;
+  const encodePlan = resolvedPaths.encodePlan;
+  const mediaType = resolvedPaths.mediaType;
+  const ripSuccessful = Number(job?.rip_successful || 0) === 1
+    || String(makemkvInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  const backupSuccess = ripSuccessful;
   const encodeSuccess = String(handbrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
 
   return {
     ...job,
-    raw_path: effectiveRawPath,
-    output_path: effectiveOutputPath,
+    raw_path: resolvedPaths.effectiveRawPath,
+    output_path: resolvedPaths.effectiveOutputPath,
     makemkvInfo,
     handbrakeInfo,
     mediainfoInfo,
     omdbInfo,
     encodePlan,
     mediaType,
+    ripSuccessful,
     backupSuccess,
     encodeSuccess,
     rawStatus,
@@ -370,9 +432,10 @@ function normalizeComparablePath(inputPath) {
 
 function parseRawFolderMetadata(folderName) {
   const rawName = String(folderName || '').trim();
-  const folderJobIdMatch = rawName.match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
+  const normalizedRawName = rawName.replace(/^Incomplete_/i, '').trim();
+  const folderJobIdMatch = normalizedRawName.match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
   const folderJobId = folderJobIdMatch ? Number(folderJobIdMatch[1]) : null;
-  let working = rawName.replace(/\s*-\s*RAW\s*-\s*job-\d+\s*$/i, '').trim();
+  let working = normalizedRawName.replace(/\s*-\s*RAW\s*-\s*job-\d+\s*$/i, '').trim();
 
   const imdbMatch = working.match(/\[(tt\d{6,12})\]/i);
   const imdbId = imdbMatch ? String(imdbMatch[1] || '').toLowerCase() : null;
@@ -497,6 +560,16 @@ class HistoryService {
       last_state: status,
       ...extra
     });
+  }
+
+  async updateRawPathByOldPath(oldRawPath, newRawPath) {
+    const db = await getDb();
+    const result = await db.run(
+      'UPDATE jobs SET raw_path = ?, updated_at = CURRENT_TIMESTAMP WHERE raw_path = ?',
+      [newRawPath, oldRawPath]
+    );
+    logger.info('job:raw-path-bulk-updated', { oldRawPath, newRawPath, changes: result.changes });
+    return result.changes;
   }
 
   appendLog(jobId, source, message) {
@@ -820,25 +893,17 @@ class HistoryService {
 
   async getOrphanRawFolders() {
     const settings = await settingsService.getSettingsMap();
-    const rawDir = String(settings.raw_dir || '').trim();
-    if (!rawDir) {
-      const error = new Error('raw_dir ist nicht konfiguriert.');
+    const rawDirs = getConfiguredMediaPathList(settings, 'raw_dir');
+    if (rawDirs.length === 0) {
+      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,other}).');
       error.statusCode = 400;
       throw error;
-    }
-
-    const rawDirInfo = inspectDirectory(rawDir);
-    if (!rawDirInfo.exists || !rawDirInfo.isDirectory) {
-      return {
-        rawDir,
-        rows: []
-      };
     }
 
     const db = await getDb();
     const linkedRows = await db.all(
       `
-        SELECT id, raw_path, status
+        SELECT id, raw_path, status, makemkv_info_json, mediainfo_info_json, encode_plan_json, encode_input_path, media_type
         FROM jobs
         WHERE raw_path IS NOT NULL AND TRIM(raw_path) <> ''
       `
@@ -846,63 +911,77 @@ class HistoryService {
 
     const linkedPathMap = new Map();
     for (const row of linkedRows) {
-      const normalized = normalizeComparablePath(row.raw_path);
-      if (!normalized) {
-        continue;
+      const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, row);
+      const linkedCandidates = [
+        normalizeComparablePath(row.raw_path),
+        normalizeComparablePath(resolvedPaths.effectiveRawPath)
+      ].filter(Boolean);
+
+      for (const linkedPath of linkedCandidates) {
+        if (!linkedPathMap.has(linkedPath)) {
+          linkedPathMap.set(linkedPath, []);
+        }
+        linkedPathMap.get(linkedPath).push({
+          id: row.id,
+          status: row.status
+        });
       }
-      if (!linkedPathMap.has(normalized)) {
-        linkedPathMap.set(normalized, []);
-      }
-      linkedPathMap.get(normalized).push({
-        id: row.id,
-        status: row.status
-      });
     }
 
-    const dirEntries = fs.readdirSync(rawDir, { withFileTypes: true });
     const orphanRows = [];
+    const seenOrphanPaths = new Set();
 
-    for (const entry of dirEntries) {
-      if (!entry.isDirectory()) {
+    for (const rawDir of rawDirs) {
+      const rawDirInfo = inspectDirectory(rawDir);
+      if (!rawDirInfo.exists || !rawDirInfo.isDirectory) {
         continue;
       }
+      const dirEntries = fs.readdirSync(rawDir, { withFileTypes: true });
 
-      const rawPath = path.join(rawDir, entry.name);
-      const normalizedPath = normalizeComparablePath(rawPath);
-      if (linkedPathMap.has(normalizedPath)) {
-        continue;
+      for (const entry of dirEntries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+
+        const rawPath = path.join(rawDir, entry.name);
+        const normalizedPath = normalizeComparablePath(rawPath);
+        if (!normalizedPath || linkedPathMap.has(normalizedPath) || seenOrphanPaths.has(normalizedPath)) {
+          continue;
+        }
+
+        const dirInfo = inspectDirectory(rawPath);
+        if (!dirInfo.exists || !dirInfo.isDirectory || dirInfo.isEmpty) {
+          continue;
+        }
+
+        const stat = fs.statSync(rawPath);
+        const metadata = parseRawFolderMetadata(entry.name);
+        orphanRows.push({
+          rawPath,
+          folderName: entry.name,
+          title: metadata.title,
+          year: metadata.year,
+          imdbId: metadata.imdbId,
+          folderJobId: metadata.folderJobId,
+          entryCount: Number(dirInfo.entryCount || 0),
+          hasBlurayStructure: fs.existsSync(path.join(rawPath, 'BDMV', 'STREAM')),
+          lastModifiedAt: stat.mtime.toISOString()
+        });
+        seenOrphanPaths.add(normalizedPath);
       }
-
-      const dirInfo = inspectDirectory(rawPath);
-      if (!dirInfo.exists || !dirInfo.isDirectory || dirInfo.isEmpty) {
-        continue;
-      }
-
-      const stat = fs.statSync(rawPath);
-      const metadata = parseRawFolderMetadata(entry.name);
-      orphanRows.push({
-        rawPath,
-        folderName: entry.name,
-        title: metadata.title,
-        year: metadata.year,
-        imdbId: metadata.imdbId,
-        folderJobId: metadata.folderJobId,
-        entryCount: Number(dirInfo.entryCount || 0),
-        hasBlurayStructure: fs.existsSync(path.join(rawPath, 'BDMV', 'STREAM')),
-        lastModifiedAt: stat.mtime.toISOString()
-      });
     }
 
     orphanRows.sort((a, b) => String(b.lastModifiedAt).localeCompare(String(a.lastModifiedAt)));
     return {
-      rawDir,
+      rawDir: rawDirs[0] || null,
+      rawDirs,
       rows: orphanRows
     };
   }
 
   async importOrphanRawFolder(rawPath) {
     const settings = await settingsService.getSettingsMap();
-    const rawDir = String(settings.raw_dir || '').trim();
+    const rawDirs = getConfiguredMediaPathList(settings, 'raw_dir');
     const requestedRawPath = String(rawPath || '').trim();
 
     if (!requestedRawPath) {
@@ -911,14 +990,15 @@ class HistoryService {
       throw error;
     }
 
-    if (!rawDir) {
-      const error = new Error('raw_dir ist nicht konfiguriert.');
+    if (rawDirs.length === 0) {
+      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,other}).');
       error.statusCode = 400;
       throw error;
     }
 
-    if (!isPathInside(rawDir, requestedRawPath)) {
-      const error = new Error(`RAW-Pfad liegt außerhalb von raw_dir: ${requestedRawPath}`);
+    const insideConfiguredRawDir = rawDirs.some((candidate) => isPathInside(candidate, requestedRawPath));
+    if (!insideConfiguredRawDir) {
+      const error = new Error(`RAW-Pfad liegt außerhalb der konfigurierten RAW-Verzeichnisse: ${requestedRawPath}`);
       error.statusCode = 400;
       throw error;
     }
@@ -1004,6 +1084,7 @@ class HistoryService {
       poster_url: omdbById?.poster || null,
       omdb_json: omdbById?.raw ? JSON.stringify(omdbById.raw) : null,
       selected_from_omdb: omdbById ? 1 : 0,
+      rip_successful: 1,
       raw_path: finalRawPath,
       output_path: null,
       handbrake_info_json: null,
@@ -1125,12 +1206,11 @@ class HistoryService {
     }
 
     const settings = await settingsService.getSettingsMap();
-    const effectiveRawPath = settings.raw_dir && job.raw_path
-      ? resolveEffectiveRawPath(job.raw_path, settings.raw_dir)
-      : job.raw_path;
-    const effectiveOutputPath = settings.movie_dir && job.output_path
-      ? resolveEffectiveOutputPath(job.output_path, settings.movie_dir)
-      : job.output_path;
+    const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
+    const effectiveRawPath = resolvedPaths.effectiveRawPath;
+    const effectiveOutputPath = resolvedPaths.effectiveOutputPath;
+    const effectiveRawDir = resolvedPaths.rawDir;
+    const effectiveMovieDir = resolvedPaths.movieDir;
     const summary = {
       target,
       raw: { attempted: false, deleted: false, filesDeleted: 0, dirsRemoved: 0, reason: null },
@@ -1141,8 +1221,12 @@ class HistoryService {
       summary.raw.attempted = true;
       if (!effectiveRawPath) {
         summary.raw.reason = 'Kein raw_path im Job gesetzt.';
-      } else if (!isPathInside(settings.raw_dir, effectiveRawPath)) {
-        const error = new Error(`RAW-Pfad liegt außerhalb von raw_dir: ${effectiveRawPath}`);
+      } else if (!effectiveRawDir) {
+        const error = new Error(`Kein gültiger RAW-Basispfad für Job ${jobId} (${resolvedPaths.mediaType || 'unknown'}).`);
+        error.statusCode = 400;
+        throw error;
+      } else if (!isPathInside(effectiveRawDir, effectiveRawPath)) {
+        const error = new Error(`RAW-Pfad liegt außerhalb des effektiven RAW-Basispfads: ${effectiveRawPath}`);
         error.statusCode = 400;
         throw error;
       } else if (!fs.existsSync(effectiveRawPath)) {
@@ -1159,15 +1243,19 @@ class HistoryService {
       summary.movie.attempted = true;
       if (!effectiveOutputPath) {
         summary.movie.reason = 'Kein output_path im Job gesetzt.';
-      } else if (!isPathInside(settings.movie_dir, effectiveOutputPath)) {
-        const error = new Error(`Movie-Pfad liegt außerhalb von movie_dir: ${effectiveOutputPath}`);
+      } else if (!effectiveMovieDir) {
+        const error = new Error(`Kein gültiger Movie-Basispfad für Job ${jobId} (${resolvedPaths.mediaType || 'unknown'}).`);
+        error.statusCode = 400;
+        throw error;
+      } else if (!isPathInside(effectiveMovieDir, effectiveOutputPath)) {
+        const error = new Error(`Movie-Pfad liegt außerhalb des effektiven Movie-Basispfads: ${effectiveOutputPath}`);
         error.statusCode = 400;
         throw error;
       } else if (!fs.existsSync(effectiveOutputPath)) {
         summary.movie.reason = 'Movie-Datei/Pfad existiert nicht.';
       } else {
         const outputPath = normalizeComparablePath(effectiveOutputPath);
-        const movieRoot = normalizeComparablePath(settings.movie_dir);
+        const movieRoot = normalizeComparablePath(effectiveMovieDir);
         const stat = fs.lstatSync(outputPath);
         if (stat.isDirectory()) {
           const keepRoot = outputPath === movieRoot;

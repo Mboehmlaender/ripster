@@ -8,6 +8,7 @@ import { InputText } from 'primereact/inputtext';
 import { InputTextarea } from 'primereact/inputtextarea';
 import { api } from '../api/client';
 import DynamicSettingsForm from '../components/DynamicSettingsForm';
+import CronJobsTab from '../components/CronJobsTab';
 
 function buildValuesMap(categories) {
   const next = {};
@@ -24,6 +25,30 @@ function isSameValue(a, b) {
     return Number(a) === Number(b);
   }
   return a === b;
+}
+
+function reorderListById(items, sourceId, targetIndex) {
+  const list = Array.isArray(items) ? items : [];
+  const normalizedSourceId = Number(sourceId);
+  const normalizedTargetIndex = Number(targetIndex);
+  if (!Number.isFinite(normalizedSourceId) || normalizedSourceId <= 0 || !Number.isFinite(normalizedTargetIndex)) {
+    return { changed: false, next: list };
+  }
+  const fromIndex = list.findIndex((item) => Number(item?.id) === normalizedSourceId);
+  if (fromIndex < 0) {
+    return { changed: false, next: list };
+  }
+
+  const boundedTarget = Math.max(0, Math.min(Math.trunc(normalizedTargetIndex), list.length));
+  const insertAt = fromIndex < boundedTarget ? boundedTarget - 1 : boundedTarget;
+  if (insertAt === fromIndex) {
+    return { changed: false, next: list };
+  }
+
+  const next = [...list];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(insertAt, 0, moved);
+  return { changed: true, next };
 }
 
 function injectHandBrakePresetOptions(categories, presetPayload) {
@@ -103,6 +128,8 @@ export default function SettingsPage() {
   const [scripts, setScripts] = useState([]);
   const [scriptsLoading, setScriptsLoading] = useState(false);
   const [scriptSaving, setScriptSaving] = useState(false);
+  const [scriptReordering, setScriptReordering] = useState(false);
+  const [scriptListDragSourceId, setScriptListDragSourceId] = useState(null);
   const [scriptActionBusyId, setScriptActionBusyId] = useState(null);
   const [scriptEditor, setScriptEditor] = useState({
     mode: 'none',
@@ -117,6 +144,10 @@ export default function SettingsPage() {
   const [chains, setChains] = useState([]);
   const [chainsLoading, setChainsLoading] = useState(false);
   const [chainSaving, setChainSaving] = useState(false);
+  const [chainReordering, setChainReordering] = useState(false);
+  const [chainListDragSourceId, setChainListDragSourceId] = useState(null);
+  const [chainActionBusyId, setChainActionBusyId] = useState(null);
+  const [lastChainTestResult, setLastChainTestResult] = useState(null);
   const [chainEditor, setChainEditor] = useState({ open: false, id: null, name: '', steps: [] });
   const [chainEditorErrors, setChainEditorErrors] = useState({});
   const [chainDragSource, setChainDragSource] = useState(null);
@@ -470,6 +501,88 @@ export default function SettingsPage() {
     }
   };
 
+  const handleScriptListDragStart = (event, scriptId) => {
+    if (scriptSaving || scriptsLoading || scriptReordering || scriptEditor?.mode === 'create' || Boolean(scriptActionBusyId)) {
+      event.preventDefault();
+      return;
+    }
+    setScriptListDragSourceId(Number(scriptId));
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(scriptId));
+  };
+
+  const handleScriptListDragOver = (event) => {
+    const sourceId = Number(scriptListDragSourceId);
+    if (!Number.isFinite(sourceId) || sourceId <= 0) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleScriptListDrop = async (event, targetIndex) => {
+    event.preventDefault();
+    if (scriptReordering) {
+      setScriptListDragSourceId(null);
+      return;
+    }
+    const sourceId = Number(scriptListDragSourceId);
+    setScriptListDragSourceId(null);
+    const { changed, next } = reorderListById(scripts, sourceId, targetIndex);
+    if (!changed) {
+      return;
+    }
+
+    const orderedScriptIds = next
+      .map((script) => Number(script?.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    setScripts(next);
+    setScriptReordering(true);
+    try {
+      await api.reorderScripts(orderedScriptIds);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Script-Reihenfolge',
+        detail: error.message
+      });
+      await loadScripts({ silent: true });
+    } finally {
+      setScriptReordering(false);
+    }
+  };
+
+  const handleTestChain = async (chain) => {
+    const chainId = Number(chain?.id);
+    if (!Number.isFinite(chainId) || chainId <= 0) {
+      return;
+    }
+    setChainActionBusyId(chainId);
+    setLastChainTestResult(null);
+    try {
+      const response = await api.testScriptChain(chainId);
+      const result = response?.result || null;
+      setLastChainTestResult(result);
+      if (!result?.aborted) {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Ketten-Test',
+          detail: `"${chain?.name || chainId}" erfolgreich ausgeführt (${result?.succeeded ?? 0}/${result?.steps ?? 0} Schritte).`
+        });
+      } else {
+        toastRef.current?.show({
+          severity: 'warn',
+          summary: 'Ketten-Test',
+          detail: `"${chain?.name || chainId}" abgebrochen (${result?.succeeded ?? 0}/${result?.steps ?? 0} Schritte OK).`
+        });
+      }
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Ketten-Test fehlgeschlagen', detail: error.message });
+    } finally {
+      setChainActionBusyId(null);
+    }
+  };
+
   // Chain editor handlers
   const openChainEditor = (chain = null) => {
     if (chain) {
@@ -583,6 +696,57 @@ export default function SettingsPage() {
     }
   };
 
+  const handleChainListDragStart = (event, chainId) => {
+    if (chainSaving || chainsLoading || chainReordering || Boolean(chainActionBusyId)) {
+      event.preventDefault();
+      return;
+    }
+    setChainListDragSourceId(Number(chainId));
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(chainId));
+  };
+
+  const handleChainListDragOver = (event) => {
+    const sourceId = Number(chainListDragSourceId);
+    if (!Number.isFinite(sourceId) || sourceId <= 0) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleChainListDrop = async (event, targetIndex) => {
+    event.preventDefault();
+    if (chainReordering) {
+      setChainListDragSourceId(null);
+      return;
+    }
+    const sourceId = Number(chainListDragSourceId);
+    setChainListDragSourceId(null);
+    const { changed, next } = reorderListById(chains, sourceId, targetIndex);
+    if (!changed) {
+      return;
+    }
+
+    const orderedChainIds = next
+      .map((chain) => Number(chain?.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    setChains(next);
+    setChainReordering(true);
+    try {
+      await api.reorderScriptChains(orderedChainIds);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Ketten-Reihenfolge',
+        detail: error.message
+      });
+      await loadChains({ silent: true });
+    } finally {
+      setChainReordering(false);
+    }
+  };
+
   // Chain DnD handlers
   const handleChainPaletteDragStart = (event, data) => {
     setChainDragSource({ origin: 'palette', ...data });
@@ -625,6 +789,16 @@ export default function SettingsPage() {
     event.preventDefault();
     event.dataTransfer.dropEffect = chainDragSource?.origin === 'palette' ? 'copy' : 'move';
   };
+
+  const scriptListDnDDisabled = scriptSaving
+    || scriptsLoading
+    || scriptReordering
+    || scriptEditor?.mode === 'create'
+    || Boolean(scriptActionBusyId);
+  const chainListDnDDisabled = chainSaving
+    || chainsLoading
+    || chainReordering
+    || Boolean(chainActionBusyId);
 
   return (
     <div className="page-grid">
@@ -692,7 +866,7 @@ export default function SettingsPage() {
                   onClick={startCreateScript}
                   severity="success"
                   outlined
-                  disabled={scriptSaving || scriptEditor?.mode === 'create'}
+                  disabled={scriptSaving || scriptReordering || scriptEditor?.mode === 'create'}
                 />
                 <Button
                   label="Scripts neu laden"
@@ -700,12 +874,16 @@ export default function SettingsPage() {
                   severity="secondary"
                   onClick={() => loadScripts()}
                   loading={scriptsLoading}
-                  disabled={scriptSaving}
+                  disabled={scriptSaving || scriptReordering}
                 />
               </div>
 
               <small>
                 Die ausgewählten Scripts werden später pro Job nach erfolgreichem Encode in Reihenfolge ausgeführt.
+              </small>
+              <small className="muted-inline">
+                Reihenfolge per Drag & Drop ändern.
+                {scriptReordering ? ' Speichere Reihenfolge ...' : ''}
               </small>
 
               <div className="script-list-box">
@@ -713,7 +891,7 @@ export default function SettingsPage() {
                 {scriptsLoading ? (
                   <p>Lade Scripts ...</p>
                 ) : (
-                  <div className="script-list">
+                  <div className="script-list script-list--reorderable">
                     {scriptEditor?.mode === 'create' ? (
                       <div className="script-list-item script-list-item-editing">
                         <div className="script-list-main">
@@ -761,45 +939,73 @@ export default function SettingsPage() {
                       </div>
                     ) : null}
 
-                    {scripts.length === 0 ? <p>Keine Scripts vorhanden.</p> : null}
+                    {scripts.length === 0 ? (
+                      <p>Keine Scripts vorhanden.</p>
+                    ) : (
+                      <div className="script-order-list">
+                        {scripts.map((script, index) => {
+                          const isDragging = Number(scriptListDragSourceId) === Number(script.id);
+                          return (
+                            <div key={script.id} className="script-order-wrapper">
+                              <div
+                                className="script-order-drop-zone"
+                                onDragOver={handleScriptListDragOver}
+                                onDrop={(event) => handleScriptListDrop(event, index)}
+                              />
+                              <div
+                                className={`script-list-item${isDragging ? ' script-list-item--dragging' : ''}`}
+                                draggable={!scriptListDnDDisabled}
+                                onDragStart={(event) => handleScriptListDragStart(event, script.id)}
+                                onDragEnd={() => setScriptListDragSourceId(null)}
+                              >
+                                <div
+                                  className={`script-list-drag-handle${scriptListDnDDisabled ? ' disabled' : ''}`}
+                                  title={scriptListDnDDisabled ? 'Sortierung aktuell nicht verfügbar' : 'Ziehen zum Sortieren'}
+                                >
+                                  <i className="pi pi-bars" />
+                                </div>
+                                <div className="script-list-main">
+                                  <strong className="script-id-title">{`ID #${script.id} - ${script.name}`}</strong>
+                                </div>
 
-                    {scripts.map((script) => {
-                      return (
-                        <div key={script.id} className="script-list-item">
-                          <div className="script-list-main">
-                            <strong className="script-id-title">{`ID #${script.id} - ${script.name}`}</strong>
-                          </div>
-
-                          <div className="script-list-actions">
-                            <Button
-                              icon="pi pi-pencil"
-                              label="Bearbeiten"
-                              severity="secondary"
-                              outlined
-                              onClick={() => startEditScript(script)}
-                              disabled={Boolean(scriptActionBusyId) || scriptSaving || scriptEditor?.mode === 'create'}
-                            />
-                            <Button
-                              icon="pi pi-play"
-                              label="Test"
-                              severity="info"
-                              onClick={() => handleTestScript(script)}
-                              loading={scriptActionBusyId === script.id}
-                              disabled={Boolean(scriptActionBusyId) && scriptActionBusyId !== script.id}
-                            />
-                            <Button
-                              icon="pi pi-trash"
-                              label="Löschen"
-                              severity="danger"
-                              outlined
-                              onClick={() => handleDeleteScript(script)}
-                              loading={scriptActionBusyId === script.id}
-                              disabled={Boolean(scriptActionBusyId) && scriptActionBusyId !== script.id}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
+                                <div className="script-list-actions">
+                                  <Button
+                                    icon="pi pi-pencil"
+                                    label="Bearbeiten"
+                                    severity="secondary"
+                                    outlined
+                                    onClick={() => startEditScript(script)}
+                                    disabled={Boolean(scriptActionBusyId) || scriptSaving || scriptReordering || scriptEditor?.mode === 'create'}
+                                  />
+                                  <Button
+                                    icon="pi pi-play"
+                                    label="Test"
+                                    severity="info"
+                                    onClick={() => handleTestScript(script)}
+                                    loading={scriptActionBusyId === script.id}
+                                    disabled={scriptReordering || (Boolean(scriptActionBusyId) && scriptActionBusyId !== script.id)}
+                                  />
+                                  <Button
+                                    icon="pi pi-trash"
+                                    label="Löschen"
+                                    severity="danger"
+                                    outlined
+                                    onClick={() => handleDeleteScript(script)}
+                                    loading={scriptActionBusyId === script.id}
+                                    disabled={scriptReordering || (Boolean(scriptActionBusyId) && scriptActionBusyId !== script.id)}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div
+                          className="script-order-drop-zone script-order-drop-zone--end"
+                          onDragOver={handleScriptListDragOver}
+                          onDrop={(event) => handleScriptListDrop(event, scripts.length)}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -875,6 +1081,7 @@ export default function SettingsPage() {
                   severity="success"
                   outlined
                   onClick={() => openChainEditor()}
+                  disabled={chainReordering}
                 />
                 <Button
                   label="Ketten neu laden"
@@ -882,12 +1089,17 @@ export default function SettingsPage() {
                   severity="secondary"
                   onClick={() => loadChains()}
                   loading={chainsLoading}
+                  disabled={chainReordering}
                 />
               </div>
 
               <small>
                 Skriptketten kombinieren einzelne Scripte und Systemblöcke (z.B. Warten) zu einer ausführbaren Sequenz.
                 Ketten können an Jobs als Pre- oder Post-Encode-Aktion hinterlegt werden.
+              </small>
+              <small className="muted-inline">
+                Reihenfolge per Drag & Drop ändern.
+                {chainReordering ? ' Speichere Reihenfolge ...' : ''}
               </small>
 
               <div className="script-list-box">
@@ -897,45 +1109,108 @@ export default function SettingsPage() {
                 ) : chains.length === 0 ? (
                   <p>Keine Skriptketten vorhanden.</p>
                 ) : (
-                  <div className="script-list">
-                    {chains.map((chain) => (
-                      <div key={chain.id} className="script-list-item">
-                        <div className="script-list-main">
-                          <strong className="script-id-title">{`ID #${chain.id} - ${chain.name}`}</strong>
-                          <small>
-                            {chain.steps?.length ?? 0} Schritt(e):
-                            {' '}
-                            {(chain.steps || []).map((s, i) => (
-                              <span key={i}>
-                                {i > 0 ? ' → ' : ''}
-                                {s.stepType === 'wait'
-                                  ? `⏱ ${s.waitSeconds}s`
-                                  : (s.scriptName || `Script #${s.scriptId}`)}
-                              </span>
-                            ))}
-                          </small>
-                        </div>
-                        <div className="script-list-actions">
-                          <Button
-                            icon="pi pi-pencil"
-                            label="Bearbeiten"
-                            severity="secondary"
-                            outlined
-                            onClick={() => openChainEditor(chain)}
-                          />
-                          <Button
-                            icon="pi pi-trash"
-                            label="Löschen"
-                            severity="danger"
-                            outlined
-                            onClick={() => handleDeleteChain(chain)}
-                          />
-                        </div>
-                      </div>
-                    ))}
+                  <div className="script-list script-list--reorderable">
+                    <div className="script-order-list">
+                      {chains.map((chain, index) => {
+                        const isDragging = Number(chainListDragSourceId) === Number(chain.id);
+                        return (
+                          <div key={chain.id} className="script-order-wrapper">
+                            <div
+                              className="script-order-drop-zone"
+                              onDragOver={handleChainListDragOver}
+                              onDrop={(event) => handleChainListDrop(event, index)}
+                            />
+                            <div
+                              className={`script-list-item${isDragging ? ' script-list-item--dragging' : ''}`}
+                              draggable={!chainListDnDDisabled}
+                              onDragStart={(event) => handleChainListDragStart(event, chain.id)}
+                              onDragEnd={() => setChainListDragSourceId(null)}
+                            >
+                              <div
+                                className={`script-list-drag-handle${chainListDnDDisabled ? ' disabled' : ''}`}
+                                title={chainListDnDDisabled ? 'Sortierung aktuell nicht verfügbar' : 'Ziehen zum Sortieren'}
+                              >
+                                <i className="pi pi-bars" />
+                              </div>
+                              <div className="script-list-main">
+                                <strong className="script-id-title">{`ID #${chain.id} - ${chain.name}`}</strong>
+                                <small>
+                                  {chain.steps?.length ?? 0} Schritt(e):
+                                  {' '}
+                                  {(chain.steps || []).map((s, i) => (
+                                    <span key={i}>
+                                      {i > 0 ? ' → ' : ''}
+                                      {s.stepType === 'wait'
+                                        ? `⏱ ${s.waitSeconds}s`
+                                        : (s.scriptName || `Script #${s.scriptId}`)}
+                                    </span>
+                                  ))}
+                                </small>
+                              </div>
+                              <div className="script-list-actions">
+                                <Button
+                                  icon="pi pi-pencil"
+                                  label="Bearbeiten"
+                                  severity="secondary"
+                                  outlined
+                                  onClick={() => openChainEditor(chain)}
+                                  disabled={chainReordering || Boolean(chainActionBusyId)}
+                                />
+                                <Button
+                                  icon="pi pi-play"
+                                  label="Test"
+                                  severity="info"
+                                  onClick={() => handleTestChain(chain)}
+                                  loading={chainActionBusyId === chain.id}
+                                  disabled={chainReordering || (Boolean(chainActionBusyId) && chainActionBusyId !== chain.id)}
+                                />
+                                <Button
+                                  icon="pi pi-trash"
+                                  label="Löschen"
+                                  severity="danger"
+                                  outlined
+                                  onClick={() => handleDeleteChain(chain)}
+                                  disabled={chainReordering || Boolean(chainActionBusyId)}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div
+                        className="script-order-drop-zone script-order-drop-zone--end"
+                        onDragOver={handleChainListDragOver}
+                        onDrop={(event) => handleChainListDrop(event, chains.length)}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
+            {lastChainTestResult ? (
+              <div className="script-test-result">
+                <h4>Letzter Ketten-Test: {lastChainTestResult.chainName}</h4>
+                <small>
+                  Status: {lastChainTestResult.aborted ? 'Abgebrochen' : 'Erfolgreich'}
+                  {' | '}Schritte: {lastChainTestResult.succeeded ?? 0}/{lastChainTestResult.steps ?? 0}
+                  {lastChainTestResult.failed > 0 ? ` | Fehler: ${lastChainTestResult.failed}` : ''}
+                </small>
+                {(lastChainTestResult.results || []).map((step, i) => (
+                  <div key={i} className="script-test-step">
+                    <strong>
+                      {`Schritt ${i + 1}: `}
+                      {step.stepType === 'wait'
+                        ? `⏱ Warten (${step.waitSeconds}s)`
+                        : (step.scriptName || `Script #${step.scriptId}`)}
+                      {' — '}
+                      {step.skipped ? 'Übersprungen' : (step.success ? '✓ OK' : `✗ Fehler (exit=${step.exitCode ?? 'n/a'})`)}
+                    </strong>
+                    {(step.stdout || step.stderr) ? (
+                      <pre>{`${step.stdout || ''}${step.stderr ? `\n${step.stderr}` : ''}`.trim()}</pre>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             </div>
 
             {/* Chain editor dialog */}
@@ -1098,6 +1373,10 @@ export default function SettingsPage() {
                 />
               </div>
             </Dialog>
+          </TabPanel>
+
+          <TabPanel header="Cronjobs">
+            <CronJobsTab />
           </TabPanel>
         </TabView>
       </Card>

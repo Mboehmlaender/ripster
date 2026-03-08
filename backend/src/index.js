@@ -10,8 +10,10 @@ const requestLogger = require('./middleware/requestLogger');
 const settingsRoutes = require('./routes/settingsRoutes');
 const pipelineRoutes = require('./routes/pipelineRoutes');
 const historyRoutes = require('./routes/historyRoutes');
+const cronRoutes = require('./routes/cronRoutes');
 const wsService = require('./services/websocketService');
 const pipelineService = require('./services/pipelineService');
+const cronService = require('./services/cronService');
 const diskDetectionService = require('./services/diskDetectionService');
 const hardwareMonitorService = require('./services/hardwareMonitorService');
 const logger = require('./services/logger').child('BOOT');
@@ -21,6 +23,7 @@ async function start() {
   logger.info('backend:start:init');
   await initDatabase();
   await pipelineService.init();
+  await cronService.init();
 
   const app = express();
   app.use(cors({ origin: corsOrigin }));
@@ -34,6 +37,7 @@ async function start() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/history', historyRoutes);
+  app.use('/api/crons', cronRoutes);
 
   app.use(errorHandler);
 
@@ -72,6 +76,7 @@ async function start() {
     logger.warn('backend:shutdown:received');
     diskDetectionService.stop();
     hardwareMonitorService.stop();
+    cronService.stop();
     server.close(() => {
       logger.warn('backend:shutdown:completed');
       process.exit(0);

@@ -61,6 +61,20 @@ router.post(
   })
 );
 
+router.post(
+  '/scripts/reorder',
+  asyncHandler(async (req, res) => {
+    const orderedScriptIds = Array.isArray(req.body?.orderedScriptIds) ? req.body.orderedScriptIds : [];
+    logger.info('post:settings:scripts:reorder', {
+      reqId: req.reqId,
+      count: orderedScriptIds.length
+    });
+    const scripts = await scriptService.reorderScripts(orderedScriptIds);
+    wsService.broadcast('SETTINGS_SCRIPTS_UPDATED', { action: 'reordered', count: scripts.length });
+    res.json({ scripts });
+  })
+);
+
 router.put(
   '/scripts/:id',
   asyncHandler(async (req, res) => {
@@ -105,6 +119,16 @@ router.post(
   })
 );
 
+router.post(
+  '/script-chains/:id/test',
+  asyncHandler(async (req, res) => {
+    const chainId = Number(req.params.id);
+    logger.info('post:settings:script-chains:test', { reqId: req.reqId, chainId });
+    const result = await scriptChainService.executeChain(chainId, { source: 'settings_test', mode: 'test' });
+    res.json({ result });
+  })
+);
+
 router.get(
   '/script-chains',
   asyncHandler(async (req, res) => {
@@ -122,6 +146,20 @@ router.post(
     const chain = await scriptChainService.createChain(payload);
     wsService.broadcast('SETTINGS_SCRIPT_CHAINS_UPDATED', { action: 'created', id: chain.id });
     res.status(201).json({ chain });
+  })
+);
+
+router.post(
+  '/script-chains/reorder',
+  asyncHandler(async (req, res) => {
+    const orderedChainIds = Array.isArray(req.body?.orderedChainIds) ? req.body.orderedChainIds : [];
+    logger.info('post:settings:script-chains:reorder', {
+      reqId: req.reqId,
+      count: orderedChainIds.length
+    });
+    const chains = await scriptChainService.reorderChains(orderedChainIds);
+    wsService.broadcast('SETTINGS_SCRIPT_CHAINS_UPDATED', { action: 'reordered', count: chains.length });
+    res.json({ chains });
   })
 );
 

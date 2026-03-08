@@ -99,6 +99,7 @@ function mapScriptRow(row) {
     id: Number(row.id),
     name: String(row.name || ''),
     scriptBody: String(row.script_body || ''),
+    orderIndex: Number(row.order_index || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -225,9 +226,9 @@ class ScriptService {
     const db = await getDb();
     const rows = await db.all(
       `
-        SELECT id, name, script_body, created_at, updated_at
+        SELECT id, name, script_body, order_index, created_at, updated_at
         FROM scripts
-        ORDER BY LOWER(name) ASC, id ASC
+        ORDER BY order_index ASC, id ASC
       `
     );
     return rows.map(mapScriptRow);
@@ -241,7 +242,7 @@ class ScriptService {
     const db = await getDb();
     const row = await db.get(
       `
-        SELECT id, name, script_body, created_at, updated_at
+        SELECT id, name, script_body, order_index, created_at, updated_at
         FROM scripts
         WHERE id = ?
       `,
@@ -259,12 +260,13 @@ class ScriptService {
     const normalized = validateScriptPayload(payload, { partial: false });
     const db = await getDb();
     try {
+      const nextOrderIndex = await this._getNextOrderIndex(db);
       const result = await db.run(
         `
-          INSERT INTO scripts (name, script_body, created_at, updated_at)
-          VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          INSERT INTO scripts (name, script_body, order_index, created_at, updated_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `,
-        [normalized.name, normalized.scriptBody]
+        [normalized.name, normalized.scriptBody, nextOrderIndex]
       );
       return this.getScriptById(result.lastID);
     } catch (error) {
@@ -328,7 +330,7 @@ class ScriptService {
     const placeholders = ids.map(() => '?').join(', ');
     const rows = await db.all(
       `
-        SELECT id, name, script_body, created_at, updated_at
+        SELECT id, name, script_body, order_index, created_at, updated_at
         FROM scripts
         WHERE id IN (${placeholders})
       `,
@@ -356,6 +358,76 @@ class ScriptService {
       ]);
     }
     return scripts;
+  }
+
+  async reorderScripts(orderedIds = []) {
+    const db = await getDb();
+    const providedIds = normalizeScriptIdList(orderedIds);
+    const rows = await db.all(
+      `
+        SELECT id
+        FROM scripts
+        ORDER BY order_index ASC, id ASC
+      `
+    );
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const existingIds = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    const existingSet = new Set(existingIds);
+    const used = new Set();
+    const nextOrder = [];
+
+    for (const id of providedIds) {
+      if (!existingSet.has(id) || used.has(id)) {
+        continue;
+      }
+      used.add(id);
+      nextOrder.push(id);
+    }
+
+    for (const id of existingIds) {
+      if (used.has(id)) {
+        continue;
+      }
+      used.add(id);
+      nextOrder.push(id);
+    }
+
+    await db.exec('BEGIN');
+    try {
+      for (let i = 0; i < nextOrder.length; i += 1) {
+        await db.run(
+          `
+            UPDATE scripts
+            SET order_index = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `,
+          [i + 1, nextOrder[i]]
+        );
+      }
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+
+    return this.listScripts();
+  }
+
+  async _getNextOrderIndex(db) {
+    const row = await db.get(
+      `
+        SELECT COALESCE(MAX(order_index), 0) AS max_order_index
+        FROM scripts
+      `
+    );
+    const maxOrder = Number(row?.max_order_index || 0);
+    if (!Number.isFinite(maxOrder) || maxOrder < 0) {
+      return 1;
+    }
+    return Math.trunc(maxOrder) + 1;
   }
 
   async createExecutableScriptFile(script, context = {}) {

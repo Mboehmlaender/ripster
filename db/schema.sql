@@ -39,6 +39,7 @@ CREATE TABLE jobs (
   detected_title TEXT,
   last_state TEXT,
   raw_path TEXT,
+  rip_successful INTEGER NOT NULL DEFAULT 0,
   makemkv_info_json TEXT,
   handbrake_info_json TEXT,
   mediainfo_info_json TEXT,
@@ -56,20 +57,24 @@ CREATE TABLE scripts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   script_body TEXT NOT NULL,
+  order_index INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_scripts_name ON scripts(name);
+CREATE INDEX idx_scripts_order_index ON scripts(order_index, id);
 
 CREATE TABLE script_chains (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  order_index INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_script_chains_name ON script_chains(name);
+CREATE INDEX idx_script_chains_order_index ON script_chains(order_index, id);
 
 CREATE TABLE script_chain_steps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,3 +101,33 @@ CREATE TABLE pipeline_state (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (active_job_id) REFERENCES jobs(id)
 );
+
+CREATE TABLE cron_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  cron_expression TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  pushover_enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  last_run_status TEXT,
+  next_run_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_cron_jobs_enabled ON cron_jobs(enabled);
+
+CREATE TABLE cron_run_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cron_job_id INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,
+  output TEXT,
+  error_message TEXT,
+  FOREIGN KEY (cron_job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_cron_run_logs_job ON cron_run_logs(cron_job_id, id DESC);

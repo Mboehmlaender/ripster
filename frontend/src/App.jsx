@@ -5,6 +5,7 @@ import { api } from './api/client';
 import { useWebSocket } from './hooks/useWebSocket';
 import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
+import HistoryPage from './pages/HistoryPage';
 import DatabasePage from './pages/DatabasePage';
 
 function App() {
@@ -122,7 +123,7 @@ function App() {
             }
           />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/history" element={<DatabasePage />} />
+          <Route path="/history" element={<HistoryPage />} />
           <Route path="/database" element={<DatabasePage />} />
         </Routes>
       </main>

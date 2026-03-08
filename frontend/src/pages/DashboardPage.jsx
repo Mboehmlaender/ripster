@@ -179,12 +179,27 @@ function getAnalyzeContext(job) {
 }
 
 function resolveMediaType(job) {
-  const raw = String(job?.mediaType || job?.media_type || '').trim().toLowerCase();
-  if (raw === 'bluray') {
-    return 'bluray';
-  }
-  if (raw === 'dvd' || raw === 'disc') {
-    return 'dvd';
+  const candidates = [
+    job?.mediaType,
+    job?.media_type,
+    job?.mediaProfile,
+    job?.media_profile,
+    job?.encodePlan?.mediaProfile,
+    job?.makemkvInfo?.analyzeContext?.mediaProfile,
+    job?.makemkvInfo?.mediaProfile,
+    job?.mediainfoInfo?.mediaProfile
+  ];
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim().toLowerCase();
+    if (!raw) {
+      continue;
+    }
+    if (['bluray', 'blu-ray', 'blu_ray', 'bd', 'bdmv', 'bdrom', 'bd-rom', 'bd-r', 'bd-re'].includes(raw)) {
+      return 'bluray';
+    }
+    if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
+      return 'dvd';
+    }
   }
   return 'other';
 }

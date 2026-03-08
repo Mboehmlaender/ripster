@@ -21,12 +21,27 @@ import {
 } from '../utils/statusPresentation';
 
 function resolveMediaType(row) {
-  const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
-  if (raw === 'bluray') {
-    return 'bluray';
-  }
-  if (raw === 'dvd' || raw === 'disc') {
-    return 'dvd';
+  const candidates = [
+    row?.mediaType,
+    row?.media_type,
+    row?.mediaProfile,
+    row?.media_profile,
+    row?.encodePlan?.mediaProfile,
+    row?.makemkvInfo?.analyzeContext?.mediaProfile,
+    row?.makemkvInfo?.mediaProfile,
+    row?.mediainfoInfo?.mediaProfile
+  ];
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim().toLowerCase();
+    if (!raw) {
+      continue;
+    }
+    if (['bluray', 'blu-ray', 'blu_ray', 'bd', 'bdmv', 'bdrom', 'bd-rom', 'bd-r', 'bd-re'].includes(raw)) {
+      return 'bluray';
+    }
+    if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
+      return 'dvd';
+    }
   }
   return 'other';
 }
@@ -666,7 +681,10 @@ export default function DatabasePage() {
         </div>
       </Card>
 
-      <Card title="RAW ohne Historie" subTitle="Ordner in raw_dir ohne zugehörigen Job können hier importiert werden">
+      <Card
+        title="RAW ohne Historie"
+        subTitle="Ordner in den konfigurierten RAW-Pfaden (raw_dir sowie raw_dir_{bluray,dvd,other}) ohne zugehörigen Job können hier importiert werden"
+      >
         <div className="table-filters">
           <Button
             label="RAW prüfen"

@@ -30,6 +30,16 @@ const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
 const LOG_DIR_SETTING_KEY = 'log_dir';
 const MEDIA_PROFILES = ['bluray', 'dvd', 'other'];
 const PROFILED_SETTINGS = {
+  raw_dir: {
+    bluray: 'raw_dir_bluray',
+    dvd: 'raw_dir_dvd',
+    other: 'raw_dir_other'
+  },
+  movie_dir: {
+    bluray: 'movie_dir_bluray',
+    dvd: 'movie_dir_dvd',
+    other: 'movie_dir_other'
+  },
   mediainfo_extra_args: {
     bluray: 'mediainfo_extra_args_bluray',
     dvd: 'mediainfo_extra_args_dvd'
@@ -67,6 +77,10 @@ const PROFILED_SETTINGS = {
     dvd: 'output_folder_template_dvd'
   }
 };
+const STRICT_PROFILE_ONLY_SETTING_KEYS = new Set([
+  'raw_dir',
+  'movie_dir'
+]);
 
 function applyRuntimeLogDirSetting(rawValue) {
   const resolved = setLogRootDir(rawValue);
@@ -227,10 +241,28 @@ function normalizeMediaProfileValue(value) {
   if (!raw) {
     return null;
   }
-  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+  if (
+    raw === 'bluray'
+    || raw === 'blu-ray'
+    || raw === 'blu_ray'
+    || raw === 'bd'
+    || raw === 'bdmv'
+    || raw === 'bdrom'
+    || raw === 'bd-rom'
+    || raw === 'bd-r'
+    || raw === 'bd-re'
+  ) {
     return 'bluray';
   }
-  if (raw === 'dvd') {
+  if (
+    raw === 'dvd'
+    || raw === 'dvdvideo'
+    || raw === 'dvd-video'
+    || raw === 'dvdrom'
+    || raw === 'dvd-rom'
+    || raw === 'video_ts'
+    || raw === 'iso9660'
+  ) {
     return 'dvd';
   }
   if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
@@ -251,6 +283,16 @@ function resolveProfileFallbackOrder(profile) {
     return ['dvd', 'bluray'];
   }
   return ['dvd', 'bluray'];
+}
+
+function hasUsableProfileSpecificValue(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  return true;
 }
 
 function normalizePresetListLines(rawOutput) {
@@ -434,8 +476,9 @@ class SettingsService {
 
   resolveEffectiveToolSettings(settingsMap = {}, mediaProfile = null) {
     const sourceMap = settingsMap && typeof settingsMap === 'object' ? settingsMap : {};
-    const fallbackOrder = resolveProfileFallbackOrder(mediaProfile);
-    const resolvedMediaProfile = normalizeMediaProfileValue(mediaProfile) || fallbackOrder[0] || 'dvd';
+    const normalizedRequestedProfile = normalizeMediaProfileValue(mediaProfile);
+    const fallbackOrder = resolveProfileFallbackOrder(normalizedRequestedProfile);
+    const resolvedMediaProfile = normalizedRequestedProfile || fallbackOrder[0] || 'dvd';
     const effective = {
       ...sourceMap,
       media_profile: resolvedMediaProfile
@@ -443,6 +486,17 @@ class SettingsService {
 
     for (const [legacyKey, profileKeys] of Object.entries(PROFILED_SETTINGS)) {
       let resolvedValue = sourceMap[legacyKey];
+      if (STRICT_PROFILE_ONLY_SETTING_KEYS.has(legacyKey)) {
+        const selectedProfileKey = normalizedRequestedProfile
+          ? profileKeys?.[normalizedRequestedProfile]
+          : null;
+        const selectedProfileValue = selectedProfileKey ? sourceMap[selectedProfileKey] : undefined;
+        if (hasUsableProfileSpecificValue(selectedProfileValue)) {
+          resolvedValue = selectedProfileValue;
+        }
+        effective[legacyKey] = resolvedValue;
+        continue;
+      }
       for (const profile of fallbackOrder) {
         const profileKey = profileKeys?.[profile];
         if (!profileKey) {
@@ -697,10 +751,10 @@ class SettingsService {
       const normalizedProfile = normalizeMediaProfileValue(options?.mediaProfile || deviceInfo?.mediaProfile || null);
       const isDvd = normalizedProfile === 'dvd';
       if (isDvd) {
-        const isoBase = options?.isoOutputBase
-          ? path.join(rawJobDir, options.isoOutputBase)
+        const backupBase = options?.backupOutputBase
+          ? path.join(rawJobDir, options.backupOutputBase)
           : rawJobDir;
-        baseArgs = ['-r', '--progress=-same', 'backup', '--decrypt', '--noscan', sourceArg, isoBase];
+        baseArgs = ['-r', '--progress=-same', 'backup', '--decrypt', '--noscan', sourceArg, backupBase];
       } else {
         baseArgs = ['-r', '--progress=-same', 'backup', '--decrypt', sourceArg, rawJobDir];
       }

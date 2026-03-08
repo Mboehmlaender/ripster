@@ -63,6 +63,42 @@ const defaultSchema = [
     orderIndex: 100
   },
   {
+    key: 'raw_dir_bluray',
+    category: 'Pfade',
+    label: 'Raw Ausgabeordner (Blu-ray)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler RAW-Zielpfad nur für Blu-ray. Leer = Fallback auf "Raw Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 101
+  },
+  {
+    key: 'raw_dir_dvd',
+    category: 'Pfade',
+    label: 'Raw Ausgabeordner (DVD)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler RAW-Zielpfad nur für DVD. Leer = Fallback auf "Raw Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 102
+  },
+  {
+    key: 'raw_dir_other',
+    category: 'Pfade',
+    label: 'Raw Ausgabeordner (Sonstiges)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler RAW-Zielpfad nur für Sonstiges. Leer = Fallback auf "Raw Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 103
+  },
+  {
     key: 'movie_dir',
     category: 'Pfade',
     label: 'Film Ausgabeordner',
@@ -73,6 +109,42 @@ const defaultSchema = [
     options: [],
     validation: { minLength: 1 },
     orderIndex: 110
+  },
+  {
+    key: 'movie_dir_bluray',
+    category: 'Pfade',
+    label: 'Film Ausgabeordner (Blu-ray)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler Encode-Zielpfad nur für Blu-ray. Leer = Fallback auf "Film Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 111
+  },
+  {
+    key: 'movie_dir_dvd',
+    category: 'Pfade',
+    label: 'Film Ausgabeordner (DVD)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler Encode-Zielpfad nur für DVD. Leer = Fallback auf "Film Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 112
+  },
+  {
+    key: 'movie_dir_other',
+    category: 'Pfade',
+    label: 'Film Ausgabeordner (Sonstiges)',
+    type: 'path',
+    required: 0,
+    description: 'Optionaler Encode-Zielpfad nur für Sonstiges. Leer = Fallback auf "Film Ausgabeordner".',
+    defaultValue: '',
+    options: [],
+    validation: {},
+    orderIndex: 113
   },
   {
     key: 'log_dir',

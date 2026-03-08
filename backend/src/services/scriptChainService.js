@@ -32,6 +32,7 @@ function mapChainRow(row, steps = []) {
   return {
     id: Number(row.id),
     name: String(row.name || ''),
+    orderIndex: Number(row.order_index || 0),
     steps: steps.map(mapStepRow),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -115,9 +116,9 @@ class ScriptChainService {
     const db = await getDb();
     const rows = await db.all(
       `
-        SELECT id, name, created_at, updated_at
+        SELECT id, name, order_index, created_at, updated_at
         FROM script_chains
-        ORDER BY LOWER(name) ASC, id ASC
+        ORDER BY order_index ASC, id ASC
       `
     );
 
@@ -164,7 +165,7 @@ class ScriptChainService {
     }
     const db = await getDb();
     const row = await db.get(
-      `SELECT id, name, created_at, updated_at FROM script_chains WHERE id = ?`,
+      `SELECT id, name, order_index, created_at, updated_at FROM script_chains WHERE id = ?`,
       [normalizedId]
     );
     if (!row) {
@@ -186,7 +187,7 @@ class ScriptChainService {
     const db = await getDb();
     const placeholders = ids.map(() => '?').join(', ');
     const rows = await db.all(
-      `SELECT id, name, created_at, updated_at FROM script_chains WHERE id IN (${placeholders})`,
+      `SELECT id, name, order_index, created_at, updated_at FROM script_chains WHERE id IN (${placeholders})`,
       ids
     );
     const stepRows = await db.all(
@@ -229,9 +230,13 @@ class ScriptChainService {
 
     const db = await getDb();
     try {
+      const nextOrderIndex = await this._getNextOrderIndex(db);
       const result = await db.run(
-        `INSERT INTO script_chains (name, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [name]
+        `
+          INSERT INTO script_chains (name, order_index, created_at, updated_at)
+          VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `,
+        [name, nextOrderIndex]
       );
       const chainId = result.lastID;
       await this._saveSteps(db, chainId, steps);
@@ -287,6 +292,78 @@ class ScriptChainService {
     const db = await getDb();
     await db.run(`DELETE FROM script_chains WHERE id = ?`, [normalizedId]);
     return existing;
+  }
+
+  async reorderChains(orderedIds = []) {
+    const providedIds = Array.isArray(orderedIds)
+      ? orderedIds.map(normalizeChainId).filter(Boolean)
+      : [];
+    const db = await getDb();
+    const rows = await db.all(
+      `
+        SELECT id
+        FROM script_chains
+        ORDER BY order_index ASC, id ASC
+      `
+    );
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const existingIds = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    const existingSet = new Set(existingIds);
+    const used = new Set();
+    const nextOrder = [];
+
+    for (const id of providedIds) {
+      if (!existingSet.has(id) || used.has(id)) {
+        continue;
+      }
+      used.add(id);
+      nextOrder.push(id);
+    }
+
+    for (const id of existingIds) {
+      if (used.has(id)) {
+        continue;
+      }
+      used.add(id);
+      nextOrder.push(id);
+    }
+
+    await db.exec('BEGIN');
+    try {
+      for (let i = 0; i < nextOrder.length; i += 1) {
+        await db.run(
+          `
+            UPDATE script_chains
+            SET order_index = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `,
+          [i + 1, nextOrder[i]]
+        );
+      }
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+
+    return this.listChains();
+  }
+
+  async _getNextOrderIndex(db) {
+    const row = await db.get(
+      `
+        SELECT COALESCE(MAX(order_index), 0) AS max_order_index
+        FROM script_chains
+      `
+    );
+    const maxOrder = Number(row?.max_order_index || 0);
+    if (!Number.isFinite(maxOrder) || maxOrder < 0) {
+      return 1;
+    }
+    return Math.trunc(maxOrder) + 1;
   }
 
   async _saveSteps(db, chainId, steps) {
@@ -367,7 +444,7 @@ class ScriptChainService {
               `Kette "${chain.name}" - Skript "${script.name}": ${success ? 'OK' : `Fehler (Exit ${run.code})`}`
             );
           }
-          results.push({ stepType: 'script', scriptId: script.id, scriptName: script.name, success, exitCode: run.code });
+          results.push({ stepType: 'script', scriptId: script.id, scriptName: script.name, success, exitCode: run.code, stdout: run.stdout || '', stderr: run.stderr || '' });
 
           if (!success) {
             logger.warn('chain:step:script-failed', { chainId, scriptId: script.id, exitCode: run.code });

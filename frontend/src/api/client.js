@@ -48,6 +48,14 @@ export const api = {
       body: JSON.stringify(payload || {})
     });
   },
+  reorderScripts(orderedScriptIds = []) {
+    return request('/settings/scripts/reorder', {
+      method: 'POST',
+      body: JSON.stringify({
+        orderedScriptIds: Array.isArray(orderedScriptIds) ? orderedScriptIds : []
+      })
+    });
+  },
   updateScript(scriptId, payload = {}) {
     return request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
       method: 'PUT',
@@ -73,6 +81,14 @@ export const api = {
       body: JSON.stringify(payload)
     });
   },
+  reorderScriptChains(orderedChainIds = []) {
+    return request('/settings/script-chains/reorder', {
+      method: 'POST',
+      body: JSON.stringify({
+        orderedChainIds: Array.isArray(orderedChainIds) ? orderedChainIds : []
+      })
+    });
+  },
   updateScriptChain(chainId, payload = {}) {
     return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
       method: 'PUT',
@@ -82,6 +98,11 @@ export const api = {
   deleteScriptChain(chainId) {
     return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
       method: 'DELETE'
+    });
+  },
+  testScriptChain(chainId) {
+    return request(`/settings/script-chains/${encodeURIComponent(chainId)}/test`, {
+      method: 'POST'
     });
   },
   updateSetting(key, value) {
@@ -243,6 +264,45 @@ export const api = {
     }
     const suffix = query.toString() ? `?${query.toString()}` : '';
     return request(`/history/${jobId}${suffix}`);
+  },
+
+  // ── Cron Jobs ──────────────────────────────────────────────────────────────
+  getCronJobs() {
+    return request('/crons');
+  },
+  getCronJob(id) {
+    return request(`/crons/${encodeURIComponent(id)}`);
+  },
+  createCronJob(payload = {}) {
+    return request('/crons', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+  updateCronJob(id, payload = {}) {
+    return request(`/crons/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+  },
+  deleteCronJob(id) {
+    return request(`/crons/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+  },
+  getCronJobLogs(id, limit = 20) {
+    return request(`/crons/${encodeURIComponent(id)}/logs?limit=${limit}`);
+  },
+  runCronJobNow(id) {
+    return request(`/crons/${encodeURIComponent(id)}/run`, {
+      method: 'POST'
+    });
+  },
+  validateCronExpression(cronExpression) {
+    return request('/crons/validate-expression', {
+      method: 'POST',
+      body: JSON.stringify({ cronExpression })
+    });
   }
 };
 

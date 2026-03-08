@@ -25,36 +25,39 @@ const MEDIA_FILTER_OPTIONS = [
   { label: 'Sonstiges', value: 'other' }
 ];
 
-const BASE_SORT_FIELD_OPTIONS = [
-  { label: 'Startzeit', value: 'start_time' },
-  { label: 'Endzeit', value: 'end_time' },
-  { label: 'Titel', value: 'title' },
-  { label: 'Medium', value: 'mediaType' }
+const SORT_OPTIONS = [
+  { label: 'Startzeit: Neu -> Alt', value: '!start_time' },
+  { label: 'Startzeit: Alt -> Neu', value: 'start_time' },
+  { label: 'Endzeit: Neu -> Alt', value: '!end_time' },
+  { label: 'Endzeit: Alt -> Neu', value: 'end_time' },
+  { label: 'Titel: A -> Z', value: 'sortTitle' },
+  { label: 'Titel: Z -> A', value: '!sortTitle' },
+  { label: 'Medium: A -> Z', value: 'sortMediaType' },
+  { label: 'Medium: Z -> A', value: '!sortMediaType' }
 ];
-
-const OPTIONAL_SORT_FIELD_OPTIONS = [
-  { label: 'Keine', value: '' },
-  ...BASE_SORT_FIELD_OPTIONS
-];
-
-const SORT_DIRECTION_OPTIONS = [
-  { label: 'Aufsteigend', value: 1 },
-  { label: 'Absteigend', value: -1 }
-];
-
-const MEDIA_SORT_RANK = {
-  bluray: 0,
-  dvd: 1,
-  other: 2
-};
 
 function resolveMediaType(row) {
-  const raw = String(row?.mediaType || row?.media_type || '').trim().toLowerCase();
-  if (raw === 'bluray') {
-    return 'bluray';
-  }
-  if (raw === 'dvd' || raw === 'disc') {
-    return 'dvd';
+  const candidates = [
+    row?.mediaType,
+    row?.media_type,
+    row?.mediaProfile,
+    row?.media_profile,
+    row?.encodePlan?.mediaProfile,
+    row?.makemkvInfo?.analyzeContext?.mediaProfile,
+    row?.makemkvInfo?.mediaProfile,
+    row?.mediainfoInfo?.mediaProfile
+  ];
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim().toLowerCase();
+    if (!raw) {
+      continue;
+    }
+    if (['bluray', 'blu-ray', 'blu_ray', 'bd', 'bdmv', 'bdrom', 'bd-rom', 'bd-r', 'bd-re'].includes(raw)) {
+      return 'bluray';
+    }
+    if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
+      return 'dvd';
+    }
   }
   return 'other';
 }
@@ -99,57 +102,6 @@ function getQueueActionResult(response) {
 
 function normalizeSortText(value) {
   return String(value || '').trim().toLocaleLowerCase('de-DE');
-}
-
-function normalizeSortDate(value) {
-  if (!value) {
-    return null;
-  }
-  const ts = new Date(value).getTime();
-  return Number.isFinite(ts) ? ts : null;
-}
-
-function compareSortValues(a, b) {
-  const aMissing = a === null || a === undefined || a === '';
-  const bMissing = b === null || b === undefined || b === '';
-  if (aMissing && bMissing) {
-    return 0;
-  }
-  if (aMissing) {
-    return 1;
-  }
-  if (bMissing) {
-    return -1;
-  }
-
-  if (typeof a === 'number' && typeof b === 'number') {
-    if (a === b) {
-      return 0;
-    }
-    return a > b ? 1 : -1;
-  }
-
-  return String(a).localeCompare(String(b), 'de', {
-    sensitivity: 'base',
-    numeric: true
-  });
-}
-
-function resolveSortValue(row, field) {
-  switch (field) {
-    case 'start_time':
-      return normalizeSortDate(row?.start_time);
-    case 'end_time':
-      return normalizeSortDate(row?.end_time);
-    case 'title':
-      return normalizeSortText(row?.title || row?.detected_title || '');
-    case 'mediaType': {
-      const mediaType = resolveMediaType(row);
-      return MEDIA_SORT_RANK[mediaType] ?? MEDIA_SORT_RANK.other;
-    }
-    default:
-      return null;
-  }
 }
 
 function sanitizeRating(value) {
@@ -211,18 +163,16 @@ export default function HistoryPage() {
   const [status, setStatus] = useState('');
   const [mediumFilter, setMediumFilter] = useState('');
   const [layout, setLayout] = useState('list');
-  const [sortPrimaryField, setSortPrimaryField] = useState('start_time');
-  const [sortPrimaryOrder, setSortPrimaryOrder] = useState(-1);
-  const [sortSecondaryField, setSortSecondaryField] = useState('title');
-  const [sortSecondaryOrder, setSortSecondaryOrder] = useState(1);
-  const [sortTertiaryField, setSortTertiaryField] = useState('mediaType');
-  const [sortTertiaryOrder, setSortTertiaryOrder] = useState(1);
+  const [sortKey, setSortKey] = useState('!start_time');
+  const [sortField, setSortField] = useState('start_time');
+  const [sortOrder, setSortOrder] = useState(-1);
   const [selectedJob, setSelectedJob] = useState(null);
   const [detailVisible, setDetailVisible] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [logLoadingMode, setLogLoadingMode] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
+  const [deleteEntryBusy, setDeleteEntryBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
@@ -238,51 +188,21 @@ export default function HistoryPage() {
     return next;
   }, [queuedJobIds]);
 
-  const sortDescriptors = useMemo(() => {
-    const seen = new Set();
-    const rawDescriptors = [
-      { field: String(sortPrimaryField || '').trim(), order: Number(sortPrimaryOrder || -1) >= 0 ? 1 : -1 },
-      { field: String(sortSecondaryField || '').trim(), order: Number(sortSecondaryOrder || -1) >= 0 ? 1 : -1 },
-      { field: String(sortTertiaryField || '').trim(), order: Number(sortTertiaryOrder || -1) >= 0 ? 1 : -1 }
-    ];
+  const preparedJobs = useMemo(
+    () => jobs.map((job) => ({
+      ...job,
+      sortTitle: normalizeSortText(job?.title || job?.detected_title || ''),
+      sortMediaType: resolveMediaType(job)
+    })),
+    [jobs]
+  );
 
-    const descriptors = [];
-    for (const descriptor of rawDescriptors) {
-      if (!descriptor.field || seen.has(descriptor.field)) {
-        continue;
-      }
-      seen.add(descriptor.field);
-      descriptors.push(descriptor);
-    }
-    return descriptors;
-  }, [sortPrimaryField, sortPrimaryOrder, sortSecondaryField, sortSecondaryOrder, sortTertiaryField, sortTertiaryOrder]);
-
-  const visibleJobs = useMemo(() => {
-    const filtered = mediumFilter
-      ? jobs.filter((job) => resolveMediaType(job) === mediumFilter)
-      : [...jobs];
-
-    if (sortDescriptors.length === 0) {
-      return filtered;
-    }
-
-    filtered.sort((a, b) => {
-      for (const descriptor of sortDescriptors) {
-        const valueA = resolveSortValue(a, descriptor.field);
-        const valueB = resolveSortValue(b, descriptor.field);
-        const compared = compareSortValues(valueA, valueB);
-        if (compared !== 0) {
-          return compared * descriptor.order;
-        }
-      }
-
-      const idA = Number(a?.id || 0);
-      const idB = Number(b?.id || 0);
-      return idB - idA;
-    });
-
-    return filtered;
-  }, [jobs, mediumFilter, sortDescriptors]);
+  const visibleJobs = useMemo(
+    () => (mediumFilter
+      ? preparedJobs.filter((job) => job.sortMediaType === mediumFilter)
+      : preparedJobs),
+    [preparedJobs, mediumFilter]
+  );
 
   const load = async () => {
     setLoading(true);
@@ -297,7 +217,9 @@ export default function HistoryPage() {
         setJobs([]);
       }
       if (queueResponse.status === 'fulfilled') {
-        const queuedRows = Array.isArray(queueResponse.value?.queue?.queuedJobs) ? queueResponse.value.queue.queuedJobs : [];
+        const queuedRows = Array.isArray(queueResponse.value?.queue?.queuedJobs)
+          ? queueResponse.value.queue.queuedJobs
+          : [];
         const queuedIds = queuedRows
           .map((item) => normalizeJobId(item?.jobId))
           .filter(Boolean);
@@ -319,6 +241,25 @@ export default function HistoryPage() {
 
     return () => clearTimeout(timer);
   }, [search, status]);
+
+  const onSortChange = (event) => {
+    const value = String(event.value || '').trim();
+    if (!value) {
+      setSortKey('!start_time');
+      setSortField('start_time');
+      setSortOrder(-1);
+      return;
+    }
+
+    if (value.startsWith('!')) {
+      setSortOrder(-1);
+      setSortField(value.substring(1));
+    } else {
+      setSortOrder(1);
+      setSortField(value);
+    }
+    setSortKey(value);
+  };
 
   const openDetail = async (row) => {
     const jobId = Number(row?.id || 0);
@@ -474,6 +415,57 @@ export default function HistoryPage() {
     }
   };
 
+  const handleRestartReview = async (row) => {
+    const title = row?.title || row?.detected_title || `Job #${row?.id}`;
+    const confirmed = window.confirm(`Review für "${title}" neu starten?\nDer Job wird erneut analysiert. Spur- und Skriptauswahl kann danach im Dashboard neu getroffen werden.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await api.restartReviewFromRaw(row.id);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Review-Neustart',
+        detail: 'Analyse gestartet. Job ist jetzt im Dashboard verfügbar.',
+        life: 3500
+      });
+      await load();
+      await refreshDetailIfOpen(row.id);
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Review-Neustart fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDeleteEntry = async (row) => {
+    const title = row?.title || row?.detected_title || `Job #${row?.id}`;
+    const confirmed = window.confirm(`Historieneintrag für "${title}" wirklich löschen?\nDateien werden NICHT gelöscht.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeleteEntryBusy(true);
+    try {
+      await api.deleteJobEntry(row.id, 'none');
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Eintrag gelöscht',
+        detail: `"${title}" wurde aus der Historie entfernt.`,
+        life: 3500
+      });
+      setDetailVisible(false);
+      setSelectedJob(null);
+      await load();
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Löschen fehlgeschlagen', detail: error.message, life: 4500 });
+    } finally {
+      setDeleteEntryBusy(false);
+    }
+  };
+
   const handleRemoveFromQueue = async (row) => {
     const jobId = normalizeJobId(row?.id || row);
     if (!jobId) {
@@ -535,6 +527,7 @@ export default function HistoryPage() {
     if (ratings.length === 0) {
       return <span className="history-dv-subtle">Keine Ratings</span>;
     }
+
     return ratings.map((rating) => (
       <span key={`${row?.id}-${rating.key}`} className="history-dv-rating-chip">
         <strong>{rating.label}</strong>
@@ -550,77 +543,74 @@ export default function HistoryPage() {
     }
   };
 
-  const renderListItem = (row) => {
+  const listItem = (row) => {
     const mediaMeta = resolveMediaTypeMeta(row);
-    const title = row?.title || row?.detected_title || '-';
-    const imdb = row?.imdb_id || '-';
 
     return (
-      <div
-        className="history-dv-item history-dv-item-list"
-        role="button"
-        tabIndex={0}
-        onKeyDown={(event) => onItemKeyDown(event, row)}
-        onClick={() => {
-          void openDetail(row);
-        }}
-      >
-        <div className="history-dv-poster-wrap">
-          {renderPoster(row)}
-        </div>
+      <div className="col-12" key={row.id}>
+        <div
+          className="history-dv-item history-dv-item-list"
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => onItemKeyDown(event, row)}
+          onClick={() => {
+            void openDetail(row);
+          }}
+        >
+          <div className="history-dv-poster-wrap">
+            {renderPoster(row)}
+          </div>
 
-        <div className="history-dv-main">
-          <div className="history-dv-head">
-            <div className="history-dv-title-block">
-              <strong className="history-dv-title">{title}</strong>
-              <small className="history-dv-subtle">
-                #{row?.id || '-'} | {row?.year || '-'} | {imdb}
-              </small>
+          <div className="history-dv-main">
+            <div className="history-dv-head">
+              <div className="history-dv-title-block">
+                <strong className="history-dv-title">{row?.title || row?.detected_title || '-'}</strong>
+                <small className="history-dv-subtle">
+                  #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
+                </small>
+              </div>
+              {renderStatusTag(row)}
             </div>
-            {renderStatusTag(row)}
+
+            <div className="history-dv-meta-row">
+              <span className="job-step-cell">
+                <img src={mediaMeta.icon} alt={mediaMeta.alt} title={mediaMeta.label} className="media-indicator-icon" />
+                <span>{mediaMeta.label}</span>
+              </span>
+              <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
+              <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
+            </div>
+
+            <div className="history-dv-flags-row">
+              {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+              {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+              {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+            </div>
+
+            <div className="history-dv-ratings-row">{renderRatings(row)}</div>
           </div>
 
-          <div className="history-dv-meta-row">
-            <span className="job-step-cell">
-              <img src={mediaMeta.icon} alt={mediaMeta.alt} title={mediaMeta.label} className="media-indicator-icon" />
-              <span>{mediaMeta.label}</span>
-            </span>
-            <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
-            <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
+          <div className="history-dv-actions">
+            <Button
+              label="Details"
+              icon="pi pi-search"
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                void openDetail(row);
+              }}
+            />
           </div>
-
-          <div className="history-dv-flags-row">
-            {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
-            {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
-            {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
-          </div>
-
-          <div className="history-dv-ratings-row">
-            {renderRatings(row)}
-          </div>
-        </div>
-
-        <div className="history-dv-actions">
-          <Button
-            label="Details"
-            icon="pi pi-search"
-            size="small"
-            onClick={(event) => {
-              event.stopPropagation();
-              void openDetail(row);
-            }}
-          />
         </div>
       </div>
     );
   };
 
-  const renderGridItem = (row) => {
+  const gridItem = (row) => {
     const mediaMeta = resolveMediaTypeMeta(row);
-    const title = row?.title || row?.detected_title || '-';
 
     return (
-      <div className="history-dv-grid-cell">
+      <div className="col-12 md-col-6 xl-col-4" key={row.id}>
         <div
           className="history-dv-item history-dv-item-grid"
           role="button"
@@ -630,37 +620,36 @@ export default function HistoryPage() {
             void openDetail(row);
           }}
         >
-          <div className="history-dv-grid-head">
-            {renderPoster(row, 'history-dv-poster-lg')}
-            <div className="history-dv-grid-title-wrap">
-              <strong className="history-dv-title">{title}</strong>
-              <small className="history-dv-subtle">
-                #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
-              </small>
+          <div className="history-dv-grid-poster-wrap">
+            {renderPoster(row, 'history-dv-poster-grid')}
+          </div>
+
+          <div className="history-dv-grid-main">
+            <div className="history-dv-head">
+              <strong className="history-dv-title">{row?.title || row?.detected_title || '-'}</strong>
+              {renderStatusTag(row)}
+            </div>
+
+            <small className="history-dv-subtle">
+              #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
+            </small>
+
+            <div className="history-dv-meta-row">
               <span className="job-step-cell">
                 <img src={mediaMeta.icon} alt={mediaMeta.alt} title={mediaMeta.label} className="media-indicator-icon" />
                 <span>{mediaMeta.label}</span>
               </span>
+              <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
+              <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
             </div>
-          </div>
 
-          <div className="history-dv-grid-status-row">
-            {renderStatusTag(row)}
-          </div>
+            <div className="history-dv-flags-row">
+              {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+              {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+              {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+            </div>
 
-          <div className="history-dv-grid-time-row">
-            <span className="history-dv-subtle">Start: {formatDateTime(row?.start_time)}</span>
-            <span className="history-dv-subtle">Ende: {formatDateTime(row?.end_time)}</span>
-          </div>
-
-          <div className="history-dv-flags-row">
-            {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
-            {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
-            {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
-          </div>
-
-          <div className="history-dv-ratings-row">
-            {renderRatings(row)}
+            <div className="history-dv-ratings-row">{renderRatings(row)}</div>
           </div>
 
           <div className="history-dv-actions history-dv-actions-grid">
@@ -683,107 +672,48 @@ export default function HistoryPage() {
     if (!row) {
       return null;
     }
-    if (currentLayout === 'grid') {
-      return renderGridItem(row);
-    }
-    return renderListItem(row);
+    return currentLayout === 'list' ? listItem(row) : gridItem(row);
   };
 
-  const dataViewHeader = (
-    <div>
-      <div className="history-dv-toolbar">
-        <InputText
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Suche nach Titel oder IMDb"
-        />
-        <Dropdown
-          value={status}
-          options={STATUS_FILTER_OPTIONS}
-          optionLabel="label"
-          optionValue="value"
-          onChange={(event) => setStatus(event.value)}
-          placeholder="Status"
-        />
-        <Dropdown
-          value={mediumFilter}
-          options={MEDIA_FILTER_OPTIONS}
-          optionLabel="label"
-          optionValue="value"
-          onChange={(event) => setMediumFilter(event.value || '')}
-          placeholder="Medium"
-        />
-        <Button label="Neu laden" icon="pi pi-refresh" onClick={load} loading={loading} />
-        <div className="history-dv-layout-toggle">
-          <DataViewLayoutOptions
-            layout={layout}
-            onChange={(event) => setLayout(event.value)}
-          />
-        </div>
-      </div>
+  const header = (
+    <div className="history-dv-toolbar">
+      <InputText
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="Suche nach Titel oder IMDb"
+      />
 
-      <div className="history-dv-sortbar">
-        <div className="history-dv-sort-rule">
-          <strong>1.</strong>
-          <Dropdown
-            value={sortPrimaryField}
-            options={BASE_SORT_FIELD_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortPrimaryField(event.value || 'start_time')}
-            placeholder="Primär"
-          />
-          <Dropdown
-            value={sortPrimaryOrder}
-            options={SORT_DIRECTION_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortPrimaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
-            placeholder="Richtung"
-          />
-        </div>
+      <Dropdown
+        value={status}
+        options={STATUS_FILTER_OPTIONS}
+        optionLabel="label"
+        optionValue="value"
+        onChange={(event) => setStatus(event.value)}
+        placeholder="Status"
+      />
 
-        <div className="history-dv-sort-rule">
-          <strong>2.</strong>
-          <Dropdown
-            value={sortSecondaryField}
-            options={OPTIONAL_SORT_FIELD_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortSecondaryField(event.value || '')}
-            placeholder="Sekundär"
-          />
-          <Dropdown
-            value={sortSecondaryOrder}
-            options={SORT_DIRECTION_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortSecondaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
-            placeholder="Richtung"
-            disabled={!sortSecondaryField}
-          />
-        </div>
+      <Dropdown
+        value={mediumFilter}
+        options={MEDIA_FILTER_OPTIONS}
+        optionLabel="label"
+        optionValue="value"
+        onChange={(event) => setMediumFilter(event.value || '')}
+        placeholder="Medium"
+      />
 
-        <div className="history-dv-sort-rule">
-          <strong>3.</strong>
-          <Dropdown
-            value={sortTertiaryField}
-            options={OPTIONAL_SORT_FIELD_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortTertiaryField(event.value || '')}
-            placeholder="Tertiär"
-          />
-          <Dropdown
-            value={sortTertiaryOrder}
-            options={SORT_DIRECTION_OPTIONS}
-            optionLabel="label"
-            optionValue="value"
-            onChange={(event) => setSortTertiaryOrder(Number(event.value || -1) >= 0 ? 1 : -1)}
-            placeholder="Richtung"
-            disabled={!sortTertiaryField}
-          />
-        </div>
+      <Dropdown
+        value={sortKey}
+        options={SORT_OPTIONS}
+        optionLabel="label"
+        optionValue="value"
+        onChange={onSortChange}
+        placeholder="Sortieren"
+      />
+
+      <Button label="Neu laden" icon="pi pi-refresh" onClick={load} loading={loading} />
+
+      <div className="history-dv-layout-toggle">
+        <DataViewLayoutOptions layout={layout} onChange={(event) => setLayout(event.value)} />
       </div>
     </div>
   );
@@ -792,15 +722,17 @@ export default function HistoryPage() {
     <div className="page-grid">
       <Toast ref={toastRef} />
 
-      <Card title="Historie" subTitle="DataView mit Poster, Status, Dateiverfügbarkeit, Encode-Status und Ratings">
+      <Card title="Historie" subTitle="PrimeReact DataView">
         <DataView
           value={visibleJobs}
           layout={layout}
+          header={header}
           itemTemplate={itemTemplate}
           paginator
           rows={12}
           rowsPerPageOptions={[12, 24, 48]}
-          header={dataViewHeader}
+          sortField={sortField}
+          sortOrder={sortOrder}
           loading={loading}
           emptyMessage="Keine Einträge"
           className="history-dataview"
@@ -814,12 +746,15 @@ export default function HistoryPage() {
         onLoadLog={handleLoadLog}
         logLoadingMode={logLoadingMode}
         onRestartEncode={handleRestartEncode}
+        onRestartReview={handleRestartReview}
         onReencode={handleReencode}
         onDeleteFiles={handleDeleteFiles}
+        onDeleteEntry={handleDeleteEntry}
         onRemoveFromQueue={handleRemoveFromQueue}
         isQueued={Boolean(selectedJob?.id && queuedJobIdSet.has(normalizeJobId(selectedJob.id)))}
         actionBusy={actionBusy}
         reencodeBusy={reencodeBusyJobId === selectedJob?.id}
+        deleteEntryBusy={deleteEntryBusy}
         onHide={() => {
           setDetailVisible(false);
           setDetailLoading(false);

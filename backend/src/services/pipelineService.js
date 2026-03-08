@@ -57,6 +57,8 @@ const QUEUE_ACTION_LABELS = {
 const PRE_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_FINISH_BUFFER = 1;
+const MIN_EXTENSIONLESS_DISC_IMAGE_BYTES = 256 * 1024 * 1024;
+const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,10 +69,28 @@ function normalizeMediaProfile(value) {
   if (!raw) {
     return null;
   }
-  if (raw === 'bluray' || raw === 'blu-ray' || raw === 'bd' || raw === 'bdmv') {
+  if (
+    raw === 'bluray'
+    || raw === 'blu-ray'
+    || raw === 'blu_ray'
+    || raw === 'bd'
+    || raw === 'bdmv'
+    || raw === 'bdrom'
+    || raw === 'bd-rom'
+    || raw === 'bd-r'
+    || raw === 'bd-re'
+  ) {
     return 'bluray';
   }
-  if (raw === 'dvd') {
+  if (
+    raw === 'dvd'
+    || raw === 'dvdvideo'
+    || raw === 'dvd-video'
+    || raw === 'dvdrom'
+    || raw === 'dvd-rom'
+    || raw === 'video_ts'
+    || raw === 'iso9660'
+  ) {
     return 'dvd';
   }
   if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
@@ -79,11 +99,125 @@ function normalizeMediaProfile(value) {
   return null;
 }
 
+function isSpecificMediaProfile(value) {
+  return value === 'bluray' || value === 'dvd';
+}
+
+function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
+  const fstype = String(rawFsType || '').trim().toLowerCase();
+  const model = String(rawModel || '').trim().toLowerCase();
+  const hasBlurayModelMarker = /(blu[\s-]?ray|bd[\s_-]?rom|bd-r|bd-re)/.test(model);
+  const hasDvdModelMarker = /dvd/.test(model);
+  const hasCdOnlyModelMarker = /(^|[\s_-])cd([\s_-]|$)|cd-?rom/.test(model) && !hasBlurayModelMarker && !hasDvdModelMarker;
+
+  if (!fstype) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasDvdModelMarker) {
+      return 'dvd';
+    }
+    return null;
+  }
+
+  if (fstype.includes('udf')) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasDvdModelMarker) {
+      return 'dvd';
+    }
+    return 'dvd';
+  }
+
+  if (fstype.includes('iso9660') || fstype.includes('cdfs')) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasCdOnlyModelMarker) {
+      return 'other';
+    }
+    return 'dvd';
+  }
+
+  return null;
+}
+
+function isLikelyExtensionlessDvdImageFile(filePath, knownSize = null) {
+  if (path.extname(String(filePath || '')).toLowerCase() !== '') {
+    return false;
+  }
+
+  let size = Number(knownSize);
+  if (!Number.isFinite(size) || size < 0) {
+    try {
+      size = Number(fs.statSync(filePath).size || 0);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  return size >= MIN_EXTENSIONLESS_DISC_IMAGE_BYTES;
+}
+
+function listTopLevelExtensionlessDvdImages(dirPath) {
+  const sourceDir = String(dirPath || '').trim();
+  if (!sourceDir) {
+    return [];
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+  } catch (_error) {
+    return [];
+  }
+
+  const results = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const absPath = path.join(sourceDir, entry.name);
+    let stat;
+    try {
+      stat = fs.statSync(absPath);
+    } catch (_error) {
+      continue;
+    }
+
+    if (!isLikelyExtensionlessDvdImageFile(absPath, stat.size)) {
+      continue;
+    }
+
+    results.push({
+      path: absPath,
+      size: Number(stat.size || 0)
+    });
+  }
+
+  results.sort((a, b) => b.size - a.size || a.path.localeCompare(b.path));
+  return results;
+}
+
 function inferMediaProfileFromRawPath(rawPath) {
   const source = String(rawPath || '').trim();
   if (!source) {
     return null;
   }
+  try {
+    const sourceStat = fs.statSync(source);
+    if (sourceStat.isFile()) {
+      if (isLikelyExtensionlessDvdImageFile(source, sourceStat.size)) {
+        return 'dvd';
+      }
+      return null;
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
   const bdmvPath = path.join(source, 'BDMV');
   const bdmvStreamPath = path.join(bdmvPath, 'STREAM');
   try {
@@ -103,16 +237,8 @@ function inferMediaProfileFromRawPath(rawPath) {
     // ignore fs errors
   }
 
-  try {
-    const entries = fs.readdirSync(source, { withFileTypes: true });
-    const hasIso = entries.some(
-      (e) => e.isFile() && path.extname(e.name).toLowerCase() === '.iso'
-    );
-    if (hasIso) {
-      return 'dvd';
-    }
-  } catch (_error) {
-    // ignore fs errors
+  if (listTopLevelExtensionlessDvdImages(source).length > 0) {
+    return 'dvd';
   }
 
   return null;
@@ -136,7 +262,8 @@ function inferMediaProfileFromDeviceInfo(deviceInfo = null) {
   const markerText = [
     device.discLabel,
     device.label,
-    device.fstype
+    device.fstype,
+    device.model
   ]
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean)
@@ -147,6 +274,11 @@ function inferMediaProfileFromDeviceInfo(deviceInfo = null) {
   }
   if (/(^|[\s_-])video_ts($|[\s_-])|dvd/.test(markerText)) {
     return 'dvd';
+  }
+
+  const byFsTypeAndModel = inferMediaProfileFromFsTypeAndModel(device.fstype, device.model);
+  if (byFsTypeAndModel) {
+    return byFsTypeAndModel;
   }
 
   const mountpoint = String(device.mountpoint || '').trim();
@@ -696,6 +828,47 @@ function parseMediainfoJsonOutput(rawOutput) {
   }
 
   return parsedObjects[parsedObjects.length - 1] || null;
+}
+
+function getMediaInfoTrackList(mediaInfoJson) {
+  if (Array.isArray(mediaInfoJson?.media?.track)) {
+    return mediaInfoJson.media.track;
+  }
+  if (Array.isArray(mediaInfoJson?.Media?.track)) {
+    return mediaInfoJson.Media.track;
+  }
+  return [];
+}
+
+function countMediaInfoTrackTypes(mediaInfoJson) {
+  const tracks = getMediaInfoTrackList(mediaInfoJson);
+  let audioCount = 0;
+  let subtitleCount = 0;
+  for (const track of tracks) {
+    const type = String(track?.['@type'] || '').trim().toLowerCase();
+    if (type === 'audio') {
+      audioCount += 1;
+      continue;
+    }
+    if (type === 'text' || type === 'subtitle') {
+      subtitleCount += 1;
+    }
+  }
+  return {
+    audioCount,
+    subtitleCount
+  };
+}
+
+function shouldRunDvdTrackFallback(parsedMediaInfo, mediaProfile, inputPath) {
+  if (normalizeMediaProfile(mediaProfile) !== 'dvd') {
+    return false;
+  }
+  if (path.extname(String(inputPath || '')).toLowerCase() !== '') {
+    return false;
+  }
+  const counts = countMediaInfoTrackTypes(parsedMediaInfo);
+  return counts.audioCount === 0 && counts.subtitleCount === 0;
 }
 
 function parseHmsDurationToSeconds(raw) {
@@ -1487,9 +1660,15 @@ function findExistingRawDirectory(rawBaseDir, metadataBase) {
     return null;
   }
 
-  const prefix = sanitizeFileName(`${metadataBase} - RAW - job-`);
+  const normalizedBase = sanitizeFileName(metadataBase);
+  const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedIncompletePrefix = RAW_INCOMPLETE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const folderPattern = new RegExp(
+    `^(?:${escapedIncompletePrefix})?${escapedBase}(?:\\s\\[tt\\d{6,12}\\])?\\s-\\sRAW\\s-\\sjob-\\d+\\s*$`,
+    'i'
+  );
   const candidates = entries
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+    .filter((entry) => entry.isDirectory() && folderPattern.test(entry.name))
     .map((entry) => {
       const absPath = path.join(rawBaseDir, entry.name);
       try {
@@ -1508,6 +1687,59 @@ function findExistingRawDirectory(rawBaseDir, metadataBase) {
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   return candidates.length > 0 ? candidates[0].path : null;
+}
+
+function buildRawMetadataBase(jobLike = {}, fallbackJobId = null) {
+  const normalizedJobId = Number(fallbackJobId || jobLike?.id || 0);
+  const fallbackTitle = Number.isFinite(normalizedJobId) && normalizedJobId > 0
+    ? `job-${Math.trunc(normalizedJobId)}`
+    : 'job-unknown';
+  const rawYear = Number(jobLike?.year ?? jobLike?.fallbackYear ?? null);
+  const yearValue = Number.isFinite(rawYear) && rawYear > 0
+    ? Math.trunc(rawYear)
+    : new Date().getFullYear();
+  return sanitizeFileName(
+    renderTemplate('${title} (${year})', {
+      title: jobLike?.title || jobLike?.detected_title || jobLike?.detectedTitle || fallbackTitle,
+      year: yearValue
+    })
+  );
+}
+
+function buildRawDirName(metadataBase, jobId, options = {}) {
+  const incomplete = options?.incomplete !== undefined ? Boolean(options.incomplete) : true;
+  const baseName = sanitizeFileName(`${metadataBase} - RAW - job-${jobId}`);
+  return incomplete ? sanitizeFileName(`${RAW_INCOMPLETE_PREFIX}${baseName}`) : baseName;
+}
+
+function buildCompletedRawPath(rawPath) {
+  const sourcePath = String(rawPath || '').trim();
+  if (!sourcePath) {
+    return null;
+  }
+  const folderName = path.basename(sourcePath);
+  if (!new RegExp(`^${RAW_INCOMPLETE_PREFIX}`, 'i').test(folderName)) {
+    return sourcePath;
+  }
+  const completedFolderName = folderName.replace(new RegExp(`^${RAW_INCOMPLETE_PREFIX}`, 'i'), '');
+  if (!completedFolderName) {
+    return sourcePath;
+  }
+  return path.join(path.dirname(sourcePath), completedFolderName);
+}
+
+function normalizeComparablePath(inputPath) {
+  const source = String(inputPath || '').trim();
+  if (!source) {
+    return '';
+  }
+  return path.resolve(source).replace(/[\\/]+$/, '');
+}
+
+function isJobFinished(jobLike = null) {
+  const status = String(jobLike?.status || '').trim().toUpperCase();
+  const lastState = String(jobLike?.last_state || '').trim().toUpperCase();
+  return status === 'FINISHED' || lastState === 'FINISHED';
 }
 
 function toPlaylistFile(playlistId) {
@@ -2226,42 +2458,51 @@ function buildPlaylistSegmentFileSet(playlistAnalysis, selectedPlaylistId = null
   return set;
 }
 
-function ensureDvdBackupIso(rawDir) {
-  let entries;
-  try {
-    entries = fs.readdirSync(rawDir, { withFileTypes: true });
-  } catch (_error) {
-    return null;
-  }
-  for (const entry of entries) {
-    if (!entry.isFile()) {
-      continue;
-    }
-    const ext = path.extname(entry.name).toLowerCase();
-    if (ext === '.iso') {
-      return path.join(rawDir, entry.name);
-    }
-  }
-  for (const entry of entries) {
-    if (!entry.isFile()) {
-      continue;
-    }
-    const ext = path.extname(entry.name).toLowerCase();
-    const oldPath = path.join(rawDir, entry.name);
-    const newName = ext ? entry.name.slice(0, -ext.length) + '.iso' : entry.name + '.iso';
-    const newPath = path.join(rawDir, newName);
-    try {
-      fs.renameSync(oldPath, newPath);
-      return newPath;
-    } catch (_error) {
-      return null;
-    }
-  }
-  return null;
-}
 
 function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedPlaylistId = null } = {}) {
-  const primary = findMediaFiles(rawPath, ['.mkv', '.mp4', '.iso']);
+  const sourcePath = String(rawPath || '').trim();
+  if (!sourcePath) {
+    return {
+      mediaFiles: [],
+      source: 'none'
+    };
+  }
+
+  try {
+    const sourceStat = fs.statSync(sourcePath);
+    if (sourceStat.isFile()) {
+      const ext = path.extname(sourcePath).toLowerCase();
+      if (
+        ext === '.mkv'
+        || ext === '.mp4'
+        || isLikelyExtensionlessDvdImageFile(sourcePath, sourceStat.size)
+      ) {
+        return {
+          mediaFiles: [{ path: sourcePath, size: Number(sourceStat.size || 0) }],
+          source: ext === '' ? 'single_extensionless' : 'single_file'
+        };
+      }
+      return {
+        mediaFiles: [],
+        source: 'none'
+      };
+    }
+  } catch (_error) {
+    return {
+      mediaFiles: [],
+      source: 'none'
+    };
+  }
+
+  const topLevelExtensionlessImages = listTopLevelExtensionlessDvdImages(sourcePath);
+  if (topLevelExtensionlessImages.length > 0) {
+    return {
+      mediaFiles: topLevelExtensionlessImages,
+      source: 'dvd_image'
+    };
+  }
+
+  const primary = findMediaFiles(sourcePath, ['.mkv', '.mp4']);
   if (primary.length > 0) {
     return {
       mediaFiles: primary,
@@ -2269,13 +2510,12 @@ function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedP
     };
   }
 
-  const streamDir = path.join(rawPath, 'BDMV', 'STREAM');
-  const backupRoot = fs.existsSync(streamDir) ? streamDir : rawPath;
+  const streamDir = path.join(sourcePath, 'BDMV', 'STREAM');
+  const backupRoot = fs.existsSync(streamDir) ? streamDir : sourcePath;
   let backupFiles = findMediaFiles(backupRoot, ['.m2ts']);
   if (backupFiles.length === 0) {
-    const videoTsDir = path.join(rawPath, 'VIDEO_TS');
-    if (fs.existsSync(videoTsDir)) {
-      const vobFiles = findMediaFiles(videoTsDir, ['.vob']);
+    const vobFiles = findMediaFiles(sourcePath, ['.vob']);
+    if (vobFiles.length > 0) {
       return {
         mediaFiles: vobFiles,
         source: 'dvd'
@@ -2366,8 +2606,189 @@ class PipelineService extends EventEmitter {
     };
   }
 
+  isRipSuccessful(job = null) {
+    if (Number(job?.rip_successful || 0) === 1) {
+      return true;
+    }
+    if (isJobFinished(job)) {
+      return true;
+    }
+    const mkInfo = this.safeParseJson(job?.makemkv_info_json);
+    return String(mkInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  }
+
+  resolveCurrentRawPath(rawBaseDir, storedRawPath) {
+    const stored = String(storedRawPath || '').trim();
+    if (!stored) {
+      return null;
+    }
+    const candidates = [stored];
+    if (rawBaseDir) {
+      const byFolder = path.join(rawBaseDir, path.basename(stored));
+      if (!candidates.includes(byFolder)) {
+        candidates.push(byFolder);
+      }
+    }
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+          return candidate;
+        }
+      } catch (_error) {
+        // ignore fs errors
+      }
+    }
+    return null;
+  }
+
+  async migrateRawFolderNamingOnStartup(db) {
+    const settings = await settingsService.getSettingsMap();
+    const rawBaseDir = String(settings?.raw_dir || '').trim();
+    if (!rawBaseDir || !fs.existsSync(rawBaseDir)) {
+      return;
+    }
+
+    const rows = await db.all(`
+      SELECT id, title, year, detected_title, raw_path, status, last_state, rip_successful, makemkv_info_json
+      FROM jobs
+      WHERE raw_path IS NOT NULL AND TRIM(raw_path) <> ''
+    `);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return;
+    }
+
+    let renamedCount = 0;
+    let pathUpdateCount = 0;
+    let ripFlagUpdateCount = 0;
+    let conflictCount = 0;
+    let missingCount = 0;
+    const discoveredByJobId = new Map();
+
+    try {
+      const dirEntries = fs.readdirSync(rawBaseDir, { withFileTypes: true });
+      for (const entry of dirEntries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const match = String(entry.name || '').match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
+        if (!match) {
+          continue;
+        }
+        const mappedJobId = Number(match[1]);
+        if (!Number.isFinite(mappedJobId) || mappedJobId <= 0) {
+          continue;
+        }
+        const candidatePath = path.join(rawBaseDir, entry.name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = Number(fs.statSync(candidatePath).mtimeMs || 0);
+        } catch (_error) {
+          // ignore fs errors and keep zero mtime
+        }
+        const current = discoveredByJobId.get(mappedJobId);
+        if (!current || mtimeMs > current.mtimeMs) {
+          discoveredByJobId.set(mappedJobId, {
+            path: candidatePath,
+            mtimeMs
+          });
+        }
+      }
+    } catch (scanError) {
+      logger.warn('startup:raw-dir-migrate:scan-failed', {
+        rawBaseDir,
+        error: errorToMeta(scanError)
+      });
+    }
+
+    for (const row of rows) {
+      const jobId = Number(row?.id);
+      if (!Number.isFinite(jobId) || jobId <= 0) {
+        continue;
+      }
+
+      const ripSuccessful = this.isRipSuccessful(row);
+      if (ripSuccessful && Number(row?.rip_successful || 0) !== 1) {
+        await historyService.updateJob(jobId, { rip_successful: 1 });
+        ripFlagUpdateCount += 1;
+      }
+
+      const currentRawPath = this.resolveCurrentRawPath(rawBaseDir, row.raw_path)
+        || discoveredByJobId.get(jobId)?.path
+        || null;
+      if (!currentRawPath) {
+        missingCount += 1;
+        continue;
+      }
+
+      const currentFolderName = path.basename(currentRawPath).replace(/^Incomplete_/i, '').trim();
+      const folderYearMatch = currentFolderName.match(/\((19|20)\d{2}\)/);
+      const fallbackYear = folderYearMatch
+        ? Number(String(folderYearMatch[0]).replace(/[()]/g, ''))
+        : null;
+      const metadataBase = buildRawMetadataBase({
+        title: row.title || row.detected_title || null,
+        year: row.year || null,
+        fallbackYear
+      }, jobId);
+      const shouldBeIncomplete = !isJobFinished(row);
+      const desiredRawPath = path.join(
+        rawBaseDir,
+        buildRawDirName(metadataBase, jobId, { incomplete: shouldBeIncomplete })
+      );
+
+      let finalRawPath = currentRawPath;
+      if (normalizeComparablePath(currentRawPath) !== normalizeComparablePath(desiredRawPath)) {
+        if (fs.existsSync(desiredRawPath)) {
+          conflictCount += 1;
+          logger.warn('startup:raw-dir-migrate:target-exists', {
+            jobId,
+            currentRawPath,
+            desiredRawPath
+          });
+        } else {
+          try {
+            fs.renameSync(currentRawPath, desiredRawPath);
+            finalRawPath = desiredRawPath;
+            renamedCount += 1;
+          } catch (renameError) {
+            logger.warn('startup:raw-dir-migrate:rename-failed', {
+              jobId,
+              currentRawPath,
+              desiredRawPath,
+              error: errorToMeta(renameError)
+            });
+            continue;
+          }
+        }
+      }
+
+      if (normalizeComparablePath(row.raw_path) !== normalizeComparablePath(finalRawPath)) {
+        await historyService.updateRawPathByOldPath(row.raw_path, finalRawPath);
+        pathUpdateCount += 1;
+      }
+    }
+
+    if (renamedCount > 0 || pathUpdateCount > 0 || ripFlagUpdateCount > 0 || conflictCount > 0 || missingCount > 0) {
+      logger.info('startup:raw-dir-migrate:done', {
+        renamedCount,
+        pathUpdateCount,
+        ripFlagUpdateCount,
+        conflictCount,
+        missingCount,
+        rawBaseDir
+      });
+    }
+  }
+
   async init() {
     const db = await getDb();
+    try {
+      await this.migrateRawFolderNamingOnStartup(db);
+    } catch (migrationError) {
+      logger.warn('init:raw-dir-migrate-failed', {
+        error: errorToMeta(migrationError)
+      });
+    }
     const row = await db.get('SELECT * FROM pipeline_state WHERE id = 1');
 
     if (row) {
@@ -3086,9 +3507,13 @@ class PipelineService extends EventEmitter {
     const rawDevice = deviceInfo && typeof deviceInfo === 'object'
       ? deviceInfo
       : {};
-    const resolvedMediaProfile = normalizeMediaProfile(rawDevice.mediaProfile)
-      || inferMediaProfileFromDeviceInfo(rawDevice)
-      || 'other';
+    const explicitProfile = normalizeMediaProfile(rawDevice.mediaProfile);
+    const inferredProfile = inferMediaProfileFromDeviceInfo(rawDevice);
+    const resolvedMediaProfile = isSpecificMediaProfile(explicitProfile)
+      ? explicitProfile
+      : (isSpecificMediaProfile(inferredProfile)
+          ? inferredProfile
+          : (explicitProfile || inferredProfile || 'other'));
     const resolvedDevice = {
       ...rawDevice,
       mediaProfile: resolvedMediaProfile
@@ -3209,7 +3634,18 @@ class PipelineService extends EventEmitter {
   }
 
   resolveMediaProfileForJob(job, options = {}) {
-    const explicitProfile = normalizeMediaProfile(options?.mediaProfile);
+    const pickSpecificProfile = (value) => {
+      const normalized = normalizeMediaProfile(value);
+      if (!normalized) {
+        return null;
+      }
+      if (isSpecificMediaProfile(normalized)) {
+        return normalized;
+      }
+      return null;
+    };
+
+    const explicitProfile = pickSpecificProfile(options?.mediaProfile);
     if (explicitProfile) {
       return explicitProfile;
     }
@@ -3217,7 +3653,7 @@ class PipelineService extends EventEmitter {
     const encodePlan = options?.encodePlan && typeof options.encodePlan === 'object'
       ? options.encodePlan
       : null;
-    const profileFromPlan = normalizeMediaProfile(encodePlan?.mediaProfile);
+    const profileFromPlan = pickSpecificProfile(encodePlan?.mediaProfile);
     if (profileFromPlan) {
       return profileFromPlan;
     }
@@ -3226,7 +3662,7 @@ class PipelineService extends EventEmitter {
       ? options.makemkvInfo
       : this.safeParseJson(job?.makemkv_info_json);
     const analyzeContext = mkInfo?.analyzeContext || {};
-    const profileFromAnalyze = normalizeMediaProfile(
+    const profileFromAnalyze = pickSpecificProfile(
       analyzeContext.mediaProfile || mkInfo?.mediaProfile
     );
     if (profileFromAnalyze) {
@@ -3235,7 +3671,7 @@ class PipelineService extends EventEmitter {
 
     const currentContextProfile = (
       Number(this.snapshot.context?.jobId) === Number(job?.id)
-        ? normalizeMediaProfile(this.snapshot.context?.mediaProfile)
+        ? pickSpecificProfile(this.snapshot.context?.mediaProfile)
         : null
     );
     if (currentContextProfile) {
@@ -3248,7 +3684,7 @@ class PipelineService extends EventEmitter {
       || this.snapshot.context?.device
       || null
     );
-    if (deviceProfile) {
+    if (isSpecificMediaProfile(deviceProfile)) {
       return deviceProfile;
     }
 
@@ -3468,9 +3904,13 @@ class PipelineService extends EventEmitter {
       || device.model
       || 'Unknown Disc'
     ).trim();
-    const mediaProfile = normalizeMediaProfile(device?.mediaProfile)
-      || inferMediaProfileFromDeviceInfo(device)
-      || 'other';
+    const explicitProfile = normalizeMediaProfile(device?.mediaProfile);
+    const inferredProfile = inferMediaProfileFromDeviceInfo(device);
+    const mediaProfile = isSpecificMediaProfile(explicitProfile)
+      ? explicitProfile
+      : (isSpecificMediaProfile(inferredProfile)
+          ? inferredProfile
+          : (explicitProfile || inferredProfile || 'other'));
     const deviceWithProfile = {
       ...device,
       mediaProfile
@@ -4624,15 +5064,26 @@ class PipelineService extends EventEmitter {
       ? 'backup'
       : 'mkv';
     const isBackupMode = ripMode === 'backup';
-    const metadataBase = sanitizeFileName(
-      renderTemplate('${title} (${year}) [${imdbId}]', {
-        title: selectedMetadata.title || job.detected_title || `job-${jobId}`,
-        year: selectedMetadata.year || new Date().getFullYear(),
-        imdbId: selectedMetadata.imdbId || `job-${jobId}`
-      })
-    );
+    const metadataBase = buildRawMetadataBase({
+      title: selectedMetadata.title || job.detected_title || null,
+      year: selectedMetadata.year || null
+    }, jobId);
     const existingRawPath = findExistingRawDirectory(settings.raw_dir, metadataBase);
-    const updatedRawPath = existingRawPath || null;
+    let updatedRawPath = existingRawPath || null;
+    if (existingRawPath) {
+      const renamedDirName = buildRawDirName(metadataBase, jobId, { incomplete: true });
+      const renamedRawPath = path.join(settings.raw_dir, renamedDirName);
+      if (existingRawPath !== renamedRawPath && !fs.existsSync(renamedRawPath)) {
+        try {
+          fs.renameSync(existingRawPath, renamedRawPath);
+          updatedRawPath = renamedRawPath;
+          await historyService.updateRawPathByOldPath(existingRawPath, renamedRawPath);
+          logger.info('metadata:raw-dir-renamed', { from: existingRawPath, to: renamedRawPath, jobId });
+        } catch (renameError) {
+          logger.warn('metadata:raw-dir-rename-failed', { existingRawPath, renamedRawPath, error: errorToMeta(renameError) });
+        }
+      }
+    }
     const basePlaylistDecision = this.resolvePlaylistDecisionForJob(jobId, job, selectedPlaylist);
     const playlistDecision = isBackupMode
       ? {
@@ -5181,8 +5632,11 @@ class PipelineService extends EventEmitter {
     }
 
     const mkInfo = this.safeParseJson(sourceJob.makemkv_info_json);
-    if (mkInfo && mkInfo.status && mkInfo.status !== 'SUCCESS') {
-      const error = new Error(`Re-Encode nicht möglich: RAW-Rip ist nicht abgeschlossen (MakeMKV Status ${mkInfo.status}).`);
+    const ripSuccessful = this.isRipSuccessful(sourceJob);
+    if (!ripSuccessful) {
+      const error = new Error(
+        `Re-Encode nicht möglich: RAW-Rip ist nicht abgeschlossen (MakeMKV Status ${mkInfo?.status || 'unknown'}).`
+      );
       error.statusCode = 400;
       throw error;
     }
@@ -5285,6 +5739,54 @@ class PipelineService extends EventEmitter {
     return {
       runInfo,
       parsed
+    };
+  }
+
+  async runDvdTrackFallbackForFile(jobId, inputPath, options = {}) {
+    const lines = [];
+    const scanConfig = await settingsService.buildHandBrakeScanConfigForInput(inputPath, {
+      mediaProfile: options?.mediaProfile || null,
+      settingsMap: options?.settingsMap || null
+    });
+    logger.info('mediainfo:track-fallback:handbrake-scan:command', {
+      jobId,
+      inputPath,
+      cmd: scanConfig.cmd,
+      args: scanConfig.args
+    });
+
+    const runInfo = await this.runCommand({
+      jobId,
+      stage: 'MEDIAINFO_CHECK',
+      source: 'HANDBRAKE_SCAN_DVD_TRACK_FALLBACK',
+      cmd: scanConfig.cmd,
+      args: scanConfig.args,
+      collectLines: lines,
+      collectStderrLines: false
+    });
+
+    const parsedScan = parseMediainfoJsonOutput(lines.join('\n'));
+    if (!parsedScan) {
+      return {
+        runInfo,
+        parsedMediaInfo: null,
+        titleInfo: null
+      };
+    }
+
+    const titleInfo = parseHandBrakeSelectedTitleInfo(parsedScan);
+    if (!titleInfo) {
+      return {
+        runInfo,
+        parsedMediaInfo: null,
+        titleInfo: null
+      };
+    }
+
+    return {
+      runInfo,
+      parsedMediaInfo: buildSyntheticMediaInfoFromMakeMkvTitle(titleInfo),
+      titleInfo
     };
   }
 
@@ -5420,10 +5922,49 @@ class PipelineService extends EventEmitter {
         mediaProfile,
         settingsMap: settings
       });
-      mediaInfoByPath[file.path] = result.parsed;
+      let parsedMediaInfo = result.parsed;
+      let fallbackRunInfo = null;
+      if (shouldRunDvdTrackFallback(parsedMediaInfo, mediaProfile, file.path)) {
+        try {
+          const fallback = await this.runDvdTrackFallbackForFile(jobId, file.path, {
+            mediaProfile,
+            settingsMap: settings
+          });
+          if (fallback?.parsedMediaInfo) {
+            parsedMediaInfo = fallback.parsedMediaInfo;
+            fallbackRunInfo = fallback.runInfo || null;
+            const audioCount = Array.isArray(fallback?.titleInfo?.audioTracks)
+              ? fallback.titleInfo.audioTracks.length
+              : 0;
+            const subtitleCount = Array.isArray(fallback?.titleInfo?.subtitleTracks)
+              ? fallback.titleInfo.subtitleTracks.length
+              : 0;
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `DVD Track-Fallback aktiv (${path.basename(file.path)}): Audio=${audioCount}, Subtitle=${subtitleCount}.`
+            );
+          } else {
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `DVD Track-Fallback ohne Ergebnis (${path.basename(file.path)}).`
+            );
+          }
+        } catch (error) {
+          logger.warn('mediainfo:track-fallback:failed', {
+            jobId,
+            inputPath: file.path,
+            error: errorToMeta(error)
+          });
+        }
+      }
+
+      mediaInfoByPath[file.path] = parsedMediaInfo;
       mediaInfoRuns.push({
         filePath: file.path,
-        runInfo: result.runInfo
+        runInfo: result.runInfo,
+        fallbackRunInfo
       });
 
       const partialReview = buildReviewSnapshot(i + 1);
@@ -6175,6 +6716,49 @@ class PipelineService extends EventEmitter {
           `Post-Encode Skripte abgeschlossen: ${postEncodeScriptsSummary.succeeded} erfolgreich, ${postEncodeScriptsSummary.failed} fehlgeschlagen, ${postEncodeScriptsSummary.skipped} übersprungen.${postEncodeScriptsSummary.aborted ? ' Kette wurde abgebrochen.' : ''}`
         );
       }
+      let finalizedRawPath = job.raw_path || null;
+      if (job.raw_path) {
+        const currentRawPath = String(job.raw_path || '').trim();
+        const completedRawPath = buildCompletedRawPath(currentRawPath);
+        if (completedRawPath && completedRawPath !== currentRawPath) {
+          if (fs.existsSync(completedRawPath)) {
+            logger.warn('encoding:raw-dir-finalize:target-exists', {
+              jobId,
+              sourceRawPath: currentRawPath,
+              targetRawPath: completedRawPath
+            });
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `RAW-Ordner konnte nicht als abgeschlossen markiert werden (Ziel existiert bereits): ${completedRawPath}`
+            );
+          } else {
+            try {
+              fs.renameSync(currentRawPath, completedRawPath);
+              await historyService.updateRawPathByOldPath(currentRawPath, completedRawPath);
+              finalizedRawPath = completedRawPath;
+              await historyService.appendLog(
+                jobId,
+                'SYSTEM',
+                `RAW-Ordner als abgeschlossen markiert: ${currentRawPath} -> ${completedRawPath}`
+              );
+            } catch (rawRenameError) {
+              logger.warn('encoding:raw-dir-finalize:rename-failed', {
+                jobId,
+                sourceRawPath: currentRawPath,
+                targetRawPath: completedRawPath,
+                error: errorToMeta(rawRenameError)
+              });
+              await historyService.appendLog(
+                jobId,
+                'SYSTEM',
+                `RAW-Ordner konnte nicht als abgeschlossen markiert werden: ${rawRenameError.message}`
+              );
+            }
+          }
+        }
+      }
+
       const handbrakeInfoWithPostScripts = {
         ...handbrakeInfo,
         preEncodeScripts: preEncodeScriptsSummary,
@@ -6186,6 +6770,8 @@ class PipelineService extends EventEmitter {
         status: 'FINISHED',
         last_state: 'FINISHED',
         end_time: nowIso(),
+        raw_path: finalizedRawPath,
+        rip_successful: 1,
         output_path: finalizedOutputPath,
         error_message: null
       });
@@ -6310,14 +6896,11 @@ class PipelineService extends EventEmitter {
 
     ensureDir(rawBaseDir);
 
-    const metadataBase = sanitizeFileName(
-      renderTemplate('${title} (${year}) [${imdbId}]', {
-        title: job.title || job.detected_title || `job-${jobId}`,
-        year: job.year || new Date().getFullYear(),
-        imdbId: job.imdb_id || `job-${jobId}`
-      })
-    );
-    const rawDirName = sanitizeFileName(`${metadataBase} - RAW - job-${jobId}`);
+    const metadataBase = buildRawMetadataBase({
+      title: job.title || job.detected_title || null,
+      year: job.year || null
+    }, jobId);
+    const rawDirName = buildRawDirName(metadataBase, jobId, { incomplete: true });
     const rawJobDir = path.join(rawBaseDir, rawDirName);
     ensureDir(rawJobDir);
     logger.info('rip:raw-dir-created', { jobId, rawJobDir });
@@ -6364,6 +6947,10 @@ class PipelineService extends EventEmitter {
       message: `${job.title || job.detected_title || `Job #${jobId}`} (${device.path || 'disc'})`
     });
 
+    const backupOutputBase = ripMode === 'backup' && mediaProfile === 'dvd'
+      ? sanitizeFileName(job.title || job.detected_title || `disc-${jobId}`)
+      : null;
+
     await historyService.updateJob(jobId, {
       status: 'RIPPING',
       last_state: 'RIPPING',
@@ -6383,14 +6970,11 @@ class PipelineService extends EventEmitter {
     try {
       await this.ensureMakeMKVRegistration(jobId, 'RIPPING');
 
-      const isoOutputBase = ripMode === 'backup' && mediaProfile === 'dvd'
-        ? sanitizeFileName(job.title || job.detected_title || `disc-${jobId}`)
-        : null;
       const ripConfig = await settingsService.buildMakeMKVRipConfig(rawJobDir, device, {
         selectedTitleId: effectiveSelectedTitleId,
         mediaProfile,
         settingsMap: settings,
-        isoOutputBase
+        backupOutputBase
       });
       logger.info('rip:command', {
         jobId,
@@ -6452,24 +7036,54 @@ class PipelineService extends EventEmitter {
           });
         }
       }
-      if (ripMode === 'backup' && mediaProfile === 'dvd') {
-        const isoPath = ensureDvdBackupIso(rawJobDir);
-        if (isoPath) {
-          await historyService.appendLog(jobId, 'SYSTEM', `DVD-Backup ISO: ${path.basename(isoPath)}`);
-        } else {
-          logger.warn('rip:dvd-backup:no-iso', { jobId, rawJobDir });
-        }
-      }
 
       const mkInfoBeforeRip = this.safeParseJson(job.makemkv_info_json);
       await historyService.updateJob(jobId, {
         makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile({
           ...makemkvInfo,
           analyzeContext: mkInfoBeforeRip?.analyzeContext || null
-        }, mediaProfile))
+        }, mediaProfile)),
+        rip_successful: 1
       });
 
-      const review = await this.runReviewForRawJob(jobId, rawJobDir, {
+      // Rename Incomplete_ prefix away now that the rip is complete and successful.
+      let activeRawJobDir = rawJobDir;
+      const completedRawJobDir = buildCompletedRawPath(rawJobDir);
+      if (completedRawJobDir && completedRawJobDir !== rawJobDir) {
+        if (fs.existsSync(completedRawJobDir)) {
+          logger.warn('rip:raw-complete:rename-skip', { jobId, rawJobDir, completedRawJobDir });
+          await historyService.appendLog(
+            jobId,
+            'SYSTEM',
+            `RAW-Ordner konnte nach Rip nicht umbenannt werden (Zielordner existiert): ${completedRawJobDir}`
+          );
+        } else {
+          try {
+            fs.renameSync(rawJobDir, completedRawJobDir);
+            activeRawJobDir = completedRawJobDir;
+            await historyService.updateRawPathByOldPath(rawJobDir, completedRawJobDir);
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `RAW-Ordner nach erfolgreichem Rip umbenannt: ${rawJobDir} → ${completedRawJobDir}`
+            );
+          } catch (renameError) {
+            logger.warn('rip:raw-complete:rename-failed', {
+              jobId,
+              rawJobDir,
+              completedRawJobDir,
+              error: errorToMeta(renameError)
+            });
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `RAW-Ordner konnte nach Rip nicht umbenannt werden: ${renameError.message}`
+            );
+          }
+        }
+      }
+
+      const review = await this.runReviewForRawJob(jobId, activeRawJobDir, {
         mode: 'rip',
         mediaProfile
       });
@@ -6784,6 +7398,16 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    const hasRawInput = Boolean(
+      hasBluRayBackupStructure(sourceJob.raw_path)
+      || findPreferredRawInput(sourceJob.raw_path)
+    );
+    if (!hasRawInput) {
+      const error = new Error('Review-Neustart nicht möglich: keine Mediendateien im RAW-Pfad gefunden. Disc muss zuerst gerippt werden.');
+      error.statusCode = 400;
+      throw error;
+    }
+
     const currentStatus = String(sourceJob.status || '').trim().toUpperCase();
     if (['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(currentStatus)) {
       const error = new Error(`Review-Neustart nicht möglich: Job ${jobId} ist noch aktiv (${currentStatus}).`);
@@ -6839,6 +7463,19 @@ class PipelineService extends EventEmitter {
       `Review-Neustart aus RAW angefordert.${forcePlaylistReselection ? ' Playlist-Auswahl wird zurückgesetzt.' : ''}`
     );
 
+    await this.setState('MEDIAINFO_CHECK', {
+      activeJobId: jobId,
+      progress: 0,
+      eta: null,
+      statusText: 'Titel-/Spurprüfung wird neu gestartet...',
+      context: {
+        ...(this.snapshot.context || {}),
+        jobId,
+        reviewConfirmed: false,
+        mediaInfoReview: null
+      }
+    });
+
     this.runReviewForRawJob(jobId, sourceJob.raw_path, {
       mode: options?.mode || 'reencode',
       sourceJobId: jobId,
@@ -6893,6 +7530,31 @@ class PipelineService extends EventEmitter {
     if (!processHandle) {
       const runningJob = await historyService.getJobById(normalizedJobId);
       const status = String(runningJob?.status || '').trim().toUpperCase();
+
+      if (status === 'READY_TO_ENCODE') {
+        // Kein laufender Prozess – Job direkt abbrechen
+        await historyService.updateJob(normalizedJobId, {
+          status: 'CANCELLED',
+          last_state: 'CANCELLED',
+          end_time: nowIso(),
+          error_message: 'Vom Benutzer abgebrochen.'
+        });
+        await historyService.appendLog(normalizedJobId, 'USER_ACTION', 'Abbruch im Status READY_TO_ENCODE.');
+        await this.setState('CANCELLED', {
+          activeJobId: normalizedJobId,
+          progress: 0,
+          eta: null,
+          statusText: 'Vom Benutzer abgebrochen.',
+          context: {
+            jobId: normalizedJobId,
+            rawPath: runningJob?.raw_path || null,
+            error: 'Vom Benutzer abgebrochen.',
+            canRestartReviewFromRaw: Boolean(runningJob?.raw_path)
+          }
+        });
+        return { cancelled: true, queuedOnly: false, jobId: normalizedJobId };
+      }
+
       if (['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(status)) {
         this.cancelRequestedByJob.add(normalizedJobId);
         await historyService.appendLog(
@@ -7107,7 +7769,11 @@ class PipelineService extends EventEmitter {
     );
     let hasRawPath = false;
     try {
-      hasRawPath = Boolean(job?.raw_path && fs.existsSync(job.raw_path));
+      hasRawPath = Boolean(
+        job?.raw_path
+        && fs.existsSync(job.raw_path)
+        && (hasBluRayBackupStructure(job.raw_path) || findPreferredRawInput(job.raw_path))
+      );
     } catch (_error) {
       hasRawPath = false;
     }

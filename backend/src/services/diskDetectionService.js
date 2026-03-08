@@ -28,16 +28,38 @@ function normalizeMediaProfile(rawValue) {
   if (!value) {
     return null;
   }
-  if (value === 'bluray' || value === 'blu-ray' || value === 'bd' || value === 'bdmv') {
+  if (
+    value === 'bluray'
+    || value === 'blu-ray'
+    || value === 'blu_ray'
+    || value === 'bd'
+    || value === 'bdmv'
+    || value === 'bdrom'
+    || value === 'bd-rom'
+    || value === 'bd-r'
+    || value === 'bd-re'
+  ) {
     return 'bluray';
   }
-  if (value === 'dvd') {
+  if (
+    value === 'dvd'
+    || value === 'dvdvideo'
+    || value === 'dvd-video'
+    || value === 'dvdrom'
+    || value === 'dvd-rom'
+    || value === 'video_ts'
+    || value === 'iso9660'
+  ) {
     return 'dvd';
   }
   if (value === 'disc' || value === 'other' || value === 'sonstiges' || value === 'cd') {
     return 'other';
   }
   return null;
+}
+
+function isSpecificMediaProfile(value) {
+  return value === 'bluray' || value === 'dvd';
 }
 
 function inferMediaProfileFromTextParts(parts) {
@@ -49,12 +71,52 @@ function inferMediaProfileFromTextParts(parts) {
   if (!markerText) {
     return null;
   }
-  if (/(^|[\s_-])bdmv($|[\s_-])|blu[\s-]?ray|bd-rom|bd-r|bd-re/.test(markerText)) {
+  if (/(^|[\s_-])bdmv($|[\s_-])|blu[\s-]?ray|bd[\s_-]?rom|bd-r|bd-re/.test(markerText)) {
     return 'bluray';
   }
-  if (/(^|[\s_-])video_ts($|[\s_-])|dvd/.test(markerText)) {
+  if (/(^|[\s_-])video_ts($|[\s_-])|dvd|iso9660/.test(markerText)) {
     return 'dvd';
   }
+  return null;
+}
+
+function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
+  const fstype = String(rawFsType || '').trim().toLowerCase();
+  const model = String(rawModel || '').trim().toLowerCase();
+  const hasBlurayModelMarker = /(blu[\s-]?ray|bd[\s_-]?rom|bd-r|bd-re)/.test(model);
+  const hasDvdModelMarker = /dvd/.test(model);
+  const hasCdOnlyModelMarker = /(^|[\s_-])cd([\s_-]|$)|cd-?rom/.test(model) && !hasBlurayModelMarker && !hasDvdModelMarker;
+
+  if (!fstype) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasDvdModelMarker) {
+      return 'dvd';
+    }
+    return null;
+  }
+
+  if (fstype.includes('udf')) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasDvdModelMarker) {
+      return 'dvd';
+    }
+    return 'dvd';
+  }
+
+  if (fstype.includes('iso9660') || fstype.includes('cdfs')) {
+    if (hasBlurayModelMarker) {
+      return 'bluray';
+    }
+    if (hasCdOnlyModelMarker) {
+      return 'other';
+    }
+    return 'dvd';
+  }
+
   return null;
 }
 
@@ -290,8 +352,8 @@ class DiskDetectionService extends EventEmitter {
       return null;
     }
 
-    const hasMedia = await this.checkMediaPresent(devicePath);
-    if (!hasMedia) {
+    const mediaState = await this.checkMediaPresent(devicePath);
+    if (!mediaState.hasMedia) {
       logger.debug('detect:explicit:no-media', { devicePath });
       return null;
     }
@@ -299,12 +361,13 @@ class DiskDetectionService extends EventEmitter {
 
     const details = await this.getBlockDeviceInfo();
     const match = details.find((entry) => entry.path === devicePath || `/dev/${entry.name}` === devicePath) || {};
+    const detectedFsType = String(match.fstype || mediaState.type || '').trim() || null;
 
     const mediaProfile = await this.inferMediaProfile(devicePath, {
       discLabel,
       label: match.label,
       model: match.model,
-      fstype: match.fstype,
+      fstype: detectedFsType,
       mountpoint: match.mountpoint
     });
 
@@ -316,7 +379,7 @@ class DiskDetectionService extends EventEmitter {
       label: match.label || null,
       discLabel: discLabel || null,
       mountpoint: match.mountpoint || null,
-      fstype: match.fstype || null,
+      fstype: detectedFsType,
       mediaProfile: mediaProfile || null,
       index: this.guessDiscIndex(match.name || devicePath)
     };
@@ -342,17 +405,18 @@ class DiskDetectionService extends EventEmitter {
         continue;
       }
 
-      const hasMedia = await this.checkMediaPresent(path);
-      if (!hasMedia) {
+      const mediaState = await this.checkMediaPresent(path);
+      if (!mediaState.hasMedia) {
         continue;
       }
       const discLabel = await this.getDiscLabel(path);
+      const detectedFsType = String(item.fstype || mediaState.type || '').trim() || null;
 
       const mediaProfile = await this.inferMediaProfile(path, {
         discLabel,
         label: item.label,
         model: item.model,
-        fstype: item.fstype,
+        fstype: detectedFsType,
         mountpoint: item.mountpoint
       });
 
@@ -364,7 +428,7 @@ class DiskDetectionService extends EventEmitter {
         label: item.label || null,
         discLabel: discLabel || null,
         mountpoint: item.mountpoint || null,
-        fstype: item.fstype || null,
+        fstype: detectedFsType,
         mediaProfile: mediaProfile || null,
         index: this.guessDiscIndex(item.name)
       };
@@ -404,12 +468,19 @@ class DiskDetectionService extends EventEmitter {
   async checkMediaPresent(devicePath) {
     try {
       const { stdout } = await execFileAsync('blkid', ['-o', 'value', '-s', 'TYPE', devicePath]);
-      const has = stdout.trim().length > 0;
-      logger.debug('blkid:result', { devicePath, hasMedia: has, type: stdout.trim() });
-      return has;
+      const type = String(stdout || '').trim().toLowerCase();
+      const has = type.length > 0;
+      logger.debug('blkid:result', { devicePath, hasMedia: has, type });
+      return {
+        hasMedia: has,
+        type: type || null
+      };
     } catch (error) {
       logger.debug('blkid:no-media-or-fail', { devicePath, error: errorToMeta(error) });
-      return false;
+      return {
+        hasMedia: false,
+        type: null
+      };
     }
   }
 
@@ -427,17 +498,27 @@ class DiskDetectionService extends EventEmitter {
 
   async inferMediaProfile(devicePath, hints = {}) {
     const explicit = normalizeMediaProfile(hints?.mediaProfile);
-    if (explicit) {
+    if (isSpecificMediaProfile(explicit)) {
       return explicit;
     }
 
     const hinted = inferMediaProfileFromTextParts([
       hints?.discLabel,
       hints?.label,
-      hints?.fstype
+      hints?.fstype,
+      hints?.model
     ]);
     if (hinted) {
       return hinted;
+    }
+
+    const hintFstype = String(hints?.fstype || '').trim().toLowerCase();
+    const byFsTypeHint = inferMediaProfileFromFsTypeAndModel(hints?.fstype, hints?.model);
+    // UDF is used for both Blu-ray (UDF 2.x) and DVD (UDF 1.x). Without a clear model
+    // marker identifying it as Blu-ray, a 'dvd' result from UDF is ambiguous. Skip the
+    // early return and fall through to the blkid check which uses the UDF version number.
+    if (byFsTypeHint && !(hintFstype.includes('udf') && byFsTypeHint !== 'bluray')) {
+      return byFsTypeHint;
     }
 
     const mountpoint = String(hints?.mountpoint || '').trim();
@@ -477,19 +558,24 @@ class DiskDetectionService extends EventEmitter {
       const byBlkidMarker = inferMediaProfileFromTextParts([
         payload.LABEL,
         payload.TYPE,
-        payload.VERSION
+        payload.VERSION,
+        payload.APPLICATION_ID,
+        hints?.model
       ]);
       if (byBlkidMarker) {
         return byBlkidMarker;
       }
 
       const type = String(payload.TYPE || '').trim().toLowerCase();
-      if (type === 'udf') {
-        const version = Number.parseFloat(String(payload.VERSION || '').replace(',', '.'));
-        if (Number.isFinite(version)) {
-          return version >= 2 ? 'bluray' : 'dvd';
+      const byBlkidFsType = inferMediaProfileFromFsTypeAndModel(type, hints?.model);
+      if (byBlkidFsType) {
+        if (type.includes('udf')) {
+          const version = Number.parseFloat(String(payload.VERSION || '').replace(',', '.'));
+          if (Number.isFinite(version)) {
+            return version >= 2 ? 'bluray' : 'dvd';
+          }
         }
-        return 'dvd';
+        return byBlkidFsType;
       }
     } catch (error) {
       logger.debug('infer-media-profile:blkid-failed', {
@@ -498,7 +584,7 @@ class DiskDetectionService extends EventEmitter {
       });
     }
 
-    return null;
+    return explicit === 'other' ? 'other' : null;
   }
 
   guessDiscIndex(name) {
