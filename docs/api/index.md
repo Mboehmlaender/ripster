@@ -42,6 +42,14 @@ Konfigurierbar über die Umgebungsvariable `PORT`.
 
     [:octicons-arrow-right-24: History API](history.md)
 
+-   :material-clock-outline: **Cron API**
+
+    ---
+
+    Cron-Jobs verwalten, manuell auslösen und Ausführungs-Logs abrufen.
+
+    [:octicons-arrow-right-24: Cron API](crons.md)
+
 -   :material-lightning-bolt: **WebSocket Events**
 
     ---

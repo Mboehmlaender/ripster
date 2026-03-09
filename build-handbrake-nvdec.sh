@@ -81,15 +81,23 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 3. Alte Installation entfernen
+# 3. Alle vorhandenen HandBrake-Installationen entfernen
 # --------------------------------------------------------------------------
-if command -v HandBrakeCLI &>/dev/null; then
-  EXISTING=$(HandBrakeCLI --version 2>&1 | head -1)
-  warn "Entferne vorhandenes HandBrakeCLI: ${EXISTING}"
-  apt-get remove -y handbrake-cli 2>/dev/null || true
-  snap remove handbrake-cli 2>/dev/null || true
-  rm -f /usr/bin/HandBrakeCLI /usr/local/bin/HandBrakeCLI
-fi
+info "Entferne alle vorhandenen HandBrake-Installationen..."
+apt-get remove -y handbrake-cli handbrake 2>/dev/null || true
+snap remove handbrake-cli 2>/dev/null || true
+rm -f /usr/bin/HandBrakeCLI \
+      /usr/local/bin/HandBrakeCLI \
+      /snap/bin/handbrake-cli \
+      /snap/bin/HandBrakeCLI
+while true; do
+  FOUND=$(command -v HandBrakeCLI 2>/dev/null || true)
+  [[ -z "$FOUND" ]] && break
+  warn "Entferne: $FOUND"
+  rm -f "$FOUND"
+done
+hash -r 2>/dev/null || true
+ok "Alte HandBrake-Installation(en) entfernt"
 
 # --------------------------------------------------------------------------
 # 4. Quellcode herunterladen

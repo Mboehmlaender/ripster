@@ -188,6 +188,29 @@ install_makemkv() {
   warn "Beta-Key: https://www.makemkv.com/forum/viewtopic.php?t=1053"
 }
 
+remove_all_handbrake() {
+  info "Entferne alle vorhandenen HandBrake-Installationen..."
+  # apt
+  apt-get remove -y handbrake-cli handbrake 2>/dev/null || true
+  # snap
+  snap remove handbrake-cli 2>/dev/null || true
+  # bekannte Binär-Pfade
+  rm -f /usr/bin/HandBrakeCLI \
+        /usr/local/bin/HandBrakeCLI \
+        /snap/bin/handbrake-cli \
+        /snap/bin/HandBrakeCLI
+  # alle weiteren Fundstellen über PATH
+  while true; do
+    local found
+    found=$(command -v HandBrakeCLI 2>/dev/null || true)
+    [[ -z "$found" ]] && break
+    warn "Entferne: $found"
+    rm -f "$found"
+  done
+  hash -r 2>/dev/null || true
+  ok "Alte HandBrake-Installation(en) entfernt"
+}
+
 build_handbrake_nvdec() {
   header "HandBrake ${HANDBRAKE_VERSION} mit NVDEC aus Quellcode bauen"
 
@@ -195,6 +218,9 @@ build_handbrake_nvdec() {
   tmp_dir=$(mktemp -d)
   local src_url="https://github.com/HandBrake/HandBrake/releases/download/${HANDBRAKE_VERSION}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
   local tarball="${tmp_dir}/handbrake-src.tar.bz2"
+
+  # Alte Installationen vollständig entfernen
+  remove_all_handbrake
 
   # Build-Abhängigkeiten
   info "Installiere Build-Abhängigkeiten..."
@@ -213,7 +239,6 @@ build_handbrake_nvdec() {
   if ! dpkg -l 2>/dev/null | grep -q '^ii.*nvidia-cuda-toolkit'; then
     apt-get install -y nvidia-cuda-toolkit >/dev/null 2>&1 || {
       warn "nvidia-cuda-toolkit nicht verfügbar – versuche Fallback-Header..."
-      # Fallback: nur die minimalen Header aus dem NVIDIA-CUDA-Repo
       local cuda_keyring="/tmp/cuda-keyring.deb"
       local ubuntu_ver="${VERSION_ID//./}"
       curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ubuntu_ver}/x86_64/cuda-keyring_1.1-1_all.deb" \
@@ -225,14 +250,6 @@ build_handbrake_nvdec() {
     }
   fi
   ok "Build-Abhängigkeiten installiert"
-
-  # Alte Installation entfernen
-  if command_exists HandBrakeCLI; then
-    warn "Entferne vorhandenes HandBrakeCLI..."
-    apt-get remove -y handbrake-cli 2>/dev/null || true
-    snap remove handbrake-cli 2>/dev/null || true
-    rm -f /usr/bin/HandBrakeCLI /usr/local/bin/HandBrakeCLI
-  fi
 
   # Quellcode herunterladen
   info "Lade HandBrake ${HANDBRAKE_VERSION} herunter..."

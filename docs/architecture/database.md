@@ -7,11 +7,15 @@ Ripster verwendet **SQLite3** als Datenbank. Die Datenbankdatei liegt unter `bac
 ## Schema-Übersicht
 
 ```sql
--- Vier Haupt-Tabellen
 settings_schema    -- Einstellungs-Definitionen
 settings_values    -- Benutzer-Werte
 jobs               -- Rip-Job-Datensätze
 pipeline_state     -- Aktueller Pipeline-Zustand (Singleton)
+scripts            -- Shell-Skripte für Pre-/Post-Encode-Ausführung
+script_chains      -- Geordnete Ketten aus mehreren Skripten
+script_chain_steps -- Einzelschritte einer Skript-Kette
+cron_jobs          -- Zeitgesteuerte Aufgaben (eigener Cron-Parser)
+cron_run_logs      -- Ausführungs-Protokolle für Cron-Jobs
 ```
 
 ---
@@ -22,26 +26,30 @@ Die wichtigste Tabelle – speichert alle Ripping-Jobs.
 
 ```sql
 CREATE TABLE jobs (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  status          TEXT NOT NULL,        -- Aktueller Status
-  title           TEXT,                 -- Filmtitel (von OMDb)
-  imdb_id         TEXT,                 -- IMDb-ID
-  omdb_year       TEXT,                 -- Erscheinungsjahr
-  omdb_type       TEXT,                 -- movie/series
-  omdb_poster     TEXT,                 -- Poster-URL
-  raw_path        TEXT,                 -- Pfad zur Raw-MKV
-  output_path     TEXT,                 -- Pfad zur Ausgabedatei
-  playlist        TEXT,                 -- Gewählte Blu-ray Playlist
-  makemkv_output  TEXT,                 -- MakeMKV-Ausgabe (JSON)
-  mediainfo_output TEXT,                -- MediaInfo-Ausgabe (JSON)
-  encode_plan     TEXT,                 -- Encode-Plan (JSON)
-  handbrake_log   TEXT,                 -- HandBrake Log-Pfad
-  error_message   TEXT,                 -- Fehlermeldung bei ERROR
-  error_details   TEXT                  -- Detaillierte Fehler-Infos
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  status           TEXT NOT NULL,        -- Aktueller Status
+  title            TEXT,                 -- Filmtitel (von OMDb)
+  imdb_id          TEXT,                 -- IMDb-ID
+  omdb_year        TEXT,                 -- Erscheinungsjahr
+  omdb_type        TEXT,                 -- movie/series
+  omdb_poster      TEXT,                 -- Poster-URL
+  raw_path         TEXT,                 -- Pfad zur Raw-MKV
+  output_path      TEXT,                 -- Pfad zur Ausgabedatei
+  playlist         TEXT,                 -- Gewählte Blu-ray Playlist
+  rip_successful   INTEGER NOT NULL DEFAULT 0,  -- 1 wenn Rip abgeschlossen
+  makemkv_output   TEXT,                 -- MakeMKV-Ausgabe (JSON)
+  mediainfo_output TEXT,                 -- MediaInfo-Ausgabe (JSON)
+  encode_plan      TEXT,                 -- Encode-Plan (JSON)
+  handbrake_log    TEXT,                 -- HandBrake Log-Pfad
+  error_message    TEXT,                 -- Fehlermeldung bei ERROR
+  error_details    TEXT                  -- Detaillierte Fehler-Infos
 );
 ```
+
+!!! info "rip_successful"
+    Das Feld `rip_successful` wird auf `1` gesetzt, sobald MakeMKV den Rip-Schritt erfolgreich abgeschlossen hat – unabhängig davon, ob danach ein Encode-Fehler auftritt. Damit lässt sich in der History unterscheiden, ob eine Raw-Datei vorhanden ist.
 
 ### Job-Status-Werte
 
@@ -111,6 +119,87 @@ CREATE TABLE settings_values (
 
 ---
 
+## Tabelle: scripts
+
+Verwaltet Shell-Skripte, die vor oder nach dem Encode-Schritt ausgeführt werden können.
+
+```sql
+CREATE TABLE scripts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  script_body TEXT NOT NULL,
+  order_index INTEGER NOT NULL DEFAULT 0,  -- Sortierposition in der UI
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+## Tabelle: script_chains
+
+Geordnete Ketten, die mehrere Skripte sequenziell zusammenfassen.
+
+```sql
+CREATE TABLE script_chains (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  order_index INTEGER NOT NULL DEFAULT 0,  -- Sortierposition in der UI
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE script_chain_steps (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain_id       INTEGER NOT NULL REFERENCES script_chains(id) ON DELETE CASCADE,
+  script_id      INTEGER NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+  step_order     INTEGER NOT NULL DEFAULT 0,
+  created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+!!! info "Sortierung"
+    `order_index` in `scripts` und `script_chains` wird über die API (`reorderScripts` / `reorderChains`) per Drag & Drop in der UI gesetzt und bleibt persistent gespeichert.
+
+---
+
+## Tabellen: cron_jobs & cron_run_logs
+
+Speichern den Zeitplan und die Ausführungs-Historie des eingebauten Cron-Systems.
+
+```sql
+CREATE TABLE cron_jobs (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  name             TEXT NOT NULL,
+  cron_expression  TEXT NOT NULL,     -- 5-Felder-Ausdruck (min h d m wd)
+  source_type      TEXT NOT NULL,     -- "script" oder "chain"
+  source_id        INTEGER NOT NULL,  -- ID des Skripts/der Kette
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  pushover_enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at      TEXT,
+  last_run_status  TEXT,              -- "success", "error", "running"
+  next_run_at      TEXT,
+  created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE cron_run_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  cron_job_id INTEGER NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT,
+  status      TEXT NOT NULL,   -- "success", "error", "running"
+  exit_code   INTEGER,
+  stdout      TEXT,
+  stderr      TEXT,
+  triggered_by TEXT NOT NULL DEFAULT 'cron',  -- "cron" oder "manual"
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+!!! info "Log-Rotation"
+    Pro Cron-Job werden maximal **50 Log-Einträge** gespeichert; ältere Einträge werden automatisch gelöscht. Stdout/Stderr werden auf **100.000 Zeichen** begrenzt.
+
+---
+
 ## Schema-Migrationen
 
 `database.js` implementiert **automatische Migrationen**:
@@ -126,7 +215,7 @@ Falls die Datenbankdatei korrupt ist:
 
 ```
 1. Korrupte Datei wird erkannt (Verbindungsfehler / Integritätsprüfung)
-2. Datei wird in /backend/data/quarantine/ verschoben
+2. Datei wird in backend/data/corrupt-backups/ verschoben
 3. Neue, leere Datenbank wird erstellt
 4. Schema wird neu initialisiert
 5. Log-Eintrag mit Warnung

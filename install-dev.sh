@@ -183,6 +183,25 @@ install_makemkv() {
   warn "Beta-Key: https://www.makemkv.com/forum/viewtopic.php?t=1053"
 }
 
+remove_all_handbrake() {
+  info "Entferne alle vorhandenen HandBrake-Installationen..."
+  apt-get remove -y handbrake-cli handbrake 2>/dev/null || true
+  snap remove handbrake-cli 2>/dev/null || true
+  rm -f /usr/bin/HandBrakeCLI \
+        /usr/local/bin/HandBrakeCLI \
+        /snap/bin/handbrake-cli \
+        /snap/bin/HandBrakeCLI
+  while true; do
+    local found
+    found=$(command -v HandBrakeCLI 2>/dev/null || true)
+    [[ -z "$found" ]] && break
+    warn "Entferne: $found"
+    rm -f "$found"
+  done
+  hash -r 2>/dev/null || true
+  ok "Alte HandBrake-Installation(en) entfernt"
+}
+
 build_handbrake_nvdec() {
   header "HandBrake ${HANDBRAKE_VERSION} mit NVDEC aus Quellcode bauen"
 
@@ -190,6 +209,9 @@ build_handbrake_nvdec() {
   tmp_dir=$(mktemp -d)
   local src_url="https://github.com/HandBrake/HandBrake/releases/download/${HANDBRAKE_VERSION}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
   local tarball="${tmp_dir}/handbrake-src.tar.bz2"
+
+  # Alte Installationen vollständig entfernen
+  remove_all_handbrake
 
   # Build-Abhängigkeiten
   info "Installiere Build-Abhängigkeiten..."
@@ -219,14 +241,6 @@ build_handbrake_nvdec() {
     }
   fi
   ok "Build-Abhängigkeiten installiert"
-
-  # Alte Installation entfernen
-  if command_exists HandBrakeCLI; then
-    warn "Entferne vorhandenes HandBrakeCLI..."
-    apt-get remove -y handbrake-cli 2>/dev/null || true
-    snap remove handbrake-cli 2>/dev/null || true
-    rm -f /usr/bin/HandBrakeCLI /usr/local/bin/HandBrakeCLI
-  fi
 
   # Quellcode herunterladen
   info "Lade HandBrake ${HANDBRAKE_VERSION} herunter..."

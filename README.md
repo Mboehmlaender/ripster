@@ -2,13 +2,28 @@
 
 Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit MakeMKV + HandBrake inklusive Metadaten-Auswahl, Titel-/Spurprüfung und Job-Historie.
 
+---
+
+> **Neu seit letztem Release**
+>
+> - **Cron-Job-System** – Skripte und Skript-Ketten zeitgesteuert ausführen; eigener Expression-Parser, Ausführungs-Logs, manuelle Auslösung, PushOver-Integration
+> - **DVD-Erkennung verbessert** – robuste Media-Profil-Erkennung (Blu-ray / DVD / CD) aus UDF/ISO9660-Dateisystemtyp, Laufwerk-Modell und Disc-Label
+> - **Pre-Encode-Ausführungen** – Skripte und Ketten können nun auch *vor* dem Encode-Schritt ausgeführt werden (zusätzlich zu Post-Encode)
+> - **Sortierbare Skripte & Ketten** – Reihenfolge über Drag & Drop festlegen; wird persistent in der Datenbank gespeichert
+> - **`rip_successful`-Flag in Jobs** – separates Feld zur Nachverfolgung ob der Rip-Schritt abgeschlossen wurde (unabhängig vom Encode-Status)
+
+---
+
 ## Was Ripster kann
 
 - Disc-Erkennung mit Pipeline-Status in Echtzeit (WebSocket)
+- Robuste Erkennung von Blu-ray, DVD und CD (UDF/ISO9660-Heuristik + Laufwerk-Modell)
 - Metadaten-Suche und Zuordnung über OMDb
 - MakeMKV-Analyse und Rip (MKV oder Backup-Modus)
 - HandBrake-Encode mit Preset + Extra-Args + Track-Override
 - Manuelle Playlist-/Titel-Auswahl bei komplexen Blu-rays
+- Pre- und Post-Encode-Skripte & Skript-Ketten (inkl. Drag-and-Drop-Sortierung)
+- Cron-Jobs: Skripte und Ketten zeitgesteuert ausführen (eigener Expression-Parser, Logs, PushOver)
 - Historie mit Re-Encode, Löschfunktionen und Detailansicht
 - Dateibasierte Logs (Backend + Job-Prozesslogs)
 
@@ -138,14 +153,29 @@ ripster/
 
 ## API-Überblick
 
+**Pipeline**
 - `GET /api/pipeline/state`
 - `POST /api/pipeline/analyze`
 - `POST /api/pipeline/start/:jobId`
 - `POST /api/pipeline/confirm-encode/:jobId`
+
+**History**
 - `GET /api/history`
 - `GET /api/history/:id`
+
+**Settings**
 - `GET /api/settings`
 - `PUT /api/settings`
+
+**Cron-Jobs** _(neu)_
+- `GET /api/crons`
+- `POST /api/crons`
+- `GET /api/crons/:id`
+- `PUT /api/crons/:id`
+- `DELETE /api/crons/:id`
+- `GET /api/crons/:id/logs`
+- `POST /api/crons/:id/run`
+- `POST /api/crons/validate-expression`
 
 ## Troubleshooting
 

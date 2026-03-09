@@ -113,11 +113,18 @@ Disc erkannt.
   "payload": {
     "device": {
       "path": "/dev/sr0",
-      "discLabel": "INCEPTION"
+      "discLabel": "INCEPTION",
+      "label": "INCEPTION",
+      "model": "ASUS BW-16D1HT",
+      "fstype": "udf",
+      "mountpoint": null,
+      "mediaProfile": "bluray"
     }
   }
 }
 ```
+
+`mediaProfile` ist `"bluray"`, `"dvd"`, `"other"` oder `null` (wenn nicht bestimmbar). Der Wert wird aus Dateisystemtyp (UDF/ISO9660), Laufwerk-Modell und Disc-Label abgeleitet.
 
 ### DISC_REMOVED
 
@@ -159,6 +166,22 @@ Fehler im Laufwerkserkennungsdienst.
   }
 }
 ```
+
+### CRON_JOBS_UPDATED
+
+Wird gesendet, wenn ein Cron-Job angelegt, aktualisiert oder gelöscht wurde.
+
+```json
+{
+  "type": "CRON_JOBS_UPDATED",
+  "payload": {
+    "action": "created",
+    "id": 1
+  }
+}
+```
+
+`action` ist `"created"`, `"updated"` oder `"deleted"`.
 
 ---
 

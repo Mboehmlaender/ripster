@@ -1,34 +1,34 @@
-# Post-Encode-Skripte
+# Encode-Skripte (Pre & Post)
 
-Post-Encode-Skripte ermöglichen es, nach erfolgreichem Encoding automatisch beliebige Shell-Befehle oder Programme auszuführen – z. B. zum Verschieben von Dateien, Benachrichtigen externer Dienste oder Auslösen weiterer Verarbeitungsschritte.
+Ripster unterstützt **Pre-Encode-** und **Post-Encode-Ausführungen**: Beliebige Shell-Skripte oder Skript-Ketten können automatisch vor und/oder nach dem Encoding-Schritt laufen – z. B. zum Vorbereiten von Verzeichnissen, Verschieben von Dateien oder Benachrichtigen externer Dienste.
 
 ---
 
 ## Funktionsweise
 
-Nach einem erfolgreich abgeschlossenen Encoding-Schritt führt Ripster die konfigurierten Skripte **sequenziell** in der festgelegten Reihenfolge aus:
-
 ```
-ENCODING abgeschlossen
+READY_TO_ENCODE
         ↓
-Skript 1 ausführen  ← Fehler? → Abbruch
+[Pre-Encode-Ausführungen]  ← Fehler? → Abbruch
+  Skript/Kette 1, 2, …
         ↓
-Skript 2 ausführen  ← Fehler? → Abbruch
+ENCODING
         ↓
-        ...
+[Post-Encode-Ausführungen]  ← Fehler? → Abbruch
+  Skript/Kette 1, 2, …
         ↓
 FINISHED
 ```
 
 !!! warning "Abbruch bei Fehler"
-    Schlägt ein Skript fehl (Exit-Code ≠ 0), werden alle nachfolgenden Skripte **nicht mehr ausgeführt**.
-    Der Job bleibt im Abschlusszustand `FINISHED`; der Fehler wird in Log/Status-Text und im `postEncodeScripts`-Summary festgehalten.
+    Schlägt eine Ausführung fehl (Exit-Code ≠ 0), werden alle nachfolgenden Ausführungen der gleichen Phase **nicht mehr ausgeführt**.
+    Der Job bleibt im Abschlusszustand `FINISHED`; der Fehler wird in Log/Status-Text und im Summary festgehalten.
 
 ---
 
-## Skript-Verwaltung
+## Skript- und Ketten-Verwaltung
 
-Skripte werden über die **Einstellungen-Seite** angelegt und verwaltet. Sie stehen danach in jedem Encode-Review zur Auswahl.
+Skripte und Skript-Ketten werden über die **Einstellungen-Seite** angelegt und verwaltet. Die Reihenfolge in der Liste kann per **Drag & Drop** geändert werden und bleibt persistent gespeichert.
 
 ### Skript anlegen
 
@@ -39,6 +39,10 @@ Navigiere zu **Einstellungen → Skripte** und klicke **"Neues Skript"**:
 | **Name** | Anzeigename des Skripts (z. B. `Zu Plex verschieben`) |
 | **Befehl** | Shell-Befehl oder Skriptpfad (z. B. `/home/michael/scripts/move-to-plex.sh`) |
 | **Beschreibung** | Optionale Erklärung |
+
+### Skript-Ketten
+
+Eine **Skript-Kette** fasst mehrere Skripte zu einer benannten Einheit zusammen, die als ganzes ausgewählt werden kann. Nützlich für wiederkehrende Kombinationen (z. B. „Move + Notify Plex + Webhook"). Ketten werden genauso wie einzelne Skripte im Review-Panel ausgewählt.
 
 ### Verfügbare Umgebungsvariablen
 
@@ -78,26 +82,35 @@ curl -s -X POST https://mein-webhook.example.com/ripster \
 
 ---
 
-## Skript im Encode-Review auswählen
+## Im Encode-Review auswählen
 
-Im `READY_TO_ENCODE`-Zustand zeigt das **MediaInfoReviewPanel** einen Skript-Abschnitt:
+Im `READY_TO_ENCODE`-Zustand zeigt das **MediaInfoReviewPanel** zwei Abschnitte:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ Post-Encode-Skripte                                      │
+│ Pre-Encode Ausführungen (optional)                       │
 ├──────────────────────────────────────────────────────────┤
-│ Ausgewählte Skripte (Reihenfolge per Drag & Drop):       │
-│  ≡  1. Zu Plex verschieben                    [Entfernen]│
-│  ≡  2. Webhook auslösen                       [Entfernen]│
+│  ≡  1. Verzeichnis vorbereiten (Skript)       [Entfernen]│
 ├──────────────────────────────────────────────────────────┤
-│ Skript hinzufügen: [Zu Jellyfin verschieben ▾] [+ Hinzuf.]│
+│ Hinzufügen: [Skript/Kette auswählen ▾]       [+ Hinzuf.]│
+└──────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────┐
+│ Post-Encode Ausführungen (optional)                      │
+├──────────────────────────────────────────────────────────┤
+│  ≡  1. Zu Plex verschieben (Skript)           [Entfernen]│
+│  ≡  2. Notify-Kette (Kette)                   [Entfernen]│
+├──────────────────────────────────────────────────────────┤
+│ Hinzufügen: [Skript/Kette auswählen ▾]       [+ Hinzuf.]│
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **Reihenfolge** per Drag & Drop ändern
-- **Hinzufügen** aus der Dropdown-Liste aller konfigurierten Skripte
-- **Entfernen** einzelner Skripte aus der aktuellen Auswahl
-- Skripte können pro Job unterschiedlich gewählt werden
+- **Pre-Encode** und **Post-Encode** werden separat konfiguriert
+- Sowohl **einzelne Skripte** als auch **Skript-Ketten** können in beiden Phasen ausgewählt werden
+- **Reihenfolge** per Drag & Drop innerhalb jeder Phase ändern
+- **Hinzufügen** aus der Dropdown-Liste aller konfigurierten Skripte und Ketten
+- **Entfernen** einzelner Einträge
+- Auswahl kann pro Job frei variiert werden
 
 ---
 

@@ -62,12 +62,13 @@ nav:
     - Workflow & Zustände: pipeline/workflow.md
     - Encode-Planung & Track-Auswahl: pipeline/encoding.md
     - Playlist-Analyse: pipeline/playlist-analysis.md
-    - Post-Encode-Skripte: pipeline/post-encode-scripts.md
+    - Encode-Skripte (Pre & Post): pipeline/post-encode-scripts.md
   - API-Referenz:
     - api/index.md
     - Pipeline API: api/pipeline.md
     - Settings API: api/settings.md
     - History API: api/history.md
+    - Cron API: api/crons.md
     - WebSocket Events: api/websocket.md
   - Konfiguration:
     - configuration/index.md
