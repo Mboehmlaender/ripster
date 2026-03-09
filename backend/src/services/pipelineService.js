@@ -2633,14 +2633,16 @@ class PipelineService extends EventEmitter {
     return String(mkInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
   }
 
-  resolveCurrentRawPath(rawBaseDir, storedRawPath) {
+  resolveCurrentRawPath(rawBaseDir, storedRawPath, extraBaseDirs = []) {
     const stored = String(storedRawPath || '').trim();
     if (!stored) {
       return null;
     }
+    const folderName = path.basename(stored);
     const candidates = [stored];
-    if (rawBaseDir) {
-      const byFolder = path.join(rawBaseDir, path.basename(stored));
+    const allBaseDirs = [rawBaseDir, ...extraBaseDirs].filter(Boolean);
+    for (const baseDir of allBaseDirs) {
+      const byFolder = path.join(baseDir, folderName);
       if (!candidates.includes(byFolder)) {
         candidates.push(byFolder);
       }
@@ -2660,7 +2662,13 @@ class PipelineService extends EventEmitter {
   async migrateRawFolderNamingOnStartup(db) {
     const settings = await settingsService.getSettingsMap();
     const rawBaseDir = String(settings?.raw_dir || '').trim();
-    if (!rawBaseDir || !fs.existsSync(rawBaseDir)) {
+    const rawExtraDirs = [
+      settings?.raw_dir_bluray,
+      settings?.raw_dir_dvd,
+      settings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const allRawDirs = [rawBaseDir, ...rawExtraDirs].filter((d) => d && fs.existsSync(d));
+    if (allRawDirs.length === 0) {
       return;
     }
 
@@ -2680,40 +2688,42 @@ class PipelineService extends EventEmitter {
     let missingCount = 0;
     const discoveredByJobId = new Map();
 
-    try {
-      const dirEntries = fs.readdirSync(rawBaseDir, { withFileTypes: true });
-      for (const entry of dirEntries) {
-        if (!entry.isDirectory()) {
-          continue;
+    for (const scanDir of allRawDirs) {
+      try {
+        const dirEntries = fs.readdirSync(scanDir, { withFileTypes: true });
+        for (const entry of dirEntries) {
+          if (!entry.isDirectory()) {
+            continue;
+          }
+          const match = String(entry.name || '').match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
+          if (!match) {
+            continue;
+          }
+          const mappedJobId = Number(match[1]);
+          if (!Number.isFinite(mappedJobId) || mappedJobId <= 0) {
+            continue;
+          }
+          const candidatePath = path.join(scanDir, entry.name);
+          let mtimeMs = 0;
+          try {
+            mtimeMs = Number(fs.statSync(candidatePath).mtimeMs || 0);
+          } catch (_error) {
+            // ignore fs errors and keep zero mtime
+          }
+          const current = discoveredByJobId.get(mappedJobId);
+          if (!current || mtimeMs > current.mtimeMs) {
+            discoveredByJobId.set(mappedJobId, {
+              path: candidatePath,
+              mtimeMs
+            });
+          }
         }
-        const match = String(entry.name || '').match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
-        if (!match) {
-          continue;
-        }
-        const mappedJobId = Number(match[1]);
-        if (!Number.isFinite(mappedJobId) || mappedJobId <= 0) {
-          continue;
-        }
-        const candidatePath = path.join(rawBaseDir, entry.name);
-        let mtimeMs = 0;
-        try {
-          mtimeMs = Number(fs.statSync(candidatePath).mtimeMs || 0);
-        } catch (_error) {
-          // ignore fs errors and keep zero mtime
-        }
-        const current = discoveredByJobId.get(mappedJobId);
-        if (!current || mtimeMs > current.mtimeMs) {
-          discoveredByJobId.set(mappedJobId, {
-            path: candidatePath,
-            mtimeMs
-          });
-        }
+      } catch (scanError) {
+        logger.warn('startup:raw-dir-migrate:scan-failed', {
+          scanDir,
+          error: errorToMeta(scanError)
+        });
       }
-    } catch (scanError) {
-      logger.warn('startup:raw-dir-migrate:scan-failed', {
-        rawBaseDir,
-        error: errorToMeta(scanError)
-      });
     }
 
     for (const row of rows) {
@@ -2728,7 +2738,7 @@ class PipelineService extends EventEmitter {
         ripFlagUpdateCount += 1;
       }
 
-      const currentRawPath = this.resolveCurrentRawPath(rawBaseDir, row.raw_path)
+      const currentRawPath = this.resolveCurrentRawPath(rawBaseDir, row.raw_path, rawExtraDirs)
         || discoveredByJobId.get(jobId)?.path
         || null;
       if (!currentRawPath) {
@@ -2736,6 +2746,8 @@ class PipelineService extends EventEmitter {
         continue;
       }
 
+      // Keep renamed folder in the same base dir as the current path
+      const currentBaseDir = path.dirname(currentRawPath);
       const currentFolderName = path.basename(currentRawPath).replace(/^Incomplete_/i, '').trim();
       const folderYearMatch = currentFolderName.match(/\((19|20)\d{2}\)/);
       const fallbackYear = folderYearMatch
@@ -2748,7 +2760,7 @@ class PipelineService extends EventEmitter {
       }, jobId);
       const shouldBeIncomplete = !isJobFinished(row);
       const desiredRawPath = path.join(
-        rawBaseDir,
+        currentBaseDir,
         buildRawDirName(metadataBase, jobId, { incomplete: shouldBeIncomplete })
       );
 
@@ -2791,7 +2803,7 @@ class PipelineService extends EventEmitter {
         ripFlagUpdateCount,
         conflictCount,
         missingCount,
-        rawBaseDir
+        scannedDirs: allRawDirs
       });
     }
   }
@@ -3814,7 +3826,18 @@ class PipelineService extends EventEmitter {
       };
     }
 
-    if (!job.raw_path || !fs.existsSync(job.raw_path)) {
+    const refreshSettings = await settingsService.getSettingsMap();
+    const refreshRawBaseDir = String(refreshSettings?.raw_dir || '').trim();
+    const refreshRawExtraDirs = [
+      refreshSettings?.raw_dir_bluray,
+      refreshSettings?.raw_dir_dvd,
+      refreshSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedRefreshRawPath = job.raw_path
+      ? this.resolveCurrentRawPath(refreshRawBaseDir, job.raw_path, refreshRawExtraDirs)
+      : null;
+
+    if (!resolvedRefreshRawPath) {
       return {
         triggered: false,
         reason: 'raw_path_missing',
@@ -3822,6 +3845,10 @@ class PipelineService extends EventEmitter {
         jobId: activeJobId,
         rawPath: job.raw_path || null
       };
+    }
+
+    if (resolvedRefreshRawPath !== job.raw_path) {
+      await historyService.updateJob(activeJobId, { raw_path: resolvedRefreshRawPath });
     }
 
     const existingPlan = this.safeParseJson(job.encode_plan_json);
@@ -3834,7 +3861,7 @@ class PipelineService extends EventEmitter {
       `Settings gespeichert (${relevantKeys.join(', ')}). Titel-/Spurprüfung wird mit aktueller Konfiguration neu gestartet.`
     );
 
-    this.runReviewForRawJob(activeJobId, job.raw_path, { mode, sourceJobId }).catch((error) => {
+    this.runReviewForRawJob(activeJobId, resolvedRefreshRawPath, { mode, sourceJobId }).catch((error) => {
       logger.error('settings:refresh-review:failed', {
         jobId: activeJobId,
         relevantKeys,
@@ -5659,7 +5686,12 @@ class PipelineService extends EventEmitter {
 
     const reencodeSettings = await settingsService.getSettingsMap();
     const reencodeRawBaseDir = String(reencodeSettings?.raw_dir || '').trim();
-    const resolvedReencodeRawPath = this.resolveCurrentRawPath(reencodeRawBaseDir, sourceJob.raw_path);
+    const reencodeRawExtraDirs = [
+      reencodeSettings?.raw_dir_bluray,
+      reencodeSettings?.raw_dir_dvd,
+      reencodeSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedReencodeRawPath = this.resolveCurrentRawPath(reencodeRawBaseDir, sourceJob.raw_path, reencodeRawExtraDirs);
     if (!resolvedReencodeRawPath) {
       const error = new Error(`Re-Encode nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;
@@ -7420,7 +7452,12 @@ class PipelineService extends EventEmitter {
 
     const reviewSettings = await settingsService.getSettingsMap();
     const reviewRawBaseDir = String(reviewSettings?.raw_dir || '').trim();
-    const resolvedReviewRawPath = this.resolveCurrentRawPath(reviewRawBaseDir, sourceJob.raw_path);
+    const reviewRawExtraDirs = [
+      reviewSettings?.raw_dir_bluray,
+      reviewSettings?.raw_dir_dvd,
+      reviewSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedReviewRawPath = this.resolveCurrentRawPath(reviewRawBaseDir, sourceJob.raw_path, reviewRawExtraDirs);
     if (!resolvedReviewRawPath) {
       const error = new Error(`Review-Neustart nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;

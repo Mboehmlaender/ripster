@@ -427,7 +427,11 @@ export default function PipelineStatusCard({
     return presetDisplayMap[preset] || preset;
   }, [mediaInfoReview?.selectors?.preset, presetDisplayMap]);
   const buildSelectedTrackSelectionForCurrentTitle = () => {
-    const encodeTitleId = normalizeTitleId(selectedEncodeTitleId);
+    const encodeTitleId = normalizeTitleId(selectedEncodeTitleId)
+      || normalizeTitleId(mediaInfoReview?.encodeInputTitleId)
+      || normalizeTitleId(
+        (Array.isArray(mediaInfoReview?.titles) ? mediaInfoReview.titles : []).find((t) => t?.selectedForEncode)?.id
+      );
     const selectionEntry = encodeTitleId
       ? (trackSelectionByTitle?.[encodeTitleId] || trackSelectionByTitle?.[String(encodeTitleId)] || null)
       : null;

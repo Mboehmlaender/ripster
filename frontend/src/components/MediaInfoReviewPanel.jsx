@@ -709,7 +709,8 @@ export default function MediaInfoReviewPanel({
   const processedFiles = Number(review.processedFiles || titles.length || 0);
   const totalFiles = Number(review.totalFiles || titles.length || 0);
   const playlistRecommendation = review.playlistRecommendation || null;
-  const presetLabel = String(presetDisplayValue || review.selectors?.preset || '').trim() || '-';
+  const rawPreset = String(review.selectors?.preset || '').trim();
+  const presetLabel = String(presetDisplayValue || rawPreset).trim() || '(kein Preset)';
   const scriptCatalog = (Array.isArray(availableScripts) ? availableScripts : [])
     .map((item) => ({
       id: normalizeScriptId(item?.id),
@@ -974,7 +975,9 @@ export default function MediaInfoReviewPanel({
         ) : titles.map((title) => {
           const titleEligible = title?.eligibleForEncode !== false;
           const titleChecked = allowTitleSelection
-            ? currentSelectedId === normalizeTitleId(title.id)
+            ? (currentSelectedId !== null
+              ? currentSelectedId === normalizeTitleId(title.id)
+              : Boolean(title.selectedForEncode))
             : Boolean(title.selectedForEncode);
           const titleSelectionEntry = trackSelectionByTitle?.[title.id] || trackSelectionByTitle?.[String(title.id)] || {};
           const subtitleTracks = Array.isArray(title.subtitleTracks) ? title.subtitleTracks : [];

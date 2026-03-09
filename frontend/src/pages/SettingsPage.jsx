@@ -93,6 +93,10 @@ function injectHandBrakePresetOptions(categories, presetPayload) {
         });
       };
 
+      // "(kein Preset)" immer als erste Option — ermöglicht reinen CLI-Betrieb
+      normalizedOptions.push({ label: '(kein Preset – nur CLI-Parameter)', value: '', disabled: false });
+      seenValues.add('');
+
       for (const option of sourceOptions) {
         if (option?.disabled) {
           addGroupOption(option);
@@ -103,7 +107,7 @@ function injectHandBrakePresetOptions(categories, presetPayload) {
       addSelectableOption(setting?.value);
       addSelectableOption(setting?.defaultValue);
 
-      if (normalizedOptions.length === 0) {
+      if (normalizedOptions.length <= 1) {
         return setting;
       }
 

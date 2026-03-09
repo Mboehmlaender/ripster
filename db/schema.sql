@@ -271,7 +271,7 @@ VALUES ('makemkv_rip_extra_args_bluray', 'Tools', 'MakeMKV Rip Extra Args', 'str
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_extra_args_bluray', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('handbrake_preset_bluray', 'Tools', 'HandBrake Preset', 'string', 1, 'Preset Name für -Z (Blu-ray).', 'H.264 MKV 1080p30', '[]', '{"minLength":1}', 320);
+VALUES ('handbrake_preset_bluray', 'Tools', 'HandBrake Preset', 'string', 0, 'Preset Name für -Z (Blu-ray). Leer = kein Preset, nur CLI-Parameter werden verwendet.', 'H.264 MKV 1080p30', '[]', '{}', 320);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('handbrake_preset_bluray', 'H.264 MKV 1080p30');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
@@ -308,7 +308,7 @@ VALUES ('makemkv_rip_extra_args_dvd', 'Tools', 'MakeMKV Rip Extra Args', 'string
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_extra_args_dvd', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('handbrake_preset_dvd', 'Tools', 'HandBrake Preset', 'string', 1, 'Preset Name für -Z (DVD).', 'H.264 MKV 480p30', '[]', '{"minLength":1}', 520);
+VALUES ('handbrake_preset_dvd', 'Tools', 'HandBrake Preset', 'string', 0, 'Preset Name für -Z (DVD). Leer = kein Preset, nur CLI-Parameter werden verwendet.', 'H.264 MKV 480p30', '[]', '{}', 520);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('handbrake_preset_dvd', 'H.264 MKV 480p30');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)

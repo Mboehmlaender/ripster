@@ -847,7 +847,9 @@ class SettingsService {
     if (selectedTitleId !== null) {
       baseArgs.push('-t', String(selectedTitleId));
     }
-    baseArgs.push('-Z', map.handbrake_preset);
+    if (map.handbrake_preset) {
+      baseArgs.push('-Z', map.handbrake_preset);
+    }
     const extra = splitArgs(map.handbrake_extra_args);
     const rawSelection = options?.trackSelection || null;
     const hasSelection = rawSelection && typeof rawSelection === 'object';

@@ -523,6 +523,7 @@ async function openAndPrepareDatabase() {
   await seedFromSchemaFile(dbInstance);
   await migrateLegacyProfiledToolSettings(dbInstance);
   await removeDeprecatedSettings(dbInstance);
+  await migrateSettingsSchemaMetadata(dbInstance);
   await ensurePipelineStateRow(dbInstance);
   const syncedLogRoot = await configureRuntimeLogRootFromSettings(dbInstance, { ensure: true });
   logger.info('log-root:synced', {
@@ -673,6 +674,41 @@ async function removeDeprecatedSettings(db) {
     const result = await db.run('DELETE FROM settings_schema WHERE key = ?', [key]);
     if (result?.changes > 0) {
       logger.info('migrate:remove-deprecated-setting', { key });
+    }
+  }
+}
+
+// Aktualisiert settings_schema-Metadaten (required, description, validation_json)
+// für bestehende Einträge, ohne user-konfigurierte Werte in settings_values anzutasten.
+const SETTINGS_SCHEMA_METADATA_UPDATES = [
+  {
+    key: 'handbrake_preset_bluray',
+    required: 0,
+    description: 'Preset Name für -Z (Blu-ray). Leer = kein Preset, nur CLI-Parameter werden verwendet.',
+    validation_json: '{}'
+  },
+  {
+    key: 'handbrake_preset_dvd',
+    required: 0,
+    description: 'Preset Name für -Z (DVD). Leer = kein Preset, nur CLI-Parameter werden verwendet.',
+    validation_json: '{}'
+  }
+];
+
+async function migrateSettingsSchemaMetadata(db) {
+  for (const update of SETTINGS_SCHEMA_METADATA_UPDATES) {
+    const result = await db.run(
+      `UPDATE settings_schema
+       SET required = ?, description = ?, validation_json = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE key = ? AND (required != ? OR description != ? OR validation_json != ?)`,
+      [
+        update.required, update.description, update.validation_json,
+        update.key,
+        update.required, update.description, update.validation_json
+      ]
+    );
+    if (result?.changes > 0) {
+      logger.info('migrate:settings-schema-metadata', { key: update.key });
     }
   }
 }
