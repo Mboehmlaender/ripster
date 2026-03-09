@@ -565,7 +565,11 @@ async function initDatabase({ allowRecovery = true } = {}) {
 
 async function seedFromSchemaFile(db) {
   const schemaSql = fs.readFileSync(schemaFilePath, 'utf-8');
-  const statements = schemaSql
+  // Kommentarzeilen vor dem Split entfernen, damit der erste INSERT-Block nicht
+  // mit vorangehenden Kommentaren in einem Chunk landet und durch den
+  // /^INSERT\b/-Filter herausfällt.
+  const strippedSql = schemaSql.replace(/^--[^\n]*$/gm, '');
+  const statements = strippedSql
     .split(/;\s*\n/)
     .map((s) => s.trim())
     .filter((s) => /^INSERT\b/i.test(s));

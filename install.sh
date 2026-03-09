@@ -395,6 +395,9 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
       cp -a "$INSTALL_DIR/backend/data" "$DATA_BACKUP"
       info "Datenbank gesichert nach: $DATA_BACKUP"
     fi
+    # safe.directory nötig wenn das Verzeichnis einem anderen User gehört
+    # (z.B. ripster-Serviceuser nach erstem Install)
+    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     git -C "$INSTALL_DIR" fetch --quiet origin
     git -C "$INSTALL_DIR" checkout --quiet "$GIT_BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$GIT_BRANCH"
