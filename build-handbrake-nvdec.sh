@@ -8,6 +8,7 @@ OUTPUT_BIN="${BIN_DIR}/HandBrakeCLI"
 OUTPUT_TMP="${BIN_DIR}/.HandBrakeCLI.build-tmp"
 HANDBRAKE_VERSION="${1:-1.10.0}"
 JOBS="${JOBS:-$(nproc)}"
+TMP_DIR=""
 
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
@@ -23,6 +24,15 @@ ok()    { echo -e "${GREEN}[OK]${RESET}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 fatal() { error "$*"; exit 1; }
+
+cleanup() {
+  if [[ -n "${TMP_DIR:-}" && -d "${TMP_DIR:-}" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+  rm -f "$OUTPUT_TMP"
+}
+
+trap cleanup EXIT INT TERM
 
 run_as_root() {
   if [[ "${EUID}" -eq 0 ]]; then
@@ -128,25 +138,19 @@ main() {
   install_build_dependencies
   require_cmd make
 
-  local tmp_dir tarball src_dir
-  tmp_dir="$(mktemp -d -p /tmp handbrake-nvdec-build-XXXXXX)"
-  tarball="${tmp_dir}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
-  src_dir="${tmp_dir}/HandBrake-${HANDBRAKE_VERSION}"
-
-  cleanup() {
-    rm -rf "$tmp_dir"
-    rm -f "$OUTPUT_TMP"
-  }
-  trap cleanup EXIT INT TERM
+  local tarball src_dir
+  TMP_DIR="$(mktemp -d -p /tmp handbrake-nvdec-build-XXXXXX)"
+  tarball="${TMP_DIR}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
+  src_dir="${TMP_DIR}/HandBrake-${HANDBRAKE_VERSION}"
 
   download_source "$tarball"
 
   info "Entpacke Quellcode..."
-  tar xjf "$tarball" -C "$tmp_dir"
+  tar xjf "$tarball" -C "$TMP_DIR"
   [[ -d "$src_dir" ]] || fatal "Entpacktes Quellverzeichnis nicht gefunden: $src_dir"
 
   local configure_log
-  configure_log="${tmp_dir}/configure.log"
+  configure_log="${TMP_DIR}/configure.log"
 
   info "Konfiguriere Build (NVDEC aktiviert)..."
   (
