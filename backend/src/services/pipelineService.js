@@ -5657,7 +5657,10 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    if (!fs.existsSync(sourceJob.raw_path)) {
+    const reencodeSettings = await settingsService.getSettingsMap();
+    const reencodeRawBaseDir = String(reencodeSettings?.raw_dir || '').trim();
+    const resolvedReencodeRawPath = this.resolveCurrentRawPath(reencodeRawBaseDir, sourceJob.raw_path);
+    if (!resolvedReencodeRawPath) {
       const error = new Error(`Re-Encode nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;
       throw error;
@@ -5665,7 +5668,7 @@ class PipelineService extends EventEmitter {
 
     await historyService.resetProcessLog(sourceJobId);
 
-    const rawInput = findPreferredRawInput(sourceJob.raw_path);
+    const rawInput = findPreferredRawInput(resolvedReencodeRawPath);
     if (!rawInput) {
       const error = new Error('Re-Encode nicht möglich: keine Datei im RAW-Pfad gefunden.');
       error.statusCode = 400;
@@ -5683,7 +5686,7 @@ class PipelineService extends EventEmitter {
       })
       : (sourceJob.makemkv_info_json || null);
 
-    await historyService.updateJob(sourceJobId, {
+    const reencodeJobUpdate = {
       status: 'MEDIAINFO_CHECK',
       last_state: 'MEDIAINFO_CHECK',
       start_time: nowIso(),
@@ -5696,18 +5699,22 @@ class PipelineService extends EventEmitter {
       encode_input_path: null,
       encode_review_confirmed: 0,
       makemkv_info_json: resetMakemkvInfoJson
-    });
+    };
+    if (resolvedReencodeRawPath !== sourceJob.raw_path) {
+      reencodeJobUpdate.raw_path = resolvedReencodeRawPath;
+    }
+    await historyService.updateJob(sourceJobId, reencodeJobUpdate);
     await historyService.appendLog(
       sourceJobId,
       'USER_ACTION',
       `Re-Encode angefordert. Bestehender Job wird wiederverwendet. Input-Kandidat: ${rawInput.path}`
     );
 
-    this.runReviewForRawJob(sourceJobId, sourceJob.raw_path, {
+    this.runReviewForRawJob(sourceJobId, resolvedReencodeRawPath, {
       mode: 'reencode',
       sourceJobId,
       forcePlaylistReselection: true,
-      mediaProfile: this.resolveMediaProfileForJob(sourceJob, { makemkvInfo: mkInfo, rawPath: sourceJob.raw_path })
+      mediaProfile: this.resolveMediaProfileForJob(sourceJob, { makemkvInfo: mkInfo, rawPath: resolvedReencodeRawPath })
     }).catch((error) => {
       logger.error('reencodeFromRaw:background-failed', { jobId: sourceJobId, sourceJobId, error: errorToMeta(error) });
       this.failJob(sourceJobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
@@ -7411,15 +7418,18 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    if (!fs.existsSync(sourceJob.raw_path)) {
+    const reviewSettings = await settingsService.getSettingsMap();
+    const reviewRawBaseDir = String(reviewSettings?.raw_dir || '').trim();
+    const resolvedReviewRawPath = this.resolveCurrentRawPath(reviewRawBaseDir, sourceJob.raw_path);
+    if (!resolvedReviewRawPath) {
       const error = new Error(`Review-Neustart nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;
       throw error;
     }
 
     const hasRawInput = Boolean(
-      hasBluRayBackupStructure(sourceJob.raw_path)
-      || findPreferredRawInput(sourceJob.raw_path)
+      hasBluRayBackupStructure(resolvedReviewRawPath)
+      || findPreferredRawInput(resolvedReviewRawPath)
     );
     if (!hasRawInput) {
       const error = new Error('Review-Neustart nicht möglich: keine Mediendateien im RAW-Pfad gefunden. Disc muss zuerst gerippt werden.');
@@ -7462,7 +7472,7 @@ class PipelineService extends EventEmitter {
       })
       : sourceJob.makemkv_info_json;
 
-    await historyService.updateJob(jobId, {
+    const jobUpdatePayload = {
       status: 'MEDIAINFO_CHECK',
       last_state: 'MEDIAINFO_CHECK',
       start_time: nowIso(),
@@ -7475,7 +7485,11 @@ class PipelineService extends EventEmitter {
       encode_input_path: null,
       encode_review_confirmed: 0,
       makemkv_info_json: nextMakemkvInfoJson
-    });
+    };
+    if (resolvedReviewRawPath !== sourceJob.raw_path) {
+      jobUpdatePayload.raw_path = resolvedReviewRawPath;
+    }
+    await historyService.updateJob(jobId, jobUpdatePayload);
     await historyService.appendLog(
       jobId,
       'USER_ACTION',
@@ -7495,7 +7509,7 @@ class PipelineService extends EventEmitter {
       }
     });
 
-    this.runReviewForRawJob(jobId, sourceJob.raw_path, {
+    this.runReviewForRawJob(jobId, resolvedReviewRawPath, {
       mode: options?.mode || 'reencode',
       sourceJobId: jobId,
       forcePlaylistReselection
