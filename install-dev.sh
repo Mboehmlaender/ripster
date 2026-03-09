@@ -282,22 +282,33 @@ build_handbrake_nvdec() {
   fi
 }
 
+has_nvidia_gpu() {
+  [[ -e /dev/nvidia0 ]] && return 0
+  command_exists nvidia-smi && nvidia-smi &>/dev/null && return 0
+  command_exists lspci && lspci 2>/dev/null | grep -qi "nvidia" && return 0
+  return 1
+}
+
 install_handbrake() {
   header "HandBrake CLI installieren"
 
+  # NVIDIA-GPU vorhanden? → immer NVDEC-Build erzwingen
+  if has_nvidia_gpu; then
+    info "NVIDIA-GPU erkannt – HandBrake wird mit NVDEC aus Quellcode gebaut."
+    BUILD_HANDBRAKE_NVDEC=true
+  fi
+
+  # --build-handbrake oder NVIDIA erkannt: aus Quellcode mit NVDEC bauen
   if [[ "$BUILD_HANDBRAKE_NVDEC" == true ]]; then
     build_handbrake_nvdec
     return
   fi
 
+  # Bereits installiert → nichts tun
   if command_exists HandBrakeCLI; then
     local ver
     ver=$(HandBrakeCLI --version 2>&1 | head -1)
     ok "HandBrakeCLI bereits installiert: ${ver}"
-    if ! HandBrakeCLI --help 2>&1 | grep -qi "nvdec"; then
-      warn "Das installierte HandBrakeCLI unterstützt kein NVDEC."
-      warn "Für NVDEC neu bauen: sudo bash install-dev.sh --no-makemkv --no-nginx --build-handbrake"
-    fi
     return
   fi
 
@@ -305,9 +316,6 @@ install_handbrake() {
   info "Versuche HandBrake CLI aus den Standard-Repos..."
   if apt-get install -y handbrake-cli 2>/dev/null; then
     ok "HandBrakeCLI installiert (Standard-Repos)"
-    if ! HandBrakeCLI --help 2>&1 | grep -qi "nvdec"; then
-      warn "Dieses HandBrakeCLI hat kein NVDEC. Für NVDEC: sudo bash install-dev.sh --no-makemkv --no-nginx --build-handbrake"
-    fi
     return
   fi
 

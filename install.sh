@@ -296,33 +296,41 @@ build_handbrake_nvdec() {
   fi
 }
 
+handbrake_has_nvdec() {
+  command_exists HandBrakeCLI || return 1
+  HandBrakeCLI --help 2>&1 | grep -qi "nvdec"
+}
+
 install_handbrake() {
   header "HandBrake CLI installieren"
 
-  # --build-handbrake: immer aus Quellcode mit NVDEC bauen
-  if [[ "$BUILD_HANDBRAKE_NVDEC" == true ]]; then
-    build_handbrake_nvdec
+  # Bereits installiert MIT NVDEC → nichts tun
+  if handbrake_has_nvdec; then
+    ok "HandBrakeCLI mit NVDEC bereits installiert: $(HandBrakeCLI --version 2>&1 | head -1)"
     return
   fi
 
-  # Bereits installiert?
+  # Installiert OHNE NVDEC → entfernen und NVDEC-Build erzwingen
   if command_exists HandBrakeCLI; then
-    local ver
-    ver=$(HandBrakeCLI --version 2>&1 | head -1)
-    ok "HandBrakeCLI bereits installiert: ${ver}"
-    if ! HandBrakeCLI --help 2>&1 | grep -qi "nvdec"; then
-      warn "Das installierte HandBrakeCLI unterstützt kein NVDEC."
-      warn "Für NVDEC neu bauen: sudo bash install.sh --no-makemkv --no-nginx --build-handbrake"
-    fi
+    warn "HandBrakeCLI ohne NVDEC gefunden – wird ersetzt durch NVDEC-Build."
+    BUILD_HANDBRAKE_NVDEC=true
+  fi
+
+  # --build-handbrake-Flag oder kein NVDEC in vorhandener Installation
+  if [[ "$BUILD_HANDBRAKE_NVDEC" == true ]]; then
+    build_handbrake_nvdec
     return
   fi
 
   # Strategie 1: direkt aus den Distro-Repos (Ubuntu Universe / Debian)
   info "Versuche HandBrake CLI aus den Standard-Repos..."
   if apt-get install -y handbrake-cli 2>/dev/null; then
-    ok "HandBrakeCLI installiert (Standard-Repos)"
-    if ! HandBrakeCLI --help 2>&1 | grep -qi "nvdec"; then
-      warn "Dieses HandBrakeCLI hat kein NVDEC. Für NVDEC: sudo bash install.sh --no-makemkv --no-nginx --build-handbrake"
+    # Nach apt-Install: NVDEC prüfen – falls nicht, sofort NVDEC-Build
+    if handbrake_has_nvdec; then
+      ok "HandBrakeCLI installiert (Standard-Repos, mit NVDEC)"
+    else
+      warn "Installiertes HandBrakeCLI hat kein NVDEC – ersetze durch NVDEC-Build."
+      build_handbrake_nvdec
     fi
     return
   fi
