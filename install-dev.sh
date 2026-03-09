@@ -220,7 +220,7 @@ build_handbrake_nvdec() {
     libass-dev libbz2-dev libdvdnav-dev libdvdread-dev \
     libfontconfig-dev libfreetype-dev libfribidi-dev libharfbuzz-dev \
     libjansson-dev liblzma-dev libmp3lame-dev libnuma-dev libogg-dev \
-    libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool \
+    libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool libtool-bin \
     libturbojpeg0-dev libvorbis-dev libvpx-dev libx264-dev libxml2-dev \
     m4 meson nasm ninja-build patch pkg-config python3 tar zlib1g-dev \
     >/dev/null
