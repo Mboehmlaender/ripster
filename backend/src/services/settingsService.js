@@ -35,10 +35,20 @@ const PROFILED_SETTINGS = {
     dvd: 'raw_dir_dvd',
     other: 'raw_dir_other'
   },
+  raw_dir_owner: {
+    bluray: 'raw_dir_bluray_owner',
+    dvd: 'raw_dir_dvd_owner',
+    other: 'raw_dir_other_owner'
+  },
   movie_dir: {
     bluray: 'movie_dir_bluray',
     dvd: 'movie_dir_dvd',
     other: 'movie_dir_other'
+  },
+  movie_dir_owner: {
+    bluray: 'movie_dir_bluray_owner',
+    dvd: 'movie_dir_dvd_owner',
+    other: 'movie_dir_other_owner'
   },
   mediainfo_extra_args: {
     bluray: 'mediainfo_extra_args_bluray',
@@ -79,7 +89,9 @@ const PROFILED_SETTINGS = {
 };
 const STRICT_PROFILE_ONLY_SETTING_KEYS = new Set([
   'raw_dir',
-  'movie_dir'
+  'raw_dir_owner',
+  'movie_dir',
+  'movie_dir_owner'
 ]);
 
 function applyRuntimeLogDirSetting(rawValue) {

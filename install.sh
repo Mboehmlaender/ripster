@@ -413,6 +413,9 @@ fi
 # Daten- und Log-Verzeichnisse sicherstellen
 mkdir -p "$INSTALL_DIR/backend/data"
 mkdir -p "$INSTALL_DIR/backend/logs"
+mkdir -p "$INSTALL_DIR/backend/data/output/raw"
+mkdir -p "$INSTALL_DIR/backend/data/output/movies"
+mkdir -p "$INSTALL_DIR/backend/data/logs"
 
 # Gesicherte Daten zurückspielen
 if [[ -n "${DATA_BACKUP:-}" && -d "$DATA_BACKUP" ]]; then
@@ -476,6 +479,21 @@ fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 chmod -R 755 "$INSTALL_DIR"
 chmod 600 "$ENV_FILE"
+
+# Ausgabe- und Log-Verzeichnisse dem installierenden User zuweisen
+# (SUDO_USER = der echte User hinter sudo; leer wenn direkt als root ausgeführt)
+ACTUAL_USER="${SUDO_USER:-}"
+if [[ -n "$ACTUAL_USER" && "$ACTUAL_USER" != "root" ]]; then
+  chown -R "$ACTUAL_USER:$SERVICE_USER" \
+    "$INSTALL_DIR/backend/data/output" \
+    "$INSTALL_DIR/backend/data/logs"
+  chmod -R 775 \
+    "$INSTALL_DIR/backend/data/output" \
+    "$INSTALL_DIR/backend/data/logs"
+  ok "Verzeichnisse $ACTUAL_USER:$SERVICE_USER (775) zugewiesen"
+else
+  ok "Verzeichnisse bereits $SERVICE_USER gehörig (kein SUDO_USER erkannt)"
+fi
 
 # --- Systemd-Dienst: Backend -------------------------------------------------
 header "Systemd-Dienst (Backend) erstellen"

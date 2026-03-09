@@ -3,7 +3,6 @@ const path = require('path');
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const { dbPath } = require('../config');
-const { defaultSchema } = require('./defaultSettings');
 const logger = require('../services/logger').child('DB');
 const { errorToMeta } = require('../utils/errorMeta');
 const { setLogRootDir, getJobLogDir } = require('../services/logPathService');
@@ -521,7 +520,7 @@ async function openAndPrepareDatabase() {
   const schemaModel = await loadSchemaModel();
   await applySchemaModel(dbInstance, schemaModel);
 
-  await seedDefaultSettings(dbInstance);
+  await seedFromSchemaFile(dbInstance);
   await migrateLegacyProfiledToolSettings(dbInstance);
   await removeDeprecatedSettings(dbInstance);
   await ensurePipelineStateRow(dbInstance);
@@ -564,52 +563,16 @@ async function initDatabase({ allowRecovery = true } = {}) {
 
 }
 
-async function seedDefaultSettings(db) {
-  let seeded = 0;
-  for (const item of defaultSchema) {
-    await db.run(
-      `
-        INSERT INTO settings_schema
-          (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-        VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          category = excluded.category,
-          label = excluded.label,
-          type = excluded.type,
-          required = excluded.required,
-          description = excluded.description,
-          default_value = COALESCE(settings_schema.default_value, excluded.default_value),
-          options_json = excluded.options_json,
-          validation_json = excluded.validation_json,
-          order_index = excluded.order_index,
-          updated_at = CURRENT_TIMESTAMP
-      `,
-      [
-        item.key,
-        item.category,
-        item.label,
-        item.type,
-        item.required,
-        item.description || null,
-        item.defaultValue || null,
-        JSON.stringify(item.options || []),
-        JSON.stringify(item.validation || {}),
-        item.orderIndex || 0
-      ]
-    );
-
-    await db.run(
-      `
-        INSERT INTO settings_values (key, value)
-        VALUES (?, ?)
-        ON CONFLICT(key) DO NOTHING
-      `,
-      [item.key, item.defaultValue || null]
-    );
-    seeded += 1;
+async function seedFromSchemaFile(db) {
+  const schemaSql = fs.readFileSync(schemaFilePath, 'utf-8');
+  const statements = schemaSql
+    .split(/;\s*\n/)
+    .map((s) => s.trim())
+    .filter((s) => /^INSERT\b/i.test(s));
+  for (const stmt of statements) {
+    await db.run(stmt);
   }
-  logger.info('seed:settings', { count: seeded });
+  logger.info('seed:settings', { count: statements.length });
 }
 
 async function readCurrentOrDefaultSettingValue(db, key) {

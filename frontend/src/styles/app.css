@@ -1100,6 +1100,29 @@ body {
   width: fit-content;
 }
 
+.setting-owner-row {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--rip-border);
+}
+
+.setting-owner-label {
+  font-size: 0.8rem;
+  color: var(--rip-muted);
+  font-weight: 500;
+}
+
+.setting-owner-row .p-inputtext:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.setting-owner-row .saved-tag {
+  width: fit-content;
+}
+
 .script-manager-wrap {
   display: grid;
   gap: 0.8rem;

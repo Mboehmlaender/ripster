@@ -376,6 +376,22 @@ function ensureUniqueOutputPath(outputPath) {
   return attempt;
 }
 
+function chownRecursive(targetPath, ownerSpec) {
+  const spec = String(ownerSpec || '').trim();
+  if (!spec || !targetPath) {
+    return;
+  }
+  try {
+    const { spawnSync } = require('child_process');
+    const result = spawnSync('chown', ['-R', spec, targetPath], { timeout: 15000 });
+    if (result.status !== 0) {
+      logger.warn('chown:failed', { targetPath, spec, stderr: String(result.stderr || '') });
+    }
+  } catch (error) {
+    logger.warn('chown:error', { targetPath, spec, error: error?.message });
+  }
+}
+
 function moveFileWithFallback(sourcePath, targetPath) {
   try {
     fs.renameSync(sourcePath, targetPath);
@@ -6670,6 +6686,7 @@ class PipelineService extends EventEmitter {
         preferredFinalOutputPath
       );
       const finalizedOutputPath = outputFinalization.outputPath;
+      chownRecursive(path.dirname(finalizedOutputPath), settings.movie_dir_owner);
       if (outputFinalization.outputPathWithTimestamp) {
         await historyService.appendLog(
           jobId,
@@ -6903,6 +6920,7 @@ class PipelineService extends EventEmitter {
     const rawDirName = buildRawDirName(metadataBase, jobId, { incomplete: true });
     const rawJobDir = path.join(rawBaseDir, rawDirName);
     ensureDir(rawJobDir);
+    chownRecursive(rawJobDir, settings.raw_dir_owner);
     logger.info('rip:raw-dir-created', { jobId, rawJobDir });
 
     const deviceCandidate = this.detectedDisc || this.snapshot.context?.device || {
@@ -7061,6 +7079,7 @@ class PipelineService extends EventEmitter {
           try {
             fs.renameSync(rawJobDir, completedRawJobDir);
             activeRawJobDir = completedRawJobDir;
+            chownRecursive(activeRawJobDir, settings.raw_dir_owner);
             await historyService.updateRawPathByOldPath(rawJobDir, completedRawJobDir);
             await historyService.appendLog(
               jobId,

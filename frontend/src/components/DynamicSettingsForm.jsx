@@ -161,83 +161,127 @@ export default function DynamicSettingsForm({
                         {section.description ? <small>{section.description}</small> : null}
                       </div>
                     ) : null}
-                    <div className="settings-grid">
-                      {(section.settings || []).map((setting) => {
-                        const value = values?.[setting.key];
-                        const error = errors?.[setting.key] || null;
-                        const dirty = Boolean(dirtyKeys?.has?.(setting.key));
+                    {(() => {
+                      const ownerKeySet = new Set(
+                        (section.settings || [])
+                          .filter((s) => String(s.key || '').endsWith('_owner'))
+                          .map((s) => s.key)
+                      );
+                      const settingsByKey = new Map(
+                        (section.settings || []).map((s) => [s.key, s])
+                      );
+                      const visibleSettings = (section.settings || []).filter(
+                        (s) => !ownerKeySet.has(s.key)
+                      );
 
-                        return (
-                          <div key={setting.key} className="setting-row">
-                            <label htmlFor={setting.key}>
-                              {setting.label}
-                              {setting.required && <span className="required">*</span>}
-                            </label>
+                      return (
+                        <div className="settings-grid">
+                          {visibleSettings.map((setting) => {
+                            const value = values?.[setting.key];
+                            const error = errors?.[setting.key] || null;
+                            const dirty = Boolean(dirtyKeys?.has?.(setting.key));
 
-                            {setting.type === 'string' || setting.type === 'path' ? (
-                              <InputText
-                                id={setting.key}
-                                value={value ?? ''}
-                                onChange={(event) => onChange?.(setting.key, event.target.value)}
-                              />
-                            ) : null}
+                            const ownerKey = `${setting.key}_owner`;
+                            const ownerSetting = settingsByKey.get(ownerKey) || null;
+                            const pathHasValue = Boolean(String(value ?? '').trim());
 
-                            {setting.type === 'number' ? (
-                              <InputNumber
-                                id={setting.key}
-                                value={value ?? 0}
-                                onValueChange={(event) => onChange?.(setting.key, event.value)}
-                                mode="decimal"
-                                useGrouping={false}
-                              />
-                            ) : null}
+                            return (
+                              <div key={setting.key} className="setting-row">
+                                <label htmlFor={setting.key}>
+                                  {setting.label}
+                                  {setting.required && <span className="required">*</span>}
+                                </label>
 
-                            {setting.type === 'boolean' ? (
-                              <InputSwitch
-                                id={setting.key}
-                                checked={Boolean(value)}
-                                onChange={(event) => onChange?.(setting.key, event.value)}
-                              />
-                            ) : null}
+                                {setting.type === 'string' || setting.type === 'path' ? (
+                                  <InputText
+                                    id={setting.key}
+                                    value={value ?? ''}
+                                    onChange={(event) => onChange?.(setting.key, event.target.value)}
+                                  />
+                                ) : null}
 
-                            {setting.type === 'select' ? (
-                              <Dropdown
-                                id={setting.key}
-                                value={value}
-                                options={setting.options}
-                                optionLabel="label"
-                                optionValue="value"
-                                optionDisabled="disabled"
-                                onChange={(event) => onChange?.(setting.key, event.value)}
-                              />
-                            ) : null}
+                                {setting.type === 'number' ? (
+                                  <InputNumber
+                                    id={setting.key}
+                                    value={value ?? 0}
+                                    onValueChange={(event) => onChange?.(setting.key, event.value)}
+                                    mode="decimal"
+                                    useGrouping={false}
+                                  />
+                                ) : null}
 
-                            <small>{setting.description || ''}</small>
-                            {isHandBrakePresetSetting(setting) ? (
-                              <small>
-                                Preset-Erklärung:{' '}
-                                <a
-                                  href="https://handbrake.fr/docs/en/latest/technical/official-presets.html"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  HandBrake Official Presets
-                                </a>
-                              </small>
-                            ) : null}
-                            {error ? (
-                              <small className="error-text">{error}</small>
-                            ) : (
-                              <Tag
-                                value={dirty ? 'Ungespeichert' : 'Gespeichert'}
-                                severity={dirty ? 'warning' : 'success'}
-                                className="saved-tag"
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                                {setting.type === 'boolean' ? (
+                                  <InputSwitch
+                                    id={setting.key}
+                                    checked={Boolean(value)}
+                                    onChange={(event) => onChange?.(setting.key, event.value)}
+                                  />
+                                ) : null}
+
+                                {setting.type === 'select' ? (
+                                  <Dropdown
+                                    id={setting.key}
+                                    value={value}
+                                    options={setting.options}
+                                    optionLabel="label"
+                                    optionValue="value"
+                                    optionDisabled="disabled"
+                                    onChange={(event) => onChange?.(setting.key, event.value)}
+                                  />
+                                ) : null}
+
+                                <small>{setting.description || ''}</small>
+                                {isHandBrakePresetSetting(setting) ? (
+                                  <small>
+                                    Preset-Erklärung:{' '}
+                                    <a
+                                      href="https://handbrake.fr/docs/en/latest/technical/official-presets.html"
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      HandBrake Official Presets
+                                    </a>
+                                  </small>
+                                ) : null}
+                                {error ? (
+                                  <small className="error-text">{error}</small>
+                                ) : (
+                                  <Tag
+                                    value={dirty ? 'Ungespeichert' : 'Gespeichert'}
+                                    severity={dirty ? 'warning' : 'success'}
+                                    className="saved-tag"
+                                  />
+                                )}
+
+                                {ownerSetting ? (
+                                  <div className="setting-owner-row">
+                                    <label htmlFor={ownerKey} className="setting-owner-label">
+                                      Eigentümer (user:gruppe)
+                                    </label>
+                                    <InputText
+                                      id={ownerKey}
+                                      value={values?.[ownerKey] ?? ''}
+                                      placeholder="z.B. michael:ripster"
+                                      disabled={!pathHasValue}
+                                      onChange={(event) => onChange?.(ownerKey, event.target.value)}
+                                    />
+                                    {errors?.[ownerKey] ? (
+                                      <small className="error-text">{errors[ownerKey]}</small>
+                                    ) : (
+                                      <Tag
+                                        value={dirtyKeys?.has?.(ownerKey) ? 'Ungespeichert' : 'Gespeichert'}
+                                        severity={dirtyKeys?.has?.(ownerKey) ? 'warning' : 'success'}
+                                        className="saved-tag"
+                                      />
+                                    )}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </section>
                 ))}
               </div>
