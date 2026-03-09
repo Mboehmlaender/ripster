@@ -100,12 +100,14 @@ router.post(
     const selectedTrackSelection = req.body?.selectedTrackSelection ?? null;
     const selectedPostEncodeScriptIds = req.body?.selectedPostEncodeScriptIds;
     const skipPipelineStateUpdate = Boolean(req.body?.skipPipelineStateUpdate);
+    const selectedUserPresetId = req.body?.selectedUserPresetId ?? null;
     logger.info('post:confirm-encode', {
       reqId: req.reqId,
       jobId,
       selectedEncodeTitleId,
       selectedTrackSelectionProvided: Boolean(selectedTrackSelection),
       skipPipelineStateUpdate,
+      selectedUserPresetId,
       selectedPostEncodeScriptIdsCount: Array.isArray(selectedPostEncodeScriptIds)
         ? selectedPostEncodeScriptIds.length
         : 0
@@ -114,7 +116,8 @@ router.post(
       selectedEncodeTitleId,
       selectedTrackSelection,
       selectedPostEncodeScriptIds,
-      skipPipelineStateUpdate
+      skipPipelineStateUpdate,
+      selectedUserPresetId
     });
     res.json({ job });
   })

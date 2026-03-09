@@ -7,6 +7,7 @@ const notificationService = require('../services/notificationService');
 const pipelineService = require('../services/pipelineService');
 const wsService = require('../services/websocketService');
 const hardwareMonitorService = require('../services/hardwareMonitorService');
+const userPresetService = require('../services/userPresetService');
 const logger = require('../services/logger').child('SETTINGS_ROUTE');
 
 const router = express.Router();
@@ -301,6 +302,52 @@ router.put(
     wsService.broadcast('SETTINGS_BULK_UPDATED', { count: changes.length, keys: changes.map((item) => item.key) });
 
     res.json({ changes, reviewRefresh });
+  })
+);
+
+// ── User Presets ──────────────────────────────────────────────────────────────
+
+router.get(
+  '/user-presets',
+  asyncHandler(async (req, res) => {
+    const mediaType = req.query.media_type || null;
+    logger.debug('get:user-presets', { reqId: req.reqId, mediaType });
+    const presets = await userPresetService.listPresets(mediaType);
+    res.json({ presets });
+  })
+);
+
+router.post(
+  '/user-presets',
+  asyncHandler(async (req, res) => {
+    const payload = req.body || {};
+    logger.info('post:user-presets:create', { reqId: req.reqId, name: payload?.name });
+    const preset = await userPresetService.createPreset(payload);
+    wsService.broadcast('USER_PRESETS_UPDATED', { action: 'created', id: preset.id });
+    res.status(201).json({ preset });
+  })
+);
+
+router.put(
+  '/user-presets/:id',
+  asyncHandler(async (req, res) => {
+    const presetId = Number(req.params.id);
+    const payload = req.body || {};
+    logger.info('put:user-presets:update', { reqId: req.reqId, presetId });
+    const preset = await userPresetService.updatePreset(presetId, payload);
+    wsService.broadcast('USER_PRESETS_UPDATED', { action: 'updated', id: preset.id });
+    res.json({ preset });
+  })
+);
+
+router.delete(
+  '/user-presets/:id',
+  asyncHandler(async (req, res) => {
+    const presetId = Number(req.params.id);
+    logger.info('delete:user-presets', { reqId: req.reqId, presetId });
+    const removed = await userPresetService.deletePreset(presetId);
+    wsService.broadcast('USER_PRESETS_UPDATED', { action: 'deleted', id: removed.id });
+    res.json({ removed });
   })
 );
 

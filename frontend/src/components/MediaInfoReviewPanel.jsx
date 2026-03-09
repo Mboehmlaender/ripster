@@ -174,7 +174,8 @@ function buildHandBrakeCommandPreview({
   title,
   selectedAudioTrackIds,
   selectedSubtitleTrackIds,
-  commandOutputPath = null
+  commandOutputPath = null,
+  presetOverride = null
 }) {
   const inputPath = String(title?.filePath || review?.encodeInputPath || '').trim();
   const handBrakeCmd = String(
@@ -182,8 +183,12 @@ function buildHandBrakeCommandPreview({
     || review?.selectors?.handBrakeCommand
     || 'HandBrakeCLI'
   ).trim() || 'HandBrakeCLI';
-  const preset = String(review?.selectors?.preset || '').trim();
-  const extraArgs = String(review?.selectors?.extraArgs || '').trim();
+  const preset = presetOverride !== null
+    ? String(presetOverride.handbrakePreset || '').trim()
+    : String(review?.selectors?.preset || '').trim();
+  const extraArgs = presetOverride !== null
+    ? String(presetOverride.extraArgs || '').trim()
+    : String(review?.selectors?.extraArgs || '').trim();
   const rawMappedTitleId = Number(review?.handBrakeTitleId);
   const mappedTitleId = Number.isFinite(rawMappedTitleId) && rawMappedTitleId > 0
     ? Math.trunc(rawMappedTitleId)
@@ -697,7 +702,10 @@ export default function MediaInfoReviewPanel({
   onAddPostEncodeItem = null,
   onChangePostEncodeItem = null,
   onRemovePostEncodeItem = null,
-  onReorderPostEncodeItem = null
+  onReorderPostEncodeItem = null,
+  userPresets = [],
+  selectedUserPresetId = null,
+  onUserPresetChange = null
 }) {
   if (!review) {
     return <p>Keine Mediainfo-Daten vorhanden.</p>;
@@ -711,6 +719,18 @@ export default function MediaInfoReviewPanel({
   const playlistRecommendation = review.playlistRecommendation || null;
   const rawPreset = String(review.selectors?.preset || '').trim();
   const presetLabel = String(presetDisplayValue || rawPreset).trim() || '(kein Preset)';
+
+  // User preset resolution
+  const normalizedUserPresets = Array.isArray(userPresets) ? userPresets : [];
+  const selectedUserPreset = selectedUserPresetId
+    ? normalizedUserPresets.find((p) => Number(p.id) === Number(selectedUserPresetId)) || null
+    : null;
+  const effectivePresetOverride = selectedUserPreset
+    ? { handbrakePreset: selectedUserPreset.handbrakePreset || '', extraArgs: selectedUserPreset.extraArgs || '' }
+    : null;
+  const hasUserPresets = normalizedUserPresets.length > 0;
+  const allowUserPresetSelection = hasUserPresets && typeof onUserPresetChange === 'function' && allowEncodeItemSelection;
+
   const scriptCatalog = (Array.isArray(availableScripts) ? availableScripts : [])
     .map((item) => ({
       id: normalizeScriptId(item?.id),
@@ -740,10 +760,56 @@ export default function MediaInfoReviewPanel({
 
   return (
     <div className="media-review-wrap">
+      {allowUserPresetSelection && (
+        <div className="user-preset-selector" style={{ marginBottom: '0.75rem', padding: '0.75rem', border: '1px solid var(--surface-border, #e0e0e0)', borderRadius: '6px', background: 'var(--surface-ground, #f8f8f8)' }}>
+          <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600 }}>
+            Encode-Preset auswählen
+          </label>
+          <Dropdown
+            value={selectedUserPresetId ? Number(selectedUserPresetId) : null}
+            options={[
+              { label: '(Einstellungen-Fallback)', value: null },
+              ...normalizedUserPresets.map((p) => ({
+                label: `${p.name}${p.mediaType !== 'all' ? ` [${p.mediaType === 'bluray' ? 'Blu-ray' : p.mediaType === 'dvd' ? 'DVD' : 'Sonstiges'}]` : ''}`,
+                value: Number(p.id)
+              }))
+            ]}
+            onChange={(e) => onUserPresetChange(e.value)}
+            placeholder="(Einstellungen-Fallback)"
+            style={{ width: '100%' }}
+          />
+          {selectedUserPreset && (
+            <div style={{ marginTop: '0.4rem', fontSize: '0.8rem', opacity: 0.8 }}>
+              {selectedUserPreset.handbrakePreset
+                ? <span><strong>-Z</strong> {selectedUserPreset.handbrakePreset}</span>
+                : <span style={{ opacity: 0.6 }}>(kein Preset-Name)</span>}
+              {selectedUserPreset.extraArgs && (
+                <span style={{ marginLeft: '1rem' }}><strong>Args:</strong> {selectedUserPreset.extraArgs}</span>
+              )}
+              {selectedUserPreset.description && (
+                <span style={{ marginLeft: '1rem', opacity: 0.7 }}>{selectedUserPreset.description}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="media-review-meta">
-        <div><strong>Preset:</strong> {presetLabel}</div>
-        <div><strong>Extra Args:</strong> {review.selectors?.extraArgs || '(keine)'}</div>
-        <div><strong>Preset-Profil:</strong> {review.selectors?.presetProfileSource || '-'}</div>
+        <div>
+          <strong>Preset:</strong>{' '}
+          {effectivePresetOverride
+            ? (effectivePresetOverride.handbrakePreset || '(kein Preset)')
+            : presetLabel}
+          {effectivePresetOverride && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', opacity: 0.7 }}>(User-Preset: {selectedUserPreset?.name})</span>}
+        </div>
+        <div>
+          <strong>Extra Args:</strong>{' '}
+          {effectivePresetOverride
+            ? (effectivePresetOverride.extraArgs || '(keine)')
+            : (review.selectors?.extraArgs || '(keine)')}
+          {effectivePresetOverride && !selectedUserPreset?.extraArgs && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', opacity: 0.7 }}>(aus User-Preset)</span>}
+        </div>
+        <div><strong>Preset-Profil:</strong> {effectivePresetOverride ? 'user-preset' : (review.selectors?.presetProfileSource || '-')}</div>
         <div><strong>MIN_LENGTH_MINUTES:</strong> {review.minLengthMinutes}</div>
         <div><strong>Encode Input:</strong> {encodeInputTitle?.fileName || '-'}</div>
         <div><strong>Audio Auswahl:</strong> {review.selectors?.audio?.mode || '-'}</div>
@@ -1090,7 +1156,8 @@ export default function MediaInfoReviewPanel({
                   title,
                   selectedAudioTrackIds,
                   selectedSubtitleTrackIds,
-                  commandOutputPath
+                  commandOutputPath,
+                  presetOverride: effectivePresetOverride
                 });
                 return (
                   <div className="handbrake-command-preview">

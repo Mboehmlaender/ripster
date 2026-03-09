@@ -156,6 +156,21 @@ export default function SettingsPage() {
   const [chainEditorErrors, setChainEditorErrors] = useState({});
   const [chainDragSource, setChainDragSource] = useState(null);
 
+  // User presets state
+  const [userPresets, setUserPresets] = useState([]);
+  const [userPresetsLoading, setUserPresetsLoading] = useState(false);
+  const [userPresetSaving, setUserPresetSaving] = useState(false);
+  const [userPresetEditor, setUserPresetEditor] = useState({
+    open: false,
+    id: null,
+    name: '',
+    mediaType: 'all',
+    handbrakePreset: '',
+    extraArgs: '',
+    description: ''
+  });
+  const [userPresetErrors, setUserPresetErrors] = useState({});
+
   const toastRef = useRef(null);
 
   const loadScripts = async ({ silent = false } = {}) => {
@@ -192,6 +207,91 @@ export default function SettingsPage() {
       if (!silent) {
         setChainsLoading(false);
       }
+    }
+  };
+
+  const loadUserPresets = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setUserPresetsLoading(true);
+    }
+    try {
+      const response = await api.getUserPresets();
+      setUserPresets(Array.isArray(response?.presets) ? response.presets : []);
+    } catch (error) {
+      if (!silent) {
+        toastRef.current?.show({ severity: 'error', summary: 'User-Presets', detail: error.message });
+      }
+    } finally {
+      if (!silent) {
+        setUserPresetsLoading(false);
+      }
+    }
+  };
+
+  const openNewUserPreset = () => {
+    setUserPresetEditor({ open: true, id: null, name: '', mediaType: 'all', handbrakePreset: '', extraArgs: '', description: '' });
+    setUserPresetErrors({});
+  };
+
+  const openEditUserPreset = (preset) => {
+    setUserPresetEditor({
+      open: true,
+      id: preset.id,
+      name: preset.name || '',
+      mediaType: preset.mediaType || 'all',
+      handbrakePreset: preset.handbrakePreset || '',
+      extraArgs: preset.extraArgs || '',
+      description: preset.description || ''
+    });
+    setUserPresetErrors({});
+  };
+
+  const closeUserPresetEditor = () => {
+    setUserPresetEditor((prev) => ({ ...prev, open: false }));
+    setUserPresetErrors({});
+  };
+
+  const handleSaveUserPreset = async () => {
+    const errors = {};
+    if (!userPresetEditor.name.trim()) {
+      errors.name = 'Name ist erforderlich.';
+    }
+    if (Object.keys(errors).length > 0) {
+      setUserPresetErrors(errors);
+      return;
+    }
+    setUserPresetSaving(true);
+    try {
+      const payload = {
+        name: userPresetEditor.name.trim(),
+        mediaType: userPresetEditor.mediaType,
+        handbrakePreset: userPresetEditor.handbrakePreset.trim(),
+        extraArgs: userPresetEditor.extraArgs.trim(),
+        description: userPresetEditor.description.trim()
+      };
+      if (userPresetEditor.id) {
+        await api.updateUserPreset(userPresetEditor.id, payload);
+        toastRef.current?.show({ severity: 'success', summary: 'Preset', detail: 'Preset aktualisiert.' });
+      } else {
+        await api.createUserPreset(payload);
+        toastRef.current?.show({ severity: 'success', summary: 'Preset', detail: 'Preset erstellt.' });
+      }
+      closeUserPresetEditor();
+      await loadUserPresets({ silent: true });
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Preset speichern', detail: error.message });
+    } finally {
+      setUserPresetSaving(false);
+    }
+  };
+
+  const handleDeleteUserPreset = async (presetId) => {
+    try {
+      await api.deleteUserPreset(presetId);
+      toastRef.current?.show({ severity: 'success', summary: 'Preset', detail: 'Preset gelöscht.' });
+      await loadUserPresets({ silent: true });
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'Preset löschen', detail: error.message });
     }
   };
 
@@ -250,6 +350,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load();
+    loadUserPresets();
   }, []);
 
   const dirtyKeys = useMemo(() => {
@@ -1375,6 +1476,173 @@ export default function SettingsPage() {
                   onClick={closeChainEditor}
                   disabled={chainSaving}
                 />
+              </div>
+            </Dialog>
+          </TabPanel>
+
+          <TabPanel header="Encode-Presets">
+            <div className="actions-row">
+              <Button
+                label="Neues Preset"
+                icon="pi pi-plus"
+                onClick={openNewUserPreset}
+                severity="success"
+                outlined
+                disabled={userPresetSaving}
+              />
+              <Button
+                label="Presets neu laden"
+                icon="pi pi-refresh"
+                severity="secondary"
+                onClick={() => loadUserPresets()}
+                loading={userPresetsLoading}
+                disabled={userPresetSaving}
+              />
+            </div>
+
+            <small>
+              Encode-Presets fassen ein HandBrake-Preset und zusätzliche CLI-Argumente zusammen.
+              Sie sind medienbezogen (Blu-ray, DVD, Sonstiges oder Universell) und können vor dem Encode
+              in der Mediainfo-Prüfung ausgewählt werden. Kein Preset gewählt = Fallback aus Einstellungen.
+            </small>
+
+            {userPresetsLoading ? (
+              <p style={{ marginTop: '1rem' }}>Lade Presets ...</p>
+            ) : userPresets.length === 0 ? (
+              <p style={{ marginTop: '1rem' }}>Keine Presets vorhanden. Lege ein neues Preset an.</p>
+            ) : (
+              <div className="script-list" style={{ marginTop: '1rem' }}>
+                {userPresets.map((preset) => (
+                  <div key={preset.id} className="script-list-item">
+                    <div className="script-list-main">
+                      <div className="script-title-line">
+                        <strong>#{preset.id} – {preset.name}</strong>
+                        <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', opacity: 0.7 }}>
+                          {preset.mediaType === 'bluray' ? 'Blu-ray'
+                            : preset.mediaType === 'dvd' ? 'DVD'
+                            : preset.mediaType === 'other' ? 'Sonstiges'
+                            : 'Universell'}
+                        </span>
+                      </div>
+                      {preset.description && <small style={{ display: 'block', marginTop: '0.2rem', opacity: 0.8 }}>{preset.description}</small>}
+                      <div style={{ marginTop: '0.3rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                        {preset.handbrakePreset
+                          ? <span><span style={{ opacity: 0.6 }}>Preset:</span> {preset.handbrakePreset}</span>
+                          : <span style={{ opacity: 0.5 }}>(kein Preset-Name)</span>}
+                        {preset.extraArgs && (
+                          <span style={{ marginLeft: '1rem' }}><span style={{ opacity: 0.6 }}>Args:</span> {preset.extraArgs}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="script-list-actions">
+                      <Button
+                        icon="pi pi-pencil"
+                        severity="secondary"
+                        outlined
+                        rounded
+                        title="Bearbeiten"
+                        onClick={() => openEditUserPreset(preset)}
+                      />
+                      <Button
+                        icon="pi pi-trash"
+                        severity="danger"
+                        outlined
+                        rounded
+                        title="Löschen"
+                        onClick={() => handleDeleteUserPreset(preset.id)}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Dialog
+              header={userPresetEditor.id ? 'Preset bearbeiten' : 'Neues Preset'}
+              visible={userPresetEditor.open}
+              style={{ width: '520px' }}
+              onHide={closeUserPresetEditor}
+              modal
+            >
+              <div className="script-editor-fields" style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                <div>
+                  <label htmlFor="preset-name" style={{ display: 'block', marginBottom: '0.3rem' }}>Name *</label>
+                  <InputText
+                    id="preset-name"
+                    value={userPresetEditor.name}
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="z.B. Blu-ray HQ"
+                    style={{ width: '100%' }}
+                  />
+                  {userPresetErrors.name && <small className="error-text">{userPresetErrors.name}</small>}
+                </div>
+
+                <div>
+                  <label htmlFor="preset-media-type" style={{ display: 'block', marginBottom: '0.3rem' }}>Medientyp</label>
+                  <select
+                    id="preset-media-type"
+                    value={userPresetEditor.mediaType}
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, mediaType: e.target.value }))}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--surface-border, #ccc)', background: 'var(--surface-overlay, #fff)', color: 'var(--text-color, #000)' }}
+                  >
+                    <option value="all">Universell (alle Medien)</option>
+                    <option value="bluray">Blu-ray</option>
+                    <option value="dvd">DVD</option>
+                    <option value="other">Sonstiges</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="preset-hb-preset" style={{ display: 'block', marginBottom: '0.3rem' }}>HandBrake Preset (-Z)</label>
+                  <InputText
+                    id="preset-hb-preset"
+                    value={userPresetEditor.handbrakePreset}
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, handbrakePreset: e.target.value }))}
+                    placeholder="z.B. H.264 MKV 1080p30 (leer = kein Preset)"
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="preset-extra-args" style={{ display: 'block', marginBottom: '0.3rem' }}>Extra Args</label>
+                  <InputText
+                    id="preset-extra-args"
+                    value={userPresetEditor.extraArgs}
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, extraArgs: e.target.value }))}
+                    placeholder="z.B. -q 22 --encoder x264"
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="preset-description" style={{ display: 'block', marginBottom: '0.3rem' }}>Beschreibung (optional)</label>
+                  <InputTextarea
+                    id="preset-description"
+                    value={userPresetEditor.description}
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, description: e.target.value }))}
+                    rows={3}
+                    autoResize
+                    placeholder="Kurzbeschreibung für dieses Preset"
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div className="actions-row" style={{ marginTop: '0.5rem' }}>
+                  <Button
+                    label={userPresetEditor.id ? 'Aktualisieren' : 'Erstellen'}
+                    icon="pi pi-save"
+                    onClick={handleSaveUserPreset}
+                    loading={userPresetSaving}
+                  />
+                  <Button
+                    label="Abbrechen"
+                    icon="pi pi-times"
+                    severity="secondary"
+                    outlined
+                    onClick={closeUserPresetEditor}
+                    disabled={userPresetSaving}
+                  />
+                </div>
               </div>
             </Dialog>
           </TabPanel>

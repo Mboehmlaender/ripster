@@ -792,6 +792,7 @@ export default function DashboardPage({
           selectedPreEncodeScriptIds: startOptions.selectedPreEncodeScriptIds ?? [],
           selectedPostEncodeChainIds: startOptions.selectedPostEncodeChainIds ?? [],
           selectedPreEncodeChainIds: startOptions.selectedPreEncodeChainIds ?? [],
+          selectedUserPresetId: startOptions.selectedUserPresetId ?? null,
           skipPipelineStateUpdate: true
         });
       }

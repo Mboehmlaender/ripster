@@ -6,11 +6,15 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 
 > **Neu seit letztem Release**
 >
-> - **Cron-Job-System** – Skripte und Skript-Ketten zeitgesteuert ausführen; eigener Expression-Parser, Ausführungs-Logs, manuelle Auslösung, PushOver-Integration
-> - **DVD-Erkennung verbessert** – robuste Media-Profil-Erkennung (Blu-ray / DVD / CD) aus UDF/ISO9660-Dateisystemtyp, Laufwerk-Modell und Disc-Label
+> - **Profil-spezifische Einstellungen** – Separate Konfiguration für Blu-ray und DVD: eigene Pfade, HandBrake-Presets, Rip-Modi, Extra-Args, Dateinamen-Templates; automatische Auflösung anhand des erkannten Medientyps
+> - **Cron-Job-System** – Skripte und Skript-Ketten zeitgesteuert ausführen; eigener Expression-Parser, Ausführungs-Logs, manuelle Auslösung, PushOver-Integration pro Job
+> - **User-Presets** – benannte HandBrake-Preset-Sammlungen (Preset + Extra-Args) pro Medientyp anlegen und im Review-Panel auswählen
+> - **DVD-/Blu-ray-Erkennung verbessert** – robuste Media-Profil-Erkennung aus UDF/ISO9660-Dateisystemtyp, Laufwerk-Modell und Disc-Label; Medientyp-Indikator in der UI
 > - **Pre-Encode-Ausführungen** – Skripte und Ketten können nun auch *vor* dem Encode-Schritt ausgeführt werden (zusätzlich zu Post-Encode)
-> - **Sortierbare Skripte & Ketten** – Reihenfolge über Drag & Drop festlegen; wird persistent in der Datenbank gespeichert
+> - **Sortierbare Skripte & Ketten** – Reihenfolge über Drag & Drop festlegen; wird persistent gespeichert
+> - **Granulares PushOver** – je Event konfigurierbar (Metadaten bereit, Rip-Start, Encode-Start, Fertig, Fehler, Abbruch, Re-Encode)
 > - **`rip_successful`-Flag in Jobs** – separates Feld zur Nachverfolgung ob der Rip-Schritt abgeschlossen wurde (unabhängig vom Encode-Status)
+> - **`handbrake_restart_delete_incomplete_output`** – unvollständige Ausgabe wird beim Encode-Neustart automatisch gelöscht
 
 ---
 

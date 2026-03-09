@@ -1,167 +1,194 @@
 #!/usr/bin/env bash
-# =============================================================================
-#  HandBrake mit NVDEC aus Quellcode bauen
-#  Ubuntu 22.04 / 24.04, Debian 11 / 12
-#
-#  Verwendung:
-#    sudo bash build-handbrake-nvdec.sh [--version 1.9.0]
-#
-#  NVDEC benötigt zur Laufzeit den NVIDIA-Treiber (libnvcuvid.so).
-# =============================================================================
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
-info()   { echo -e "${BLUE}[INFO]${RESET}  $*"; }
-ok()     { echo -e "${GREEN}[OK]${RESET}    $*"; }
-warn()   { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-fatal()  { echo -e "${RED}[FEHLER]${RESET} $*" >&2; exit 1; }
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+REPO_ROOT="$SCRIPT_DIR"
+BIN_DIR="${REPO_ROOT}/bin"
+OUTPUT_BIN="${BIN_DIR}/HandBrakeCLI"
+OUTPUT_TMP="${BIN_DIR}/.HandBrakeCLI.build-tmp"
+HANDBRAKE_VERSION="${1:-1.10.0}"
+JOBS="${JOBS:-$(nproc)}"
 
-HANDBRAKE_VERSION="1.9.0"
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --version) HANDBRAKE_VERSION="$2"; shift 2 ;;
-    -h|--help) echo "Verwendung: sudo bash $0 [--version X.Y.Z]"; exit 0 ;;
-    *) fatal "Unbekannte Option: $1" ;;
-  esac
-done
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RESET='\033[0m'
 
-[[ $EUID -eq 0 ]] || fatal "Bitte als root ausführen: sudo bash $0"
+info()  { echo -e "${BLUE}[INFO]${RESET}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${RESET}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
+fatal() { error "$*"; exit 1; }
 
-[[ -f /etc/os-release ]] && . /etc/os-release || fatal "OS nicht erkennbar"
-
-echo -e "\n${BOLD}${BLUE}══════════════════════════════════════════${RESET}"
-echo -e "${BOLD}  HandBrake ${HANDBRAKE_VERSION} mit NVDEC bauen${RESET}"
-echo -e "${BOLD}${BLUE}══════════════════════════════════════════${RESET}\n"
-
-# --------------------------------------------------------------------------
-# 1. Build-Abhängigkeiten
-# --------------------------------------------------------------------------
-info "Installiere Build-Abhängigkeiten..."
-apt-get update -qq
-apt-get install -y \
-  autoconf automake build-essential cmake git \
-  libass-dev libbz2-dev libdvdnav-dev libdvdread-dev \
-  libfontconfig-dev libfreetype-dev libfribidi-dev libharfbuzz-dev \
-  libjansson-dev liblzma-dev libmp3lame-dev libnuma-dev libogg-dev \
-  libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool \
-  libturbojpeg0-dev libvorbis-dev libvpx-dev libx264-dev libxml2-dev \
-  m4 meson nasm ninja-build patch pkg-config python3 tar zlib1g-dev \
-  >/dev/null
-ok "Build-Abhängigkeiten installiert"
-
-# --------------------------------------------------------------------------
-# 2. CUDA-Header für NVDEC
-# --------------------------------------------------------------------------
-info "Prüfe CUDA-Header für NVDEC-Support..."
-if dpkg -l 2>/dev/null | grep -q '^ii.*nvidia-cuda-toolkit'; then
-  ok "nvidia-cuda-toolkit bereits installiert"
-else
-  info "Installiere nvidia-cuda-toolkit (für NVDEC-Header)..."
-  if apt-get install -y nvidia-cuda-toolkit >/dev/null 2>&1; then
-    ok "nvidia-cuda-toolkit installiert"
+run_as_root() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
   else
-    warn "nvidia-cuda-toolkit nicht in Standard-Repos – versuche NVIDIA CUDA Repo..."
-    local_ver="${VERSION_ID//./}"
-    cuda_deb="/tmp/cuda-keyring.deb"
-    if curl -fsSL \
-      "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${local_ver}/x86_64/cuda-keyring_1.1-1_all.deb" \
-      -o "$cuda_deb" 2>/dev/null; then
-      dpkg -i "$cuda_deb"
-      apt-get update -qq
-      # Minimale Header statt vollem Toolkit
-      apt-get install -y cuda-cudart-dev-12-8 >/dev/null 2>&1 && \
-        ok "CUDA-Header installiert (cuda-cudart-dev-12-8)" || \
-        warn "CUDA-Header-Installation fehlgeschlagen – NVDEC könnte im Build fehlen."
-    else
-      warn "NVIDIA CUDA Repo nicht erreichbar – NVDEC könnte im Build fehlen."
+    fatal "Root-Rechte erforderlich. Bitte als root ausführen oder sudo installieren."
+  fi
+}
+
+apt_get() {
+  run_as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+    apt-get -o Dpkg::Use-Pty=0 "$@"
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || fatal "Benötigter Befehl fehlt: $cmd"
+}
+
+cleanup_stale_tmp_build_dirs() {
+  local stale_dirs=()
+  shopt -s nullglob
+  stale_dirs=(/tmp/handbrake-nvdec-build-*)
+  shopt -u nullglob
+
+  if [[ ${#stale_dirs[@]} -gt 0 ]]; then
+    warn "Bereinige alte temporäre Build-Ordner in /tmp..."
+    run_as_root rm -rf "${stale_dirs[@]}"
+  fi
+}
+
+repair_package_state() {
+  local audit_output=""
+  audit_output="$(run_as_root dpkg --audit || true)"
+
+  if [[ -n "${audit_output//[[:space:]]/}" ]]; then
+    warn "Unvollständiger Paketstatus erkannt. Repariere dpkg/apt..."
+    run_as_root env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+    apt_get --fix-broken install -y
+    ok "Paketstatus repariert."
+  fi
+}
+
+install_build_dependencies() {
+  repair_package_state
+
+  info "Aktualisiere Paketlisten..."
+  apt_get update
+
+  info "Installiere Build-Abhängigkeiten..."
+  apt_get install -y \
+    autoconf automake build-essential cmake git \
+    libass-dev libbz2-dev libfontconfig-dev libfreetype-dev libfribidi-dev libharfbuzz-dev \
+    libjansson-dev liblzma-dev libmp3lame-dev libnuma-dev libogg-dev \
+    libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool libtool-bin \
+    libturbojpeg0-dev libvorbis-dev libx264-dev libxml2-dev libvpx-dev \
+    m4 make meson nasm ninja-build patch pkg-config tar zlib1g-dev \
+    curl libssl-dev clang bzip2 ca-certificates wget libffmpeg-nvenc-dev
+
+  if [[ ! -f /usr/include/ffnvcodec/dynlink_nvcuvid.h ]]; then
+    warn "NVDEC-Header (dynlink_nvcuvid.h) nicht gefunden. Versuche nvidia-cuda-toolkit als Fallback..."
+    if ! apt_get install -y nvidia-cuda-toolkit; then
+      fatal "NVDEC-Header fehlen und nvidia-cuda-toolkit konnte nicht installiert werden."
+    fi
+    if [[ ! -f /usr/include/ffnvcodec/dynlink_nvcuvid.h && ! -f /usr/include/nvcuvid.h ]]; then
+      fatal "NVDEC-Header weiterhin nicht vorhanden. Prüfe Repository-Konfiguration (universe/multiverse)."
     fi
   fi
-fi
+}
 
-# --------------------------------------------------------------------------
-# 3. Alle vorhandenen HandBrake-Installationen entfernen
-# --------------------------------------------------------------------------
-info "Entferne alle vorhandenen HandBrake-Installationen..."
-apt-get remove -y handbrake-cli handbrake 2>/dev/null || true
-snap remove handbrake-cli 2>/dev/null || true
-rm -f /usr/bin/HandBrakeCLI \
-      /usr/local/bin/HandBrakeCLI \
-      /snap/bin/handbrake-cli \
-      /snap/bin/HandBrakeCLI
-while true; do
-  FOUND=$(command -v HandBrakeCLI 2>/dev/null || true)
-  [[ -z "$FOUND" ]] && break
-  warn "Entferne: $FOUND"
-  rm -f "$FOUND"
-done
-hash -r 2>/dev/null || true
-ok "Alte HandBrake-Installation(en) entfernt"
+download_source() {
+  local tarball="$1"
+  local url="https://github.com/HandBrake/HandBrake/releases/download/${HANDBRAKE_VERSION}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
 
-# --------------------------------------------------------------------------
-# 4. Quellcode herunterladen
-# --------------------------------------------------------------------------
-TMP_DIR=$(mktemp -d)
-trap 'cd /; rm -rf "$TMP_DIR"' EXIT
-
-SRC_URL="https://github.com/HandBrake/HandBrake/releases/download/${HANDBRAKE_VERSION}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
-TARBALL="${TMP_DIR}/handbrake-src.tar.bz2"
-
-info "Lade HandBrake ${HANDBRAKE_VERSION} herunter..."
-info "URL: ${SRC_URL}"
-curl -fL --progress-bar "$SRC_URL" -o "$TARBALL" || \
-  wget --progress=bar:force "$SRC_URL" -O "$TARBALL" || \
-  fatal "Download fehlgeschlagen. Bitte Version prüfen: https://github.com/HandBrake/HandBrake/releases"
-
-info "Entpacke..."
-tar xjf "$TARBALL" -C "$TMP_DIR"
-
-SRC_DIR="${TMP_DIR}/HandBrake-${HANDBRAKE_VERSION}"
-[[ -d "$SRC_DIR" ]] || SRC_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "HandBrake*" | head -1)
-[[ -d "$SRC_DIR" ]] || fatal "Quellverzeichnis nicht gefunden"
-
-# --------------------------------------------------------------------------
-# 5. Konfigurieren & Bauen
-# --------------------------------------------------------------------------
-cd "$SRC_DIR"
-
-info "Konfiguriere HandBrake mit NVDEC (--enable-nvdec)..."
-./configure \
-  --launch-jobs="$(nproc)" \
-  --enable-nvdec \
-  --prefix=/usr/local \
-  2>&1 | tail -15
-
-info "Baue HandBrake mit $(nproc) Threads – das dauert 10–30 Minuten..."
-make --directory=build -j"$(nproc)"
-
-info "Installiere nach /usr/local/bin/..."
-make --directory=build install
-
-# --------------------------------------------------------------------------
-# 6. Ergebnis prüfen
-# --------------------------------------------------------------------------
-if command -v HandBrakeCLI &>/dev/null; then
-  VER=$(HandBrakeCLI --version 2>&1 | head -1)
-  ok "Erfolgreich installiert: ${VER}"
-  echo ""
-
-  # NVDEC im Binary prüfen
-  if HandBrakeCLI --help 2>&1 | grep -qi "nvdec"; then
-    ok "NVDEC: im Binary vorhanden ✓"
+  info "Lade HandBrake ${HANDBRAKE_VERSION} Quellcode..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL "$url" -o "$tarball"
   else
-    warn "NVDEC: nicht in --help gefunden (evtl. kein --enable-nvdec oder kein CUDA-Header)"
+    wget -O "$tarball" "$url"
+  fi
+}
+
+main() {
+  if [[ ! -f /etc/os-release ]]; then
+    fatal "/etc/os-release fehlt. Nur Debian/Ubuntu/Proxmox werden unterstützt."
+  fi
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "${ID:-}" in
+    debian|ubuntu|linuxmint|pop) ;;
+    *)
+      warn "Ungetestetes Betriebssystem: ${PRETTY_NAME:-unknown}. Es wird trotzdem versucht fortzufahren."
+      ;;
+  esac
+
+  require_cmd nproc
+  require_cmd tar
+  require_cmd dpkg
+
+  cleanup_stale_tmp_build_dirs
+  install_build_dependencies
+  require_cmd make
+
+  local tmp_dir tarball src_dir
+  tmp_dir="$(mktemp -d -p /tmp handbrake-nvdec-build-XXXXXX)"
+  tarball="${tmp_dir}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
+  src_dir="${tmp_dir}/HandBrake-${HANDBRAKE_VERSION}"
+
+  cleanup() {
+    rm -rf "$tmp_dir"
+    rm -f "$OUTPUT_TMP"
+  }
+  trap cleanup EXIT INT TERM
+
+  download_source "$tarball"
+
+  info "Entpacke Quellcode..."
+  tar xjf "$tarball" -C "$tmp_dir"
+  [[ -d "$src_dir" ]] || fatal "Entpacktes Quellverzeichnis nicht gefunden: $src_dir"
+
+  local configure_log
+  configure_log="${tmp_dir}/configure.log"
+
+  info "Konfiguriere Build (NVDEC aktiviert)..."
+  (
+    cd "$src_dir"
+    ./configure \
+      --launch-jobs="$JOBS" \
+      --enable-nvdec \
+      --disable-gtk \
+      --prefix=/usr/local >"$configure_log" 2>&1
+  )
+
+  if ! rg -q 'Enable NVDEC:[[:space:]]+True' "$configure_log"; then
+    tail -n 80 "$configure_log" >&2 || true
+    fatal "Configure hat NVDEC nicht aktiviert (Enable NVDEC != True)."
   fi
 
-  # Laufzeit-Bibliothek prüfen
-  if ldconfig -p 2>/dev/null | grep -q libnvcuvid; then
-    ok "libnvcuvid: gefunden – NVDEC zur Laufzeit verfügbar ✓"
-  else
-    warn "libnvcuvid: NICHT gefunden"
-    warn "→ Bitte NVIDIA-Treiber installieren: apt-get install nvidia-driver-XXX"
-    warn "  NVDEC ist im Binary vorhanden, funktioniert aber erst mit dem Treiber."
+  if ! rg -q 'Enable NVENC:[[:space:]]+True' "$configure_log"; then
+    tail -n 80 "$configure_log" >&2 || true
+    fatal "Configure hat NVENC nicht aktiviert (Enable NVENC != True)."
   fi
-else
-  fatal "HandBrakeCLI nach dem Build nicht gefunden – Build fehlgeschlagen."
-fi
+
+  rg 'Enable NVENC|Enable NVDEC' "$configure_log" || true
+
+  info "Baue HandBrakeCLI mit ${JOBS} Threads (das kann länger dauern)..."
+  make --directory="${src_dir}/build" -j"$JOBS"
+
+  [[ -x "${src_dir}/build/HandBrakeCLI" ]] || fatal "Build erfolgreich, aber HandBrakeCLI wurde nicht gefunden."
+
+  mkdir -p "$BIN_DIR"
+  install -m 0755 "${src_dir}/build/HandBrakeCLI" "$OUTPUT_TMP"
+
+  if "$OUTPUT_TMP" --help 2>&1 | rg -qi "nvdec|nvenc"; then
+    ok "Hinweis: NVENC/NVDEC-Begriffe in --help gefunden."
+  else
+    warn "--help zeigt NVENC/NVDEC nicht explizit. Maßgeblich ist die Configure-Zusammenfassung (Enable NVENC/NVDEC: True)."
+  fi
+
+  mv -f "$OUTPUT_TMP" "$OUTPUT_BIN"
+
+  ok "Fertig: ${OUTPUT_BIN}"
+  "$OUTPUT_BIN" --version | head -1
+  info "Aufgeräumt: Nur ${OUTPUT_BIN} bleibt im Repository als Build-Artefakt."
+}
+
+main "$@"

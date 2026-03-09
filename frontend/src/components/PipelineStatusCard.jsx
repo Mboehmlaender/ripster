@@ -226,6 +226,7 @@ export default function PipelineStatusCard({
   const reviewConfirmed = Boolean(pipeline?.context?.reviewConfirmed || mediaInfoReview?.reviewConfirmed);
   const reviewMode = String(mediaInfoReview?.mode || '').trim().toLowerCase();
   const isPreRipReview = reviewMode === 'pre_rip' || Boolean(mediaInfoReview?.preRip);
+  const jobMediaProfile = String(pipeline?.context?.mediaProfile || '').trim().toLowerCase() || null;
   const [selectedEncodeTitleId, setSelectedEncodeTitleId] = useState(null);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(null);
   const [trackSelectionByTitle, setTrackSelectionByTitle] = useState({});
@@ -236,16 +237,19 @@ export default function PipelineStatusCard({
   // Unified ordered lists: [{type: 'script'|'chain', id: number}]
   const [preEncodeItems, setPreEncodeItems] = useState([]);
   const [postEncodeItems, setPostEncodeItems] = useState([]);
+  const [userPresets, setUserPresets] = useState([]);
+  const [selectedUserPresetId, setSelectedUserPresetId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     const loadSettings = async () => {
       try {
-        const [settingsResponse, presetsResponse, scriptsResponse, chainsResponse] = await Promise.allSettled([
+        const [settingsResponse, presetsResponse, scriptsResponse, chainsResponse, userPresetsResponse] = await Promise.allSettled([
           api.getSettings(),
           api.getHandBrakePresets(),
           api.getScripts(),
-          api.getScriptChains()
+          api.getScriptChains(),
+          api.getUserPresets()
         ]);
         if (!cancelled) {
           const categories = settingsResponse.status === 'fulfilled'
@@ -269,6 +273,10 @@ export default function PipelineStatusCard({
             ? (Array.isArray(chainsResponse.value?.chains) ? chainsResponse.value.chains : [])
             : [];
           setChainCatalog(chains.map((item) => ({ id: item?.id, name: item?.name })));
+          const allUserPresets = userPresetsResponse.status === 'fulfilled'
+            ? (Array.isArray(userPresetsResponse.value?.presets) ? userPresetsResponse.value.presets : [])
+            : [];
+          setUserPresets(allUserPresets);
         }
       } catch (_error) {
         if (!cancelled) {
@@ -276,6 +284,7 @@ export default function PipelineStatusCard({
           setPresetDisplayMap({});
           setScriptCatalog([]);
           setChainCatalog([]);
+          setUserPresets([]);
         }
       }
     };
@@ -298,6 +307,7 @@ export default function PipelineStatusCard({
       ...normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || []).map((id) => ({ type: 'script', id })),
       ...normChain(mediaInfoReview?.postEncodeChainIds).map((id) => ({ type: 'chain', id }))
     ]);
+    setSelectedUserPresetId(null);
   }, [mediaInfoReview?.encodeInputTitleId, mediaInfoReview?.generatedAt, retryJobId]);
 
   useEffect(() => {
@@ -323,6 +333,14 @@ export default function PipelineStatusCard({
   const reviewPlaylistDecisionRequired = Boolean(mediaInfoReview?.playlistDecisionRequired);
   const hasSelectedEncodeTitle = Boolean(normalizeTitleId(selectedEncodeTitleId));
   const canConfirmReview = !reviewPlaylistDecisionRequired || hasSelectedEncodeTitle;
+
+  // Filter user presets by job media profile ('all' presets always shown)
+  const filteredUserPresets = (Array.isArray(userPresets) ? userPresets : []).filter((p) => {
+    if (!jobMediaProfile) {
+      return true;
+    }
+    return p.mediaType === 'all' || p.mediaType === jobMediaProfile;
+  });
   const canStartReadyJob = isPreRipReview
     ? Boolean(retryJobId)
     : Boolean(retryJobId && encodeInputPath);
@@ -575,7 +593,8 @@ export default function PipelineStatusCard({
                     selectedPostEncodeScriptIds: selectedPostScriptIds,
                     selectedPreEncodeScriptIds: selectedPreScriptIds,
                     selectedPostEncodeChainIds: selectedPostChainIds,
-                    selectedPreEncodeChainIds: selectedPreChainIds
+                    selectedPreEncodeChainIds: selectedPreChainIds,
+                    selectedUserPresetId: selectedUserPresetId || null
                   });
                 }}
                 loading={busy}
@@ -786,6 +805,9 @@ export default function PipelineStatusCard({
             availableChains={chainCatalog}
             preEncodeItems={preEncodeItems}
             postEncodeItems={postEncodeItems}
+            userPresets={filteredUserPresets}
+            selectedUserPresetId={selectedUserPresetId}
+            onUserPresetChange={(presetId) => setSelectedUserPresetId(presetId)}
             allowEncodeItemSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
             onAddPreEncodeItem={(itemType) => {
               setPreEncodeItems((prev) => {

@@ -46,7 +46,7 @@ flowchart LR
     WUD -->|selectMetadata(selectedPlaylist)| MIC
     MIC -->|Tracks analysiert| RTE[READY_TO\nENCODE]
     RTE -->|confirmEncodeReview() + startPreparedJob()| ENC[ENCODING]
-    ENC -->|HandBrake + Post-Skripte fertig| FIN([FINISHED])
+    ENC -->|Pre-Encode → HandBrake → Post-Encode fertig| FIN([FINISHED])
     ENC -->|Abbruch| CAN([CANCELLED])
     ENC -->|Fehler| ERR([ERROR])
     RIP -->|Fehler| ERR
@@ -84,9 +84,17 @@ Der Service pollt das Laufwerk im konfigurierten Intervall (`disc_poll_interval_
 
 ```js
 // Ereignisse
-emit('discInserted', { path: '/dev/sr0' })
+emit('discInserted', { path: '/dev/sr0', mediaProfile: 'bluray', ... })
 emit('discRemoved', { path: '/dev/sr0' })
 ```
+
+### Media-Profil-Erkennung
+
+Das erkannte Gerät enthält ein `mediaProfile`-Feld (`"bluray"`, `"dvd"`, `"other"` oder `null`). Die Erkennung nutzt eine Heuristik aus drei Quellen (absteigend nach Priorität):
+
+1. Explizit gesetztes `media_profile` aus den Settings
+2. Disc-Label und Laufwerks-Modell (Regex gegen bekannte Begriffe)
+3. Dateisystemtyp: `udf` → bevorzugt DVD, kombiniert mit Modell; `iso9660/cdfs` → DVD oder CD
 
 ---
 
@@ -170,20 +178,50 @@ Verwaltet alle Anwendungseinstellungen.
 ### Features
 
 - **Schema-getriebene Validierung**: Jede Einstellung hat Typ, Grenzen und Pflichtfeld-Flag
-- **Kategorisierung**: Einstellungen sind in Kategorien gruppiert (Paths, Tools, Encoding, ...)
+- **Kategorisierung**: Einstellungen sind in Kategorien gruppiert (Pfade, Tools, Metadaten, …)
 - **Persistenz**: Werte in SQLite, Schema ebenfalls in SQLite
-- **Defaults**: `defaultSettings.js` definiert Standardwerte
+- **Profil-Auflösung**: `resolveEffectiveToolSettings(settingsMap, mediaProfile)` wählt automatisch die profil-spezifischen Werte (`_bluray`/`_dvd`) und fällt auf den globalen Wert zurück
+
+### Profil-Auflösung
+
+```js
+// Löst alle profil-spezifischen Keys auf und gibt einen effektiven Einstellungs-Map zurück
+const effective = await settingsService.getEffectiveSettingsMap('bluray');
+// effective.handbrake_preset  → Wert aus handbrake_preset_bluray (falls gesetzt)
+// effective.raw_dir           → Wert aus raw_dir_bluray (kein Fallback bei Pfaden)
+```
 
 ### Einstellungs-Kategorien
 
-| Kategorie | Einstellungen |
-|-----------|--------------|
-| `Pfade` | `raw_dir`, `movie_dir`, `log_dir` |
+| Kategorie | Ausgewählte Schlüssel |
+|-----------|----------------------|
+| `Pfade` | `raw_dir[_bluray/_dvd/_other]`, `movie_dir[_bluray/_dvd/_other]`, `log_dir` |
 | `Laufwerk` | `drive_mode`, `drive_device`, `disc_poll_interval_ms`, `makemkv_source_index` |
 | `Monitoring` | `hardware_monitoring_enabled`, `hardware_monitoring_interval_ms` |
 | `Tools` | `makemkv_command`, `handbrake_command`, `mediainfo_command`, `pipeline_max_parallel_jobs` |
+| `Tools – Blu-ray` | `handbrake_preset_bluray`, `makemkv_rip_mode_bluray`, … |
+| `Tools – DVD` | `handbrake_preset_dvd`, `makemkv_rip_mode_dvd`, … |
 | `Metadaten` | `omdb_api_key`, `omdb_default_type` |
-| `Benachrichtigungen` | `pushover_user_key`, `pushover_api_token` |
+| `Benachrichtigungen` | `pushover_enabled`, `pushover_token`, `pushover_notify_*` |
+
+---
+
+## userPresetService.js
+
+Verwaltet benannte HandBrake-Preset-Sammlungen pro Medientyp.
+
+### Methoden
+
+| Methode | Beschreibung |
+|---------|-------------|
+| `listPresets(mediaType?)` | Alle Presets; optional nach Medientyp filtern (`bluray`/`dvd`/`other`/`all`) |
+| `getPresetById(id)` | Einzelnes Preset |
+| `createPreset(payload)` | Neues Preset anlegen |
+| `updatePreset(id, payload)` | Preset aktualisieren |
+| `deletePreset(id)` | Preset löschen |
+
+!!! info "mediaType = 'all'"
+    Presets mit `mediaType = 'all'` erscheinen bei Filterung nach jedem Medientyp.
 
 ---
 
@@ -201,6 +239,33 @@ Datenbankoperationen für Job-Historie.
 | `importOrphanRaw(path)` | Orphan-Ordner als Job importieren |
 | `assignOmdb(id, omdbData)` | OMDb-Metadaten nachträglich zuweisen |
 | `deleteJob(id, deleteFiles)` | Job und optional Dateien löschen |
+
+---
+
+## cronService.js
+
+Eingebautes Cron-System ohne externe Abhängigkeiten.
+
+### Features
+
+- **Eigener Expression-Parser**: Unterstützt alle Standard-5-Felder-Cron-Ausdrücke (`* /n`, Bereiche, Listen)
+- **Skripte und Ketten**: Cron-Jobs können ein Skript (`sourceType: "script"`) oder eine Kette (`sourceType: "chain"`) ausführen
+- **Log-Rotation**: Max. 50 Logs pro Job, Ausgabe auf 100.000 Zeichen begrenzt
+- **PushOver-Integration**: Optionale Benachrichtigung nach jeder Ausführung
+- **Manuelle Auslösung**: `triggerJobManually(id)` – läuft unabhängig vom Zeitplan
+
+### Methoden
+
+| Methode | Beschreibung |
+|---------|-------------|
+| `listJobs()` | Alle Cron-Jobs |
+| `createJob(payload)` | Neuen Job anlegen |
+| `updateJob(id, payload)` | Job aktualisieren |
+| `deleteJob(id)` | Job löschen |
+| `getJobLogs(id, limit)` | Ausführungs-Logs |
+| `triggerJobManually(id)` | Sofortige Ausführung |
+| `validateExpression(expr)` | Ausdruck validieren |
+| `getNextRunTime(expr)` | Nächsten Ausführungszeitpunkt berechnen |
 
 ---
 

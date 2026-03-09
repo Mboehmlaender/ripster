@@ -115,11 +115,11 @@ Sendet eine Test-Benachrichtigung über PushOver.
 
 ## Skript-Verwaltung
 
-Post-Encode-Skripte werden über eigene Endpunkte unter `/api/settings/scripts` verwaltet.
+Skripte werden über eigene Endpunkte unter `/api/settings/scripts` verwaltet. Jedes Skript hat eine `scriptBody`-Property (der Shell-Befehl oder mehrzeiliges Skript) und einen `orderIndex` für die Sortierung.
 
 ### GET /api/settings/scripts
 
-Gibt alle konfigurierten Skripte zurück.
+Gibt alle Skripte zurück, sortiert nach `orderIndex`.
 
 **Response:**
 
@@ -127,11 +127,12 @@ Gibt alle konfigurierten Skripte zurück.
 {
   "scripts": [
     {
-      "id": "script-abc123",
+      "id": 1,
       "name": "Zu Plex verschieben",
-      "command": "/home/michael/scripts/move-to-plex.sh",
-      "description": "Verschiebt die fertige Datei ins Plex-Verzeichnis",
-      "createdAt": "2024-01-15T10:00:00.000Z"
+      "scriptBody": "mv \"$RIPSTER_OUTPUT_PATH\" /mnt/plex/movies/",
+      "orderIndex": 1,
+      "createdAt": "2026-01-15T10:00:00.000Z",
+      "updatedAt": "2026-01-15T10:00:00.000Z"
     }
   ]
 }
@@ -141,75 +142,46 @@ Gibt alle konfigurierten Skripte zurück.
 
 ### POST /api/settings/scripts
 
-Legt ein neues Post-Encode-Skript an.
+Legt ein neues Skript an.
 
 **Request:**
 
 ```json
 {
   "name": "Zu Plex verschieben",
-  "command": "/home/michael/scripts/move-to-plex.sh",
-  "description": "Verschiebt die fertige Datei ins Plex-Verzeichnis"
+  "scriptBody": "mv \"$RIPSTER_OUTPUT_PATH\" /mnt/plex/movies/"
 }
 ```
 
 | Feld | Typ | Pflicht | Beschreibung |
 |------|-----|---------|-------------|
-| `name` | string | ✅ | Anzeigename |
-| `command` | string | ✅ | Shell-Befehl oder absoluter Skriptpfad |
-| `description` | string | — | Optionale Beschreibung |
+| `name` | string | ✅ | Anzeigename (eindeutig) |
+| `scriptBody` | string | ✅ | Shell-Befehl oder mehrzeiliges Skript |
 
-**Response:**
-
-```json
-{
-  "ok": true,
-  "script": {
-    "id": "script-abc123",
-    "name": "Zu Plex verschieben",
-    "command": "/home/michael/scripts/move-to-plex.sh"
-  }
-}
-```
+**Response:** `201 Created` – `{ "script": { ... } }`
 
 ---
 
-### PUT /api/settings/scripts/:scriptId
+### PUT /api/settings/scripts/:id
 
-Aktualisiert ein vorhandenes Skript.
-
-**URL-Parameter:** `scriptId`
-
-**Request:** Gleiche Felder wie beim Anlegen (alle optional).
-
-```json
-{ "name": "Zu Jellyfin verschieben", "command": "/home/michael/scripts/move-to-jellyfin.sh" }
-```
-
-**Response:** `{ "ok": true }`
+Aktualisiert ein vorhandenes Skript. Alle Felder optional.
 
 ---
 
-### DELETE /api/settings/scripts/:scriptId
+### DELETE /api/settings/scripts/:id
 
 Löscht ein Skript.
 
-**URL-Parameter:** `scriptId`
-
-**Response:** `{ "ok": true }`
-
-!!! warning "Referenzen in Jobs"
-    Wenn das Skript in laufenden oder abgeschlossenen Jobs referenziert wird, wird es trotzdem gelöscht. In zukünftigen Encode-Reviews erscheint es nicht mehr.
+!!! warning "Referenzen"
+    Das Skript wird gelöscht, auch wenn es in Job-Historien referenziert ist. In zukünftigen Reviews erscheint es nicht mehr.
 
 ---
 
-### POST /api/settings/scripts/:scriptId/test
+### POST /api/settings/scripts/:id/test
 
 Führt ein Skript mit Platzhalter-Umgebungsvariablen aus (Testlauf).
 
-**URL-Parameter:** `scriptId`
-
-**Response (Erfolg):**
+**Response:**
 
 ```json
 {
@@ -218,18 +190,6 @@ Führt ein Skript mit Platzhalter-Umgebungsvariablen aus (Testlauf).
   "stdout": "Testausgabe des Skripts",
   "stderr": "",
   "durationMs": 245
-}
-```
-
-**Response (Fehler):**
-
-```json
-{
-  "ok": false,
-  "exitCode": 1,
-  "stdout": "",
-  "stderr": "Datei nicht gefunden: /home/michael/scripts/move-to-plex.sh",
-  "durationMs": 12
 }
 ```
 
@@ -246,28 +206,149 @@ Führt ein Skript mit Platzhalter-Umgebungsvariablen aus (Testlauf).
 
 ---
 
+### POST /api/settings/scripts/reorder
+
+Ändert die Reihenfolge der Skripte (persistiert in `order_index`).
+
+**Request:**
+
+```json
+{ "orderedScriptIds": [3, 1, 2] }
+```
+
+**Response:** `{ "scripts": [ ... ] }` – alle Skripte in neuer Reihenfolge.
+
+---
+
+## Skript-Ketten-Verwaltung
+
+Skript-Ketten werden unter `/api/settings/script-chains` verwaltet.
+
+### GET /api/settings/script-chains
+
+Gibt alle Ketten zurück (inkl. Schritte).
+
+### POST /api/settings/script-chains
+
+Legt eine neue Kette an.
+
+```json
+{ "name": "Nach Jellyfin deployen" }
+```
+
+### PUT /api/settings/script-chains/:id
+
+Aktualisiert eine Kette (Name, Schritte).
+
+### DELETE /api/settings/script-chains/:id
+
+Löscht eine Kette und alle ihre Schritte.
+
+### POST /api/settings/script-chains/:id/test
+
+Führt eine Kette mit Platzhalter-Umgebungsvariablen aus (Testlauf).
+
+**Response:**
+
+```json
+{
+  "result": {
+    "success": true,
+    "steps": [
+      { "scriptId": 1, "scriptName": "Zu Plex verschieben", "success": true, "exitCode": 0 }
+    ]
+  }
+}
+```
+
+### POST /api/settings/script-chains/reorder
+
+Ändert die Reihenfolge der Ketten (persistiert in `order_index`).
+
+**Request:**
+
+```json
+{ "orderedChainIds": [2, 1, 3] }
+```
+
+---
+
+## User-Presets
+
+Benannte HandBrake-Preset-Sammlungen, die im Encode-Review schnell angewendet werden können. Unter `/api/settings/user-presets` verwaltet.
+
+### GET /api/settings/user-presets
+
+Gibt alle User-Presets zurück. Optional gefiltert per Query-Parameter `mediaType`.
+
+**Query-Parameter:**
+
+| Parameter | Werte | Beschreibung |
+|-----------|-------|-------------|
+| `mediaType` | `bluray`, `dvd`, `other`, `all` | Filtert Presets nach Medientyp |
+
+**Response:**
+
+```json
+{
+  "presets": [
+    {
+      "id": 1,
+      "name": "Blu-ray High Quality",
+      "mediaType": "bluray",
+      "handbrakePreset": "H.265 MKV 1080p30",
+      "extraArgs": "--encoder-preset slow",
+      "description": "Langsam, aber beste Qualität",
+      "createdAt": "2026-01-15T10:00:00.000Z",
+      "updatedAt": "2026-01-15T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### POST /api/settings/user-presets
+
+Legt ein neues User-Preset an.
+
+**Request:**
+
+```json
+{
+  "name": "Blu-ray High Quality",
+  "mediaType": "bluray",
+  "handbrakePreset": "H.265 MKV 1080p30",
+  "extraArgs": "--encoder-preset slow",
+  "description": "Langsam, aber beste Qualität"
+}
+```
+
+| Feld | Typ | Pflicht | Beschreibung |
+|------|-----|---------|-------------|
+| `name` | string | ✅ | Anzeigename |
+| `mediaType` | string | — | `bluray`, `dvd`, `other`, `all` (Standard: `all`) |
+| `handbrakePreset` | string | — | HandBrake-Preset-Name (`-Z`) |
+| `extraArgs` | string | — | Zusatz-CLI-Argumente |
+| `description` | string | — | Optionale Beschreibung |
+
+**Response:** `201 Created` – `{ "preset": { ... } }`
+
+---
+
+### PUT /api/settings/user-presets/:id
+
+Aktualisiert ein User-Preset. Alle Felder optional.
+
+---
+
+### DELETE /api/settings/user-presets/:id
+
+Löscht ein User-Preset.
+
+---
+
 ## Einstellungs-Schlüssel Referenz
 
-Eine vollständige Liste aller Einstellungs-Schlüssel:
-
-| Schlüssel | Kategorie | Typ | Beschreibung |
-|---------|----------|-----|-------------|
-| `raw_dir` | paths | string | Raw-MKV Verzeichnis |
-| `movie_dir` | paths | string | Ausgabe-Verzeichnis |
-| `log_dir` | paths | string | Log-Verzeichnis |
-| `makemkv_command` | tools | string | MakeMKV-Befehl |
-| `handbrake_command` | tools | string | HandBrake-Befehl |
-| `mediainfo_command` | tools | string | MediaInfo-Befehl |
-| `handbrake_preset` | encoding | string | HandBrake-Preset-Name |
-| `handbrake_extra_args` | encoding | string | Zusatz-Argumente |
-| `output_extension` | encoding | string | Dateiendung (z.B. `mkv`) |
-| `filename_template` | encoding | string | Dateiname-Template |
-| `drive_mode` | drive | select | `auto` oder `explicit` |
-| `drive_device` | drive | string | Geräte-Pfad |
-| `disc_poll_interval_ms` | drive | number | Polling-Intervall (ms) |
-| `makemkv_min_length_minutes` | makemkv | number | Min. Titellänge (Minuten) |
-| `makemkv_backup_mode` | makemkv | boolean | Backup-Modus aktivieren |
-| `omdb_api_key` | omdb | string | OMDb API-Key |
-| `omdb_default_type` | omdb | select | Standard-Suchtyp |
-| `pushover_user_key` | notifications | string | PushOver User-Key |
-| `pushover_api_token` | notifications | string | PushOver API-Token |
+Eine vollständige Übersicht aller Schlüssel:
+[:octicons-arrow-right-24: Einstellungsreferenz](../configuration/settings-reference.md)

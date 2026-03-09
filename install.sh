@@ -20,8 +20,6 @@
 #    --host <hostname>     Hostname/IP für die Weboberfläche (Standard: Maschinen-IP)
 #    --no-makemkv          MakeMKV-Installation überspringen
 #    --no-handbrake        HandBrake-Installation überspringen
-#    --build-handbrake     HandBrake aus Quellcode mit NVDEC-Unterstützung bauen
-#    --handbrake-version   HandBrake-Version für Source-Build (Standard: 1.9.0)
 #    --no-nginx            Nginx-Einrichtung überspringen
 #    --reinstall           Vorhandene Installation aktualisieren (Daten bleiben erhalten)
 #    -h, --help            Diese Hilfe anzeigen
@@ -29,6 +27,8 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/Mboehmlaender/ripster.git"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+BUNDLED_HANDBRAKE_CLI="${SCRIPT_DIR}/bin/HandBrakeCLI"
 
 # --- Farben -------------------------------------------------------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -51,8 +51,7 @@ BACKEND_PORT="3001"
 FRONTEND_HOST=""
 SKIP_MAKEMKV=false
 SKIP_HANDBRAKE=false
-BUILD_HANDBRAKE_NVDEC=false
-HANDBRAKE_VERSION="1.9.0"
+HANDBRAKE_INSTALL_MODE=""
 SKIP_NGINX=false
 REINSTALL=false
 
@@ -66,8 +65,6 @@ while [[ $# -gt 0 ]]; do
     --host)               FRONTEND_HOST="$2"; shift 2 ;;
     --no-makemkv)         SKIP_MAKEMKV=true; shift ;;
     --no-handbrake)       SKIP_HANDBRAKE=true; shift ;;
-    --build-handbrake)    BUILD_HANDBRAKE_NVDEC=true; shift ;;
-    --handbrake-version)  HANDBRAKE_VERSION="$2"; shift 2 ;;
     --no-nginx)           SKIP_NGINX=true; shift ;;
     --reinstall)          REINSTALL=true; shift ;;
     -h|--help)
@@ -188,201 +185,81 @@ install_makemkv() {
   warn "Beta-Key: https://www.makemkv.com/forum/viewtopic.php?t=1053"
 }
 
-remove_all_handbrake() {
-  info "Entferne alle vorhandenen HandBrake-Installationen..."
-  # apt
-  apt-get remove -y handbrake-cli handbrake 2>/dev/null || true
-  # snap
-  snap remove handbrake-cli 2>/dev/null || true
-  # bekannte Binär-Pfade
-  rm -f /usr/bin/HandBrakeCLI \
-        /usr/local/bin/HandBrakeCLI \
-        /snap/bin/handbrake-cli \
-        /snap/bin/HandBrakeCLI
-  # alle weiteren Fundstellen über PATH
-  while true; do
-    local found
-    found=$(command -v HandBrakeCLI 2>/dev/null || true)
-    [[ -z "$found" ]] && break
-    warn "Entferne: $found"
-    rm -f "$found"
-  done
-  hash -r 2>/dev/null || true
-  ok "Alte HandBrake-Installation(en) entfernt"
+select_handbrake_mode() {
+  [[ "$SKIP_HANDBRAKE" == true ]] && return
+
+  local mode_answer=""
+  echo ""
+  echo "Install HandBrake:"
+  echo ""
+  echo "1. Standard version (apt install handbrake-cli)"
+  echo "2. GPU version with NVDEC (use bundled binary)"
+
+  if [[ -t 0 ]]; then
+    read -r -p "Select option [1/2]: " mode_answer
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "Select option [1/2]: " mode_answer </dev/tty
+  else
+    HANDBRAKE_INSTALL_MODE="standard"
+    warn "Kein interaktives Terminal erkannt – verwende Standardversion (apt)."
+    return
+  fi
+
+  case "$mode_answer" in
+    2) HANDBRAKE_INSTALL_MODE="gpu" ;;
+    1|"") HANDBRAKE_INSTALL_MODE="standard" ;;
+    *) warn "Ungültige Auswahl '$mode_answer' – verwende Standardversion."; HANDBRAKE_INSTALL_MODE="standard" ;;
+  esac
 }
 
-build_handbrake_nvdec() {
-  header "HandBrake ${HANDBRAKE_VERSION} mit NVDEC aus Quellcode bauen"
-
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
-  local src_url="https://github.com/HandBrake/HandBrake/releases/download/${HANDBRAKE_VERSION}/HandBrake-${HANDBRAKE_VERSION}-source.tar.bz2"
-  local tarball="${tmp_dir}/handbrake-src.tar.bz2"
-
-  # Alte Installationen vollständig entfernen
-  remove_all_handbrake
-
-  # Build-Abhängigkeiten
-  info "Installiere Build-Abhängigkeiten..."
-  apt-get install -y \
-    autoconf automake build-essential cmake git \
-    libass-dev libbz2-dev libdvdnav-dev libdvdread-dev \
-    libfontconfig-dev libfreetype-dev libfribidi-dev libharfbuzz-dev \
-    libjansson-dev liblzma-dev libmp3lame-dev libnuma-dev libogg-dev \
-    libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool libtool-bin \
-    libturbojpeg0-dev libvorbis-dev libvpx-dev libx264-dev libxml2-dev \
-    m4 meson nasm ninja-build patch pkg-config python3 tar zlib1g-dev \
-    >/dev/null
-
-  # CUDA Toolkit für NVDEC-Header
-  info "Installiere CUDA Toolkit (für NVDEC-Header)..."
-  if ! dpkg -l 2>/dev/null | grep -q '^ii.*nvidia-cuda-toolkit'; then
-    apt-get install -y nvidia-cuda-toolkit >/dev/null 2>&1 || {
-      warn "nvidia-cuda-toolkit nicht verfügbar – versuche Fallback-Header..."
-      local cuda_keyring="/tmp/cuda-keyring.deb"
-      local ubuntu_ver="${VERSION_ID//./}"
-      curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ubuntu_ver}/x86_64/cuda-keyring_1.1-1_all.deb" \
-        -o "$cuda_keyring" 2>/dev/null && \
-        dpkg -i "$cuda_keyring" 2>/dev/null && \
-        apt-get update -qq && \
-        apt-get install -y cuda-cudart-dev-12-8 >/dev/null 2>&1 || \
-        warn "CUDA-Header konnten nicht installiert werden – NVDEC wird möglicherweise nicht verfügbar sein."
-    }
-  fi
-  ok "Build-Abhängigkeiten installiert"
-
-  # Quellcode herunterladen
-  info "Lade HandBrake ${HANDBRAKE_VERSION} herunter..."
-  curl -fsSL "$src_url" -o "$tarball" 2>/dev/null || \
-    wget -q "$src_url" -O "$tarball" || \
-    fatal "HandBrake-Quellcode konnte nicht heruntergeladen werden (${src_url})"
-
-  info "Entpacke Quellcode..."
-  tar xjf "$tarball" -C "$tmp_dir"
-  local src_dir="${tmp_dir}/HandBrake-${HANDBRAKE_VERSION}"
-  [[ -d "$src_dir" ]] || src_dir=$(find "$tmp_dir" -maxdepth 1 -type d -name "HandBrake*" | head -1)
-  [[ -d "$src_dir" ]] || fatal "HandBrake-Quellverzeichnis nicht gefunden in $tmp_dir"
-
-  cd "$src_dir"
-
-  # Konfigurieren mit NVDEC
-  info "Konfiguriere HandBrake mit NVDEC..."
-  ./configure --launch-jobs="$(nproc)" --enable-nvdec --prefix=/usr/local 2>&1 | tail -10
-
-  # Bauen (dauert je nach Hardware 10–30 Min)
-  info "Baue HandBrake ($(nproc) Threads – bitte warten)..."
-  make --directory=build -j"$(nproc)"
-
-  info "Installiere HandBrake nach /usr/local/bin..."
-  make --directory=build install
-
-  cd /
-  rm -rf "$tmp_dir"
+install_handbrake_standard() {
+  info "Installiere HandBrakeCLI aus den Standard-Repositories..."
+  info "Aktualisiere Paketlisten..."
+  apt_update
+  apt-get install -y handbrake-cli
+  hash -r 2>/dev/null || true
 
   if command_exists HandBrakeCLI; then
-    local ver
-    ver=$(HandBrakeCLI --version 2>&1 | head -1)
-    ok "HandBrakeCLI mit NVDEC installiert: ${ver}"
-    # NVDEC-Verfügbarkeit zur Laufzeit hängt vom NVIDIA-Treiber ab.
-    # Prüfe ob libnvcuvid vorhanden:
-    if ldconfig -p 2>/dev/null | grep -q libnvcuvid; then
-      ok "libnvcuvid gefunden – NVDEC ist zur Laufzeit verfügbar."
-    else
-      warn "libnvcuvid NICHT gefunden. NVDEC benötigt den installierten NVIDIA-Treiber (nvidia-driver-XXX)."
-      warn "Stelle sicher, dass der NVIDIA-Treiber auf dem System installiert ist."
-    fi
-  else
-    fatal "HandBrakeCLI nach dem Build nicht gefunden – Build fehlgeschlagen."
+    ok "HandBrakeCLI installiert: $(HandBrakeCLI --version 2>&1 | head -1)"
+    return
   fi
+
+  if command_exists handbrake-cli; then
+    ok "handbrake-cli installiert: $(handbrake-cli --version 2>&1 | head -1)"
+    return
+  fi
+
+  fatal "HandBrake wurde installiert, aber kein CLI-Befehl wurde gefunden."
 }
 
-handbrake_has_nvdec() {
-  command_exists HandBrakeCLI || return 1
-  HandBrakeCLI --help 2>&1 | grep -qi "nvdec"
+install_handbrake_gpu_bundled() {
+  info "Installiere gebündeltes HandBrakeCLI mit NVDEC..."
+
+  if [[ ! -f "$BUNDLED_HANDBRAKE_CLI" ]]; then
+    fatal "Bundled Binary fehlt: ./bin/HandBrakeCLI (aufgelöst zu: $BUNDLED_HANDBRAKE_CLI)"
+  fi
+
+  install -m 0755 "$BUNDLED_HANDBRAKE_CLI" /usr/local/bin/HandBrakeCLI
+  hash -r 2>/dev/null || true
+
+  ok "Bundled HandBrakeCLI installiert nach /usr/local/bin/HandBrakeCLI"
+  if command_exists HandBrakeCLI; then
+    ok "HandBrakeCLI Version: $(HandBrakeCLI --version 2>&1 | head -1)"
+  fi
 }
 
 install_handbrake() {
   header "HandBrake CLI installieren"
 
-  # Bereits installiert MIT NVDEC → nichts tun
-  if handbrake_has_nvdec; then
-    ok "HandBrakeCLI mit NVDEC bereits installiert: $(HandBrakeCLI --version 2>&1 | head -1)"
-    return
+  if [[ -z "$HANDBRAKE_INSTALL_MODE" ]]; then
+    HANDBRAKE_INSTALL_MODE="standard"
   fi
 
-  # Installiert OHNE NVDEC → entfernen und NVDEC-Build erzwingen
-  if command_exists HandBrakeCLI; then
-    warn "HandBrakeCLI ohne NVDEC gefunden – wird ersetzt durch NVDEC-Build."
-    BUILD_HANDBRAKE_NVDEC=true
-  fi
-
-  # --build-handbrake-Flag oder kein NVDEC in vorhandener Installation
-  if [[ "$BUILD_HANDBRAKE_NVDEC" == true ]]; then
-    build_handbrake_nvdec
-    return
-  fi
-
-  # Strategie 1: direkt aus den Distro-Repos (Ubuntu Universe / Debian)
-  info "Versuche HandBrake CLI aus den Standard-Repos..."
-  if apt-get install -y handbrake-cli 2>/dev/null; then
-    # Nach apt-Install: NVDEC prüfen – falls nicht, sofort NVDEC-Build
-    if handbrake_has_nvdec; then
-      ok "HandBrakeCLI installiert (Standard-Repos, mit NVDEC)"
-    else
-      warn "Installiertes HandBrakeCLI hat kein NVDEC – ersetze durch NVDEC-Build."
-      build_handbrake_nvdec
-    fi
-    return
-  fi
-
-  case "$ID" in
-    ubuntu)
-      local codename="${VERSION_CODENAME:-jammy}"
-      local ppa_sources="/etc/apt/sources.list.d/handbrake.list"
-      local ppa_key="/etc/apt/keyrings/handbrake.gpg"
-
-      info "Füge HandBrake PPA manuell hinzu (${codename})..."
-      mkdir -p /etc/apt/keyrings
-
-      if curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x8771ADB0816950D8" \
-          | gpg --dearmor -o "$ppa_key" 2>/dev/null; then
-        cat > "$ppa_sources" <<EOF
-deb [signed-by=${ppa_key}] https://ppa.launchpadcontent.net/stebbins/handbrake-releases/ubuntu ${codename} main
-EOF
-        apt_update
-        apt-get install -y handbrake-cli 2>/dev/null && \
-          { ok "HandBrakeCLI installiert (PPA)"; return; } || \
-          { warn "PPA-Installation fehlgeschlagen, räume auf...";
-            rm -f "$ppa_key" "$ppa_sources"; }
-      else
-        warn "PPA-Key konnte nicht geladen werden."
-      fi
-
-      # Strategie 3 (Ubuntu): snap
-      if command_exists snap; then
-        info "Versuche HandBrake via snap..."
-        if snap install handbrake-cli 2>/dev/null; then
-          ok "HandBrakeCLI installiert (snap)"
-          return
-        fi
-      fi
-      ;;
-
-    debian)
-      info "Versuche HandBrake CLI über Debian Backports..."
-      if ! find /etc/apt/sources.list.d/ -name "*.list" -exec grep -l "backports" {} \; 2>/dev/null | grep -q .; then
-        echo "deb http://deb.debian.org/debian ${VERSION_CODENAME}-backports main" \
-          > /etc/apt/sources.list.d/backports.list
-        apt_update
-      fi
-      apt-get install -y -t "${VERSION_CODENAME}-backports" handbrake-cli 2>/dev/null && \
-        { ok "HandBrakeCLI installiert (Backports)"; return; }
-      ;;
+  case "$HANDBRAKE_INSTALL_MODE" in
+    standard) install_handbrake_standard ;;
+    gpu) install_handbrake_gpu_bundled ;;
+    *) fatal "Unbekannter HandBrake-Modus: $HANDBRAKE_INSTALL_MODE" ;;
   esac
-
-  warn "HandBrake CLI konnte nicht automatisch installiert werden."
-  warn "Für einen NVDEC-Build: sudo bash install.sh --no-makemkv --no-nginx --build-handbrake"
-  warn "Oder manuell: https://handbrake.fr/downloads2.php"
 }
 
 # --- apt-Hilfsfunktionen ------------------------------------------------------
@@ -462,6 +339,9 @@ EOF
     fatal "Installation abgebrochen."
   fi
 }
+
+# --- HandBrake-Installmodus auswählen ----------------------------------------
+select_handbrake_mode
 
 # --- Systemabhängigkeiten -----------------------------------------------------
 header "Systemabhängigkeiten installieren"

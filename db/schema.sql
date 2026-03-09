@@ -132,6 +132,19 @@ CREATE TABLE cron_run_logs (
 
 CREATE INDEX idx_cron_run_logs_job ON cron_run_logs(cron_job_id, id DESC);
 
+CREATE TABLE user_presets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'all',
+  handbrake_preset TEXT,
+  extra_args TEXT,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_user_presets_media_type ON user_presets(media_type);
+
 -- =============================================================================
 --  Default Settings Seed
 -- =============================================================================

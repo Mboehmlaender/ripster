@@ -167,6 +167,52 @@ Fehler im Laufwerkserkennungsdienst.
 }
 ```
 
+### SETTINGS_SCRIPTS_UPDATED
+
+Wird gesendet, wenn ein Skript angelegt, aktualisiert, gelöscht oder umsortiert wurde.
+
+```json
+{
+  "type": "SETTINGS_SCRIPTS_UPDATED",
+  "payload": {
+    "action": "reordered",
+    "count": 3
+  }
+}
+```
+
+`action` ist `"created"`, `"updated"`, `"deleted"` oder `"reordered"`.
+
+### SETTINGS_SCRIPT_CHAINS_UPDATED
+
+Wird gesendet bei Änderungen an Skript-Ketten.
+
+```json
+{
+  "type": "SETTINGS_SCRIPT_CHAINS_UPDATED",
+  "payload": {
+    "action": "created",
+    "id": 2
+  }
+}
+```
+
+### USER_PRESETS_UPDATED
+
+Wird gesendet, wenn ein User-Preset angelegt, aktualisiert oder gelöscht wurde.
+
+```json
+{
+  "type": "USER_PRESETS_UPDATED",
+  "payload": {
+    "action": "created",
+    "id": 1
+  }
+}
+```
+
+`action` ist `"created"`, `"updated"` oder `"deleted"`.
+
 ### CRON_JOBS_UPDATED
 
 Wird gesendet, wenn ein Cron-Job angelegt, aktualisiert oder gelöscht wurde.

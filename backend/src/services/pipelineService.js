@@ -17,6 +17,7 @@ const { ensureDir, sanitizeFileName, renderTemplate, findMediaFiles } = require(
 const { buildMediainfoReview } = require('../utils/encodePlan');
 const { analyzePlaylistObfuscation, normalizePlaylistId } = require('../utils/playlistAnalysis');
 const { errorToMeta } = require('../utils/errorMeta');
+const userPresetService = require('./userPresetService');
 
 const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK']);
 const REVIEW_REFRESH_SETTING_PREFIXES = [
@@ -5583,6 +5584,21 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    // Resolve user preset if provided
+    const rawUserPresetId = options?.selectedUserPresetId ?? null;
+    const userPresetId = rawUserPresetId !== null && rawUserPresetId !== undefined
+      ? Number(rawUserPresetId)
+      : null;
+    let resolvedUserPreset = null;
+    if (Number.isFinite(userPresetId) && userPresetId > 0) {
+      resolvedUserPreset = await userPresetService.getPresetById(userPresetId);
+      if (!resolvedUserPreset) {
+        const error = new Error(`User-Preset ${userPresetId} nicht gefunden.`);
+        error.statusCode = 404;
+        throw error;
+      }
+    }
+
     const confirmedPlan = {
       ...planForConfirm,
       postEncodeScriptIds: selectedPostEncodeScripts.map((item) => Number(item.id)),
@@ -5598,7 +5614,15 @@ class PipelineService extends EventEmitter {
       postEncodeChainIds: selectedPostEncodeChainIds,
       preEncodeChainIds: selectedPreEncodeChainIds,
       reviewConfirmed: true,
-      reviewConfirmedAt: nowIso()
+      reviewConfirmedAt: nowIso(),
+      userPreset: resolvedUserPreset
+        ? {
+          id: resolvedUserPreset.id,
+          name: resolvedUserPreset.name,
+          handbrakePreset: resolvedUserPreset.handbrakePreset,
+          extraArgs: resolvedUserPreset.extraArgs
+        }
+        : null
     };
     const inputPath = isPreRipMode
       ? null
@@ -5622,6 +5646,7 @@ class PipelineService extends EventEmitter {
       + ` Pre-Encode-Ketten: ${selectedPreEncodeChainIds.length > 0 ? selectedPreEncodeChainIds.join(',') : 'none'}.`
       + ` Post-Encode-Scripte: ${selectedPostEncodeScripts.length > 0 ? selectedPostEncodeScripts.map((item) => item.name).join(' -> ') : 'none'}.`
       + ` Post-Encode-Ketten: ${selectedPostEncodeChainIds.length > 0 ? selectedPostEncodeChainIds.join(',') : 'none'}.`
+      + (resolvedUserPreset ? ` User-Preset: "${resolvedUserPreset.name}" (ID ${resolvedUserPreset.id}).` : '')
     );
 
     if (!skipPipelineStateUpdate) {
@@ -6683,7 +6708,8 @@ class PipelineService extends EventEmitter {
         trackSelection,
         titleId: handBrakeTitleId,
         mediaProfile,
-        settingsMap: settings
+        settingsMap: settings,
+        userPreset: encodePlan?.userPreset || null
       });
       if (trackSelection) {
         await historyService.appendLog(

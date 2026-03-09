@@ -266,6 +266,29 @@ export const api = {
     return request(`/history/${jobId}${suffix}`);
   },
 
+  // ── User Presets ───────────────────────────────────────────────────────────
+  getUserPresets(mediaType = null) {
+    const suffix = mediaType ? `?media_type=${encodeURIComponent(mediaType)}` : '';
+    return request(`/settings/user-presets${suffix}`);
+  },
+  createUserPreset(payload = {}) {
+    return request('/settings/user-presets', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+  updateUserPreset(id, payload = {}) {
+    return request(`/settings/user-presets/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+  },
+  deleteUserPreset(id) {
+    return request(`/settings/user-presets/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+  },
+
   // ── Cron Jobs ──────────────────────────────────────────────────────────────
   getCronJobs() {
     return request('/crons');

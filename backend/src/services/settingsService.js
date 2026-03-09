@@ -847,10 +847,20 @@ class SettingsService {
     if (selectedTitleId !== null) {
       baseArgs.push('-t', String(selectedTitleId));
     }
-    if (map.handbrake_preset) {
-      baseArgs.push('-Z', map.handbrake_preset);
+
+    // User preset overrides settings-derived preset and extra args
+    const userPreset = options?.userPreset || null;
+    const effectiveHandbrakePreset = userPreset !== null
+      ? (userPreset.handbrakePreset || null)
+      : (map.handbrake_preset || null);
+    const effectiveExtraArgs = userPreset !== null
+      ? (userPreset.extraArgs || '')
+      : (map.handbrake_extra_args || '');
+
+    if (effectiveHandbrakePreset) {
+      baseArgs.push('-Z', effectiveHandbrakePreset);
     }
-    const extra = splitArgs(map.handbrake_extra_args);
+    const extra = splitArgs(effectiveExtraArgs);
     const rawSelection = options?.trackSelection || null;
     const hasSelection = rawSelection && typeof rawSelection === 'object';
 
@@ -860,7 +870,8 @@ class SettingsService {
         args: [...baseArgs, ...extra],
         inputFile,
         outputFile,
-        selectedTitleId
+        selectedTitleId,
+        userPresetId: userPreset?.id || null
       });
       return { cmd, args: [...baseArgs, ...extra] };
     }

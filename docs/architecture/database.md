@@ -14,6 +14,7 @@ pipeline_state     -- Aktueller Pipeline-Zustand (Singleton)
 scripts            -- Shell-Skripte für Pre-/Post-Encode-Ausführung
 script_chains      -- Geordnete Ketten aus mehreren Skripten
 script_chain_steps -- Einzelschritte einer Skript-Kette
+user_presets       -- Benannte HandBrake-Preset-Sammlungen pro Medientyp
 cron_jobs          -- Zeitgesteuerte Aufgaben (eigener Cron-Parser)
 cron_run_logs      -- Ausführungs-Protokolle für Cron-Jobs
 ```
@@ -158,6 +159,28 @@ CREATE TABLE script_chain_steps (
 
 !!! info "Sortierung"
     `order_index` in `scripts` und `script_chains` wird über die API (`reorderScripts` / `reorderChains`) per Drag & Drop in der UI gesetzt und bleibt persistent gespeichert.
+
+---
+
+## Tabelle: user_presets
+
+Speichert benannte HandBrake-Preset-Sammlungen pro Medientyp.
+
+```sql
+CREATE TABLE user_presets (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  name             TEXT NOT NULL,
+  media_type       TEXT NOT NULL DEFAULT 'all',  -- 'bluray', 'dvd', 'other', 'all'
+  handbrake_preset TEXT,
+  extra_args       TEXT,
+  description      TEXT,
+  created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+!!! info "Medientyp-Filter"
+    `GET /api/settings/user-presets?mediaType=bluray` gibt Presets mit `media_type = 'bluray'` **und** `media_type = 'all'` zurück.
 
 ---
 
