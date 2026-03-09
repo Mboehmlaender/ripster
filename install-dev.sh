@@ -134,16 +134,18 @@ install_makemkv() {
     libexpat1-dev libavcodec-dev libgl1-mesa-dev \
     qtbase5-dev zlib1g-dev wget
 
-  # Aktuelle Version ermitteln
-  info "Ermittle aktuelle MakeMKV-Version..."
+  local makemkv_fallback="1.18.3"
+  info "Ermittle aktuelle MakeMKV-Version (forum.makemkv.com)..."
   local makemkv_version
-  makemkv_version=$(curl -s "https://www.makemkv.com/download/" \
-    | grep -oP 'makemkv-oss-\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  makemkv_version=$(curl -s --max-time 15 \
+    "https://forum.makemkv.com/forum/viewtopic.php?f=3&t=224" \
+    | grep -oP 'MakeMKV \K[0-9]+\.[0-9]+\.[0-9]+(?= for Linux)' | head -1 || true)
 
   if [[ -z "$makemkv_version" ]]; then
-    warn "MakeMKV-Version konnte nicht ermittelt werden."
-    warn "Bitte manuell installieren: https://www.makemkv.com/forum/viewtopic.php?t=224"
-    return
+    warn "MakeMKV-Version konnte nicht ermittelt werden – verwende Fallback $makemkv_fallback"
+    makemkv_version="$makemkv_fallback"
+  else
+    info "Gefundene Version: $makemkv_version"
   fi
 
   info "Baue MakeMKV $makemkv_version..."
@@ -183,33 +185,63 @@ install_handbrake() {
     return
   fi
 
+  # Strategie 1: direkt aus den Distro-Repos (Ubuntu Universe / Debian)
+  info "Versuche HandBrake CLI aus den Standard-Repos..."
+  if apt-get install -y handbrake-cli 2>/dev/null; then
+    ok "HandBrakeCLI installiert (Standard-Repos)"
+    return
+  fi
+
   case "$ID" in
     ubuntu)
-      info "Installiere HandBrake CLI über PPA..."
-      if ! grep -q "stebbins/handbrake" /etc/apt/sources.list.d/*.list 2>/dev/null; then
-        apt-get install -y software-properties-common
-        add-apt-repository -y ppa:stebbins/handbrake-releases
+      # Strategie 2 (Ubuntu < 24.04): PPA manuell per Key + Sources-Datei eintragen,
+      # ohne add-apt-repository (schlägt auf Noble mit 401 fehl).
+      local codename="${VERSION_CODENAME:-jammy}"
+      local ppa_sources="/etc/apt/sources.list.d/handbrake.list"
+      local ppa_key="/etc/apt/keyrings/handbrake.gpg"
+
+      info "Füge HandBrake PPA manuell hinzu (${codename})..."
+      mkdir -p /etc/apt/keyrings
+
+      if curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x8771ADB0816950D8" \
+          | gpg --dearmor -o "$ppa_key" 2>/dev/null; then
+        cat > "$ppa_sources" <<EOF
+deb [signed-by=${ppa_key}] https://ppa.launchpadcontent.net/stebbins/handbrake-releases/ubuntu ${codename} main
+EOF
         apt_update
+        apt-get install -y handbrake-cli 2>/dev/null && \
+          { ok "HandBrakeCLI installiert (PPA)"; return; } || \
+          { warn "PPA-Installation fehlgeschlagen, räume auf...";
+            rm -f "$ppa_key" "$ppa_sources"; }
+      else
+        warn "PPA-Key konnte nicht geladen werden."
       fi
-      apt-get install -y handbrake-cli
+
+      # Strategie 3 (Ubuntu): snap
+      if command_exists snap; then
+        info "Versuche HandBrake via snap..."
+        if snap install handbrake-cli 2>/dev/null; then
+          ok "HandBrakeCLI installiert (snap)"
+          return
+        fi
+      fi
       ;;
+
     debian)
-      info "Installiere HandBrake CLI (Debian Backports)..."
-      if ! grep -q "backports" /etc/apt/sources.list 2>/dev/null && \
-         ! find /etc/apt/sources.list.d/ -name "*.list" -exec grep -l "backports" {} \; | grep -q .; then
+      # Strategie 2 (Debian): Backports
+      info "Versuche HandBrake CLI über Debian Backports..."
+      if ! find /etc/apt/sources.list.d/ -name "*.list" -exec grep -l "backports" {} \; 2>/dev/null | grep -q .; then
         echo "deb http://deb.debian.org/debian ${VERSION_CODENAME}-backports main" \
           > /etc/apt/sources.list.d/backports.list
         apt_update
       fi
-      apt-get install -y -t "${VERSION_CODENAME}-backports" handbrake-cli 2>/dev/null || \
-        apt-get install -y handbrake-cli 2>/dev/null || {
-          warn "HandBrake CLI konnte nicht über Backports installiert werden."
-          warn "Bitte manuell installieren: https://handbrake.fr/downloads2.php"
-          return
-        }
+      apt-get install -y -t "${VERSION_CODENAME}-backports" handbrake-cli 2>/dev/null && \
+        { ok "HandBrakeCLI installiert (Backports)"; return; }
       ;;
   esac
-  ok "HandBrakeCLI installiert"
+
+  warn "HandBrake CLI konnte nicht automatisch installiert werden."
+  warn "Bitte manuell installieren: https://handbrake.fr/downloads2.php"
 }
 
 # --- apt-Hilfsfunktionen ------------------------------------------------------
@@ -404,11 +436,11 @@ header "Frontend bauen"
 
 info "Baue Frontend für $FRONTEND_HOST..."
 
-# Env-Datei für den Build erstellen
-cat > "$INSTALL_DIR/frontend/.env.production.local" <<EOF
-VITE_API_BASE=http://${FRONTEND_HOST}/api
-VITE_WS_URL=ws://${FRONTEND_HOST}/ws
-EOF
+# Relative URLs verwenden – funktioniert mit jedem Hostnamen/Domain, da nginx
+# /api/ und /ws auf dem selben Host proxied. Absolute IP-URLs würden Chromes
+# Private Network Access (PNA) Policy verletzen, wenn das Frontend über einen
+# Domainnamen aufgerufen wird.
+rm -f "$INSTALL_DIR/frontend/.env.production.local"
 
 npm run build --prefix "$INSTALL_DIR/frontend" --silent
 ok "Frontend gebaut: $INSTALL_DIR/frontend/dist"
