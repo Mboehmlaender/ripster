@@ -1,6 +1,6 @@
 # WebSocket Events
 
-Ripster sendet Echtzeit-Updates über WebSocket unter `/ws`.
+Ripster sendet Echtzeit-Updates über `/ws`.
 
 ---
 
@@ -10,8 +10,8 @@ Ripster sendet Echtzeit-Updates über WebSocket unter `/ws`.
 const ws = new WebSocket('ws://localhost:3001/ws');
 
 ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  console.log(message.type, message.payload);
+  const msg = JSON.parse(event.data);
+  console.log(msg.type, msg.payload);
 };
 ```
 
@@ -19,15 +19,17 @@ ws.onmessage = (event) => {
 
 ## Nachrichtenformat
 
-Alle Broadcasts haben dieses Schema:
+Die meisten Broadcasts haben dieses Schema:
 
 ```json
 {
   "type": "EVENT_TYPE",
-  "payload": { },
-  "timestamp": "2026-03-05T10:00:00.000Z"
+  "payload": {},
+  "timestamp": "2026-03-10T09:00:00.000Z"
 }
 ```
+
+Ausnahme: `WS_CONNECTED` beim Verbindungsaufbau enthält kein `timestamp`.
 
 ---
 
@@ -35,20 +37,20 @@ Alle Broadcasts haben dieses Schema:
 
 ### WS_CONNECTED
 
-Wird direkt nach Verbindungsaufbau gesendet.
+Sofort nach erfolgreicher Verbindung.
 
 ```json
 {
   "type": "WS_CONNECTED",
   "payload": {
-    "connectedAt": "2026-03-05T10:00:00.000Z"
+    "connectedAt": "2026-03-10T09:00:00.000Z"
   }
 }
 ```
 
 ### PIPELINE_STATE_CHANGED
 
-Snapshot bei Zustandswechsel.
+Neuer Pipeline-Snapshot.
 
 ```json
 {
@@ -56,14 +58,24 @@ Snapshot bei Zustandswechsel.
   "payload": {
     "state": "ENCODING",
     "activeJobId": 42,
-    "progress": 73.5,
+    "progress": 62.5,
     "eta": "00:12:34",
-    "statusText": "Encoding mit HandBrake",
+    "statusText": "ENCODING 62.50%",
     "context": {},
+    "jobProgress": {
+      "42": {
+        "state": "ENCODING",
+        "progress": 62.5,
+        "eta": "00:12:34",
+        "statusText": "ENCODING 62.50%"
+      }
+    },
     "queue": {
       "maxParallelJobs": 1,
       "runningCount": 1,
-      "queuedCount": 0
+      "queuedCount": 2,
+      "runningJobs": [],
+      "queuedJobs": []
     }
   }
 }
@@ -71,7 +83,7 @@ Snapshot bei Zustandswechsel.
 
 ### PIPELINE_PROGRESS
 
-Laufende Fortschrittsupdates während aktiver Phasen.
+Laufende Fortschrittsupdates.
 
 ```json
 {
@@ -79,33 +91,20 @@ Laufende Fortschrittsupdates während aktiver Phasen.
   "payload": {
     "state": "ENCODING",
     "activeJobId": 42,
-    "progress": 73.5,
+    "progress": 62.5,
     "eta": "00:12:34",
-    "statusText": "ENCODING 73.50% - task 1 of 1"
+    "statusText": "ENCODING 62.50%"
   }
 }
 ```
 
 ### PIPELINE_QUEUE_CHANGED
 
-Aktualisierung der Job-Queue.
+Queue-Snapshot aktualisiert.
 
-```json
-{
-  "type": "PIPELINE_QUEUE_CHANGED",
-  "payload": {
-    "maxParallelJobs": 1,
-    "runningCount": 1,
-    "queuedCount": 2,
-    "runningJobs": [],
-    "queuedJobs": []
-  }
-}
-```
+### DISC_DETECTED / DISC_REMOVED
 
-### DISC_DETECTED
-
-Disc erkannt.
+Disc-Insertion/-Removal.
 
 ```json
 {
@@ -114,7 +113,6 @@ Disc erkannt.
     "device": {
       "path": "/dev/sr0",
       "discLabel": "INCEPTION",
-      "label": "INCEPTION",
       "model": "ASUS BW-16D1HT",
       "fstype": "udf",
       "mountpoint": null,
@@ -124,132 +122,93 @@ Disc erkannt.
 }
 ```
 
-`mediaProfile` ist `"bluray"`, `"dvd"`, `"other"` oder `null` (wenn nicht bestimmbar). Der Wert wird aus Dateisystemtyp (UDF/ISO9660), Laufwerk-Modell und Disc-Label abgeleitet.
+`mediaProfile`: `bluray` | `dvd` | `other` | `null`
 
-### DISC_REMOVED
+### HARDWARE_MONITOR_UPDATE
 
-Disc entfernt.
+Snapshot aus Hardware-Monitoring.
 
 ```json
 {
-  "type": "DISC_REMOVED",
+  "type": "HARDWARE_MONITOR_UPDATE",
   "payload": {
-    "device": {
-      "path": "/dev/sr0"
-    }
+    "enabled": true,
+    "intervalMs": 5000,
+    "updatedAt": "2026-03-10T09:00:00.000Z",
+    "sample": {
+      "cpu": {},
+      "memory": {},
+      "gpu": {},
+      "storage": {}
+    },
+    "error": null
   }
 }
 ```
 
 ### PIPELINE_ERROR
 
-Fehler bei Pipeline-Disc-Events im Backend.
-
-```json
-{
-  "type": "PIPELINE_ERROR",
-  "payload": {
-    "message": "..."
-  }
-}
-```
+Fehler bei Disc-Event-Verarbeitung in Pipeline.
 
 ### DISK_DETECTION_ERROR
 
-Fehler im Laufwerkserkennungsdienst.
+Fehler in Laufwerkserkennung.
+
+### SETTINGS_UPDATED
+
+Einzelnes Setting wurde gespeichert.
+
+### SETTINGS_BULK_UPDATED
+
+Bulk-Settings gespeichert.
 
 ```json
 {
-  "type": "DISK_DETECTION_ERROR",
+  "type": "SETTINGS_BULK_UPDATED",
   "payload": {
-    "message": "..."
+    "count": 3,
+    "keys": ["raw_dir", "movie_dir", "handbrake_preset_bluray"]
   }
 }
 ```
 
 ### SETTINGS_SCRIPTS_UPDATED
 
-Wird gesendet, wenn ein Skript angelegt, aktualisiert, gelöscht oder umsortiert wurde.
-
-```json
-{
-  "type": "SETTINGS_SCRIPTS_UPDATED",
-  "payload": {
-    "action": "reordered",
-    "count": 3
-  }
-}
-```
-
-`action` ist `"created"`, `"updated"`, `"deleted"` oder `"reordered"`.
+Skript geändert (`created|updated|deleted|reordered`).
 
 ### SETTINGS_SCRIPT_CHAINS_UPDATED
 
-Wird gesendet bei Änderungen an Skript-Ketten.
-
-```json
-{
-  "type": "SETTINGS_SCRIPT_CHAINS_UPDATED",
-  "payload": {
-    "action": "created",
-    "id": 2
-  }
-}
-```
+Skript-Kette geändert (`created|updated|deleted|reordered`).
 
 ### USER_PRESETS_UPDATED
 
-Wird gesendet, wenn ein User-Preset angelegt, aktualisiert oder gelöscht wurde.
-
-```json
-{
-  "type": "USER_PRESETS_UPDATED",
-  "payload": {
-    "action": "created",
-    "id": 1
-  }
-}
-```
-
-`action` ist `"created"`, `"updated"` oder `"deleted"`.
+User-Preset geändert (`created|updated|deleted`).
 
 ### CRON_JOBS_UPDATED
 
-Wird gesendet, wenn ein Cron-Job angelegt, aktualisiert oder gelöscht wurde.
+Cron-Config geändert (`created|updated|deleted`).
+
+### CRON_JOB_UPDATED
+
+Laufzeitstatus eines Cron-Jobs geändert.
 
 ```json
 {
-  "type": "CRON_JOBS_UPDATED",
+  "type": "CRON_JOB_UPDATED",
   "payload": {
-    "action": "created",
-    "id": 1
+    "id": 1,
+    "lastRunStatus": "running",
+    "lastRunAt": "2026-03-10T10:00:00.000Z",
+    "nextRunAt": null
   }
 }
 ```
-
-`action` ist `"created"`, `"updated"` oder `"deleted"`.
 
 ---
 
 ## Reconnect-Verhalten
 
-`useWebSocket.js` versucht bei Verbindungsabbruch automatisch erneut zu verbinden.
+`useWebSocket` verbindet bei Abbruch automatisch neu:
 
-- fester Retry-Intervall: `1500ms`
-- erneuter Versuch bis zum Unmount der Komponente
-
----
-
-## React-Beispiel
-
-```js
-import { useWebSocket } from './hooks/useWebSocket';
-
-useWebSocket({
-  onMessage: (msg) => {
-    if (msg.type === 'PIPELINE_STATE_CHANGED') {
-      setPipeline(msg.payload);
-    }
-  }
-});
-```
+- Retry-Intervall: `1500ms`
+- Wiederverbindung bis Komponente unmounted wird

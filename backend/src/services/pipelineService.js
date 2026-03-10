@@ -60,6 +60,12 @@ const POST_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_FINISH_BUFFER = 1;
 const MIN_EXTENSIONLESS_DISC_IMAGE_BYTES = 256 * 1024 * 1024;
 const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
+const RAW_RIP_COMPLETE_PREFIX = 'Rip_Complete_';
+const RAW_FOLDER_STATES = Object.freeze({
+  INCOMPLETE: 'incomplete',
+  RIP_COMPLETE: 'rip_complete',
+  COMPLETE: 'complete'
+});
 
 function nowIso() {
   return new Date().toISOString();
@@ -929,12 +935,109 @@ function parseHandBrakeDurationSeconds(rawDuration) {
   return 0;
 }
 
+function formatDurationClock(seconds) {
+  const total = Number(seconds || 0);
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  const rounded = Math.max(0, Math.trunc(total));
+  const h = Math.floor(rounded / 3600);
+  const m = Math.floor((rounded % 3600) / 60);
+  const s = rounded % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 function normalizeTrackLanguage(raw) {
   const value = String(raw || '').trim();
   if (!value) {
     return 'und';
   }
   return value.toLowerCase().slice(0, 3);
+}
+
+function normalizePositiveTrackId(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function isLikelyForcedSubtitleTrack(track) {
+  const text = [
+    track?.title,
+    track?.description,
+    track?.name,
+    track?.format,
+    track?.label
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+  if (!text) {
+    return false;
+  }
+  if (/\bnot forced\b/.test(text)) {
+    return false;
+  }
+  return (
+    /\bforced(?:\s+only)?\b/.test(text)
+    || /nur\s+erzwungen/.test(text)
+    || /\berzwungen\b/.test(text)
+  );
+}
+
+function annotateSubtitleForcedAvailability(handBrakeSubtitleTracks, makeMkvSubtitleTracks) {
+  const hbTracks = Array.isArray(handBrakeSubtitleTracks) ? handBrakeSubtitleTracks : [];
+  if (hbTracks.length === 0) {
+    return [];
+  }
+
+  const mkTracks = Array.isArray(makeMkvSubtitleTracks) ? makeMkvSubtitleTracks : [];
+  const forcedSourceIdsByLanguage = new Map();
+
+  for (const track of mkTracks) {
+    if (!isLikelyForcedSubtitleTrack(track)) {
+      continue;
+    }
+    const language = normalizeTrackLanguage(track?.language || track?.languageLabel || 'und');
+    const sourceTrackId = normalizePositiveTrackId(track?.sourceTrackId ?? track?.id);
+    if (!sourceTrackId) {
+      continue;
+    }
+    if (!forcedSourceIdsByLanguage.has(language)) {
+      forcedSourceIdsByLanguage.set(language, []);
+    }
+    const list = forcedSourceIdsByLanguage.get(language);
+    if (!list.includes(sourceTrackId)) {
+      list.push(sourceTrackId);
+    }
+  }
+
+  return hbTracks.map((track) => {
+    const language = normalizeTrackLanguage(track?.language || track?.languageLabel || 'und');
+    const forcedSourceTrackIds = normalizeTrackIdList(forcedSourceIdsByLanguage.get(language) || []);
+    const forcedTrack = isLikelyForcedSubtitleTrack(track);
+    return {
+      ...track,
+      forcedTrack,
+      forcedAvailable: forcedTrack || forcedSourceTrackIds.length > 0,
+      forcedSourceTrackIds
+    };
+  });
+}
+
+function enrichTitleInfoWithForcedSubtitleAvailability(titleInfo, makeMkvSubtitleTracks) {
+  if (!titleInfo || typeof titleInfo !== 'object') {
+    return titleInfo;
+  }
+  return {
+    ...titleInfo,
+    subtitleTracks: annotateSubtitleForcedAvailability(
+      Array.isArray(titleInfo?.subtitleTracks) ? titleInfo.subtitleTracks : [],
+      makeMkvSubtitleTracks
+    )
+  };
 }
 
 function pickScanTitleList(scanJson) {
@@ -1138,43 +1241,249 @@ function remapReviewTrackIdsToSourceIds(review) {
   };
 }
 
-function resolveHandBrakeTitleIdForPlaylist(scanJson, playlistIdRaw) {
-  const playlistId = normalizePlaylistId(playlistIdRaw);
-  if (!playlistId) {
-    return null;
+function extractPlaylistIdFromHandBrakeTitle(title) {
+  const directCandidates = [
+    title?.Playlist,
+    title?.playlist,
+    title?.PlaylistName,
+    title?.playlistName,
+    title?.SourcePlaylist,
+    title?.sourcePlaylist
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = normalizePlaylistId(candidate);
+    if (normalized) {
+      return normalized;
+    }
   }
 
+  const textCandidates = [
+    title?.Path,
+    title?.path,
+    title?.Name,
+    title?.name,
+    title?.File,
+    title?.file,
+    title?.TitleName,
+    title?.titleName,
+    title?.SourceName,
+    title?.sourceName
+  ];
+  for (const candidate of textCandidates) {
+    const text = String(candidate || '').trim();
+    if (!text) {
+      continue;
+    }
+    const match = text.match(/(\d{1,5})\.mpls\b/i);
+    if (!match) {
+      continue;
+    }
+    const normalized = normalizePlaylistId(match[1]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function parseHandBrakeScanSizeBytes(title) {
+  const numeric = Number(title?.Size?.Bytes ?? title?.Bytes ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+  return Math.trunc(numeric);
+}
+
+function buildHandBrakeScanTitleRows(scanJson) {
   const titleList = pickScanTitleList(scanJson);
-  const matches = titleList
+  return titleList
     .map((title, idx) => {
       const handBrakeTitleId = normalizeScanTrackId(
         title?.Index ?? title?.index ?? title?.Title ?? title?.title,
         idx
       );
-      const playlist = normalizePlaylistId(
-        title?.Playlist
-        || title?.playlist
-        || title?.PlaylistName
-        || title?.playlistName
-        || null
-      );
+      const playlist = extractPlaylistIdFromHandBrakeTitle(title);
       const durationSeconds = parseHandBrakeDurationSeconds(
         title?.Duration ?? title?.duration ?? title?.Length ?? title?.length
       );
+      const sizeBytes = parseHandBrakeScanSizeBytes(title);
+      const audioTrackCount = Array.isArray(title?.AudioList) ? title.AudioList.length : 0;
+      const subtitleTrackCount = Array.isArray(title?.SubtitleList) ? title.SubtitleList.length : 0;
       return {
         handBrakeTitleId,
         playlist,
-        durationSeconds
+        durationSeconds,
+        sizeBytes,
+        audioTrackCount,
+        subtitleTrackCount
       };
     })
-    .filter((item) => item.playlist === playlistId);
+    .filter((item) => Number.isFinite(item.handBrakeTitleId) && item.handBrakeTitleId > 0);
+}
 
-  if (matches.length === 0) {
+function listAvailableHandBrakePlaylists(scanJson) {
+  const rows = buildHandBrakeScanTitleRows(scanJson);
+  return Array.from(new Set(
+    rows
+      .map((item) => normalizePlaylistId(item?.playlist))
+      .filter(Boolean)
+  )).sort();
+}
+
+function resolveHandBrakeTitleIdForPlaylist(scanJson, playlistIdRaw, options = {}) {
+  const playlistId = normalizePlaylistId(playlistIdRaw);
+  if (!playlistId) {
     return null;
   }
 
-  const best = matches.sort((a, b) => b.durationSeconds - a.durationSeconds || a.handBrakeTitleId - b.handBrakeTitleId)[0];
-  return best?.handBrakeTitleId || null;
+  const expectedMakemkvTitleIdRaw = Number(options?.expectedMakemkvTitleId);
+  const expectedMakemkvTitleId = Number.isFinite(expectedMakemkvTitleIdRaw) && expectedMakemkvTitleIdRaw >= 0
+    ? Math.trunc(expectedMakemkvTitleIdRaw)
+    : null;
+  const expectedDurationRaw = Number(options?.expectedDurationSeconds);
+  const expectedDurationSeconds = Number.isFinite(expectedDurationRaw) && expectedDurationRaw > 0
+    ? Math.trunc(expectedDurationRaw)
+    : null;
+  const expectedSizeRaw = Number(options?.expectedSizeBytes);
+  const expectedSizeBytes = Number.isFinite(expectedSizeRaw) && expectedSizeRaw > 0
+    ? Math.trunc(expectedSizeRaw)
+    : null;
+  const durationToleranceRaw = Number(options?.durationToleranceSeconds);
+  const durationToleranceSeconds = Number.isFinite(durationToleranceRaw) && durationToleranceRaw >= 0
+    ? Math.trunc(durationToleranceRaw)
+    : 5;
+
+  const rows = buildHandBrakeScanTitleRows(scanJson);
+  const matches = rows.filter((item) => item.playlist === playlistId);
+
+  const scoreForExpected = (row) => {
+    const durationDelta = expectedDurationSeconds !== null
+      ? Math.abs(Number(row?.durationSeconds || 0) - expectedDurationSeconds)
+      : Number.MAX_SAFE_INTEGER;
+    const sizeDelta = expectedSizeBytes !== null
+      ? Math.abs(Number(row?.sizeBytes || 0) - expectedSizeBytes)
+      : Number.MAX_SAFE_INTEGER;
+    const trackRichness = Number(row?.audioTrackCount || 0) + Number(row?.subtitleTrackCount || 0);
+    return {
+      row,
+      durationDelta,
+      sizeDelta,
+      trackRichness
+    };
+  };
+
+  const sortByExpectedScore = (a, b) =>
+    a.durationDelta - b.durationDelta
+    || a.sizeDelta - b.sizeDelta
+    || b.trackRichness - a.trackRichness
+    || b.row.durationSeconds - a.row.durationSeconds
+    || b.row.sizeBytes - a.row.sizeBytes
+    || a.row.handBrakeTitleId - b.row.handBrakeTitleId;
+
+  if (matches.length > 0) {
+    if (expectedDurationSeconds !== null || expectedSizeBytes !== null) {
+      const scored = matches.map(scoreForExpected).sort(sortByExpectedScore);
+      if (expectedDurationSeconds !== null) {
+        const withinTolerance = scored.filter((item) => item.durationDelta <= durationToleranceSeconds);
+        if (withinTolerance.length > 0) {
+          return withinTolerance[0].row.handBrakeTitleId;
+        }
+      }
+      return scored[0].row.handBrakeTitleId;
+    }
+    const best = matches.sort((a, b) =>
+      b.durationSeconds - a.durationSeconds
+      || b.sizeBytes - a.sizeBytes
+      || a.handBrakeTitleId - b.handBrakeTitleId
+    )[0];
+    return best?.handBrakeTitleId || null;
+  }
+
+  // Fallback 1: choose closest duration/size if playlist metadata is absent in scan JSON.
+  if ((expectedDurationSeconds !== null || expectedSizeBytes !== null) && rows.length > 0) {
+    const scored = rows.map(scoreForExpected).sort(sortByExpectedScore);
+    if (expectedDurationSeconds !== null) {
+      const withinTolerance = scored.filter((item) => item.durationDelta <= durationToleranceSeconds);
+      if (withinTolerance.length > 0) {
+        return withinTolerance[0].row.handBrakeTitleId;
+      }
+    }
+    return scored[0].row.handBrakeTitleId;
+  }
+
+  // Fallback 2: map MakeMKV title-id to HandBrake title-id if ordering matches.
+  if (expectedMakemkvTitleId !== null) {
+    const byPlusOne = rows.find((item) => item.handBrakeTitleId === (expectedMakemkvTitleId + 1));
+    if (byPlusOne) {
+      return byPlusOne.handBrakeTitleId;
+    }
+    const byEqual = rows.find((item) => item.handBrakeTitleId === expectedMakemkvTitleId);
+    if (byEqual) {
+      return byEqual.handBrakeTitleId;
+    }
+  }
+
+  if (rows.length === 1) {
+    return rows[0].handBrakeTitleId;
+  }
+
+  return null;
+}
+
+function isHandBrakePlaylistCacheEntryCompatible(entry, playlistIdRaw, options = {}) {
+  const playlistId = normalizePlaylistId(playlistIdRaw);
+  if (!playlistId) {
+    return false;
+  }
+  if (!entry || typeof entry !== 'object') {
+    return false;
+  }
+  const handBrakeTitleId = Number(entry?.handBrakeTitleId);
+  if (!Number.isFinite(handBrakeTitleId) || handBrakeTitleId <= 0) {
+    return false;
+  }
+  const titleInfo = entry?.titleInfo && typeof entry.titleInfo === 'object' ? entry.titleInfo : null;
+  if (!titleInfo) {
+    return false;
+  }
+
+  const cachedPlaylistId = normalizePlaylistId(titleInfo?.playlistId || null);
+  if (cachedPlaylistId && cachedPlaylistId !== playlistId) {
+    return false;
+  }
+
+  const expectedDurationRaw = Number(options?.expectedDurationSeconds);
+  const expectedDurationSeconds = Number.isFinite(expectedDurationRaw) && expectedDurationRaw > 0
+    ? Math.trunc(expectedDurationRaw)
+    : null;
+  const cachedDurationRaw = Number(titleInfo?.durationSeconds);
+  const cachedDurationSeconds = Number.isFinite(cachedDurationRaw) && cachedDurationRaw > 0
+    ? Math.trunc(cachedDurationRaw)
+    : null;
+  if (expectedDurationSeconds !== null && cachedDurationSeconds !== null) {
+    // Reject clearly wrong cache mappings (e.g. 30s instead of 6681s movie title).
+    if (Math.abs(expectedDurationSeconds - cachedDurationSeconds) > 120) {
+      return false;
+    }
+  }
+
+  const expectedSizeRaw = Number(options?.expectedSizeBytes);
+  const expectedSizeBytes = Number.isFinite(expectedSizeRaw) && expectedSizeRaw > 0
+    ? Math.trunc(expectedSizeRaw)
+    : null;
+  const cachedSizeRaw = Number(titleInfo?.sizeBytes);
+  const cachedSizeBytes = Number.isFinite(cachedSizeRaw) && cachedSizeRaw > 0
+    ? Math.trunc(cachedSizeRaw)
+    : null;
+  if (expectedSizeBytes !== null && cachedSizeBytes !== null) {
+    const delta = Math.abs(expectedSizeBytes - cachedSizeBytes);
+    if (delta > (512 * 1024 * 1024)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function normalizeCodecNumber(value) {
@@ -1245,6 +1554,9 @@ function parseHandBrakeSelectedTitleInfo(scanJson, options = {}) {
   const preferredHandBrakeTitleId = Number.isFinite(rawPreferredHandBrakeTitleId) && rawPreferredHandBrakeTitleId > 0
     ? Math.trunc(rawPreferredHandBrakeTitleId)
     : null;
+  const makeMkvSubtitleTracks = Array.isArray(options?.makeMkvSubtitleTracks)
+    ? options.makeMkvSubtitleTracks
+    : [];
 
   const parsedTitles = titleList.map((title, idx) => {
     const handBrakeTitleId = normalizeScanTrackId(
@@ -1313,7 +1625,7 @@ function parseHandBrakeSelectedTitleInfo(scanJson, options = {}) {
       .filter((track) => Number.isFinite(Number(track?.sourceTrackId)) && Number(track.sourceTrackId) > 0);
     const audioTracks = filterDtsCoreFallbackTracks(audioTracksRaw);
 
-    const subtitleTracks = (Array.isArray(title?.SubtitleList) ? title.SubtitleList : [])
+    const subtitleTracksRaw = (Array.isArray(title?.SubtitleList) ? title.SubtitleList : [])
       .map((track, trackIndex) => {
         const sourceTrackId = normalizeScanTrackId(
           track?.TrackNumber
@@ -1348,6 +1660,7 @@ function parseHandBrakeSelectedTitleInfo(scanJson, options = {}) {
         };
       })
       .filter((track) => Number.isFinite(Number(track?.sourceTrackId)) && Number(track.sourceTrackId) > 0);
+    const subtitleTracks = annotateSubtitleForcedAvailability(subtitleTracksRaw, makeMkvSubtitleTracks);
 
     return {
       handBrakeTitleId,
@@ -1405,7 +1718,9 @@ function pickTitleIdForTrackReview(playlistAnalysis, selectedTitleId = null) {
 
   const candidates = Array.isArray(playlistAnalysis?.candidates) ? playlistAnalysis.candidates : [];
   if (candidates.length > 0) {
-    const sortedCandidates = [...candidates].sort((a, b) =>
+    const candidatesWithPlaylist = candidates.filter((item) => normalizePlaylistId(item?.playlistId));
+    const sortPool = candidatesWithPlaylist.length > 0 ? candidatesWithPlaylist : candidates;
+    const sortedCandidates = [...sortPool].sort((a, b) =>
       Number(b?.durationSeconds || 0) - Number(a?.durationSeconds || 0)
       || Number(b?.sizeBytes || 0) - Number(a?.sizeBytes || 0)
       || Number(a?.titleId || 0) - Number(b?.titleId || 0)
@@ -1508,7 +1823,7 @@ function buildDiscScanReview({
     });
     const audioTracks = filterDtsCoreFallbackTracks(audioTracksRaw);
 
-    const subtitleTracks = subtitleList.map((item, trackIndex) => {
+    const subtitleTracksRaw = subtitleList.map((item, trackIndex) => {
       const trackId = normalizeScanTrackId(item?.TrackNumber ?? item?.Track ?? item?.id, trackIndex);
       const languageLabel = String(item?.Language || item?.LanguageCode || item?.language || 'und');
       return {
@@ -1527,6 +1842,10 @@ function buildDiscScanReview({
         subtitlePreviewDefaultTrack: false
       };
     });
+    const subtitleTracks = annotateSubtitleForcedAvailability(
+      subtitleTracksRaw,
+      Array.isArray(mappedMakemkvTitle?.subtitleTracks) ? mappedMakemkvTitle.subtitleTracks : []
+    );
 
     return {
       id: reviewTitleId,
@@ -1680,8 +1999,9 @@ function findExistingRawDirectory(rawBaseDir, metadataBase) {
   const normalizedBase = sanitizeFileName(metadataBase);
   const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const escapedIncompletePrefix = RAW_INCOMPLETE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedRipCompletePrefix = RAW_RIP_COMPLETE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const folderPattern = new RegExp(
-    `^(?:${escapedIncompletePrefix})?${escapedBase}(?:\\s\\[tt\\d{6,12}\\])?\\s-\\sRAW\\s-\\sjob-\\d+\\s*$`,
+    `^(?:(?:${escapedIncompletePrefix}|${escapedRipCompletePrefix}))?${escapedBase}(?:\\s\\[tt\\d{6,12}\\])?\\s-\\sRAW\\s-\\sjob-\\d+\\s*$`,
     'i'
   );
   const candidates = entries
@@ -1723,26 +2043,102 @@ function buildRawMetadataBase(jobLike = {}, fallbackJobId = null) {
   );
 }
 
-function buildRawDirName(metadataBase, jobId, options = {}) {
-  const incomplete = options?.incomplete !== undefined ? Boolean(options.incomplete) : true;
-  const baseName = sanitizeFileName(`${metadataBase} - RAW - job-${jobId}`);
-  return incomplete ? sanitizeFileName(`${RAW_INCOMPLETE_PREFIX}${baseName}`) : baseName;
+function normalizeRawFolderState(rawState, fallback = RAW_FOLDER_STATES.INCOMPLETE) {
+  const state = String(rawState || '').trim().toLowerCase();
+  if (!state) {
+    return fallback;
+  }
+  if (state === RAW_FOLDER_STATES.INCOMPLETE) {
+    return RAW_FOLDER_STATES.INCOMPLETE;
+  }
+  if (state === RAW_FOLDER_STATES.RIP_COMPLETE || state === 'ripcomplete' || state === 'rip-complete') {
+    return RAW_FOLDER_STATES.RIP_COMPLETE;
+  }
+  if (state === RAW_FOLDER_STATES.COMPLETE || state === 'none' || state === 'final') {
+    return RAW_FOLDER_STATES.COMPLETE;
+  }
+  return fallback;
 }
 
-function buildCompletedRawPath(rawPath) {
+function stripRawStatePrefix(folderName) {
+  const rawName = String(folderName || '').trim();
+  if (!rawName) {
+    return '';
+  }
+  return rawName
+    .replace(/^Incomplete_/i, '')
+    .replace(/^Rip_Complete_/i, '')
+    .trim();
+}
+
+function applyRawFolderStateToName(folderName, state) {
+  const baseName = stripRawStatePrefix(folderName);
+  if (!baseName) {
+    return baseName;
+  }
+  const normalizedState = normalizeRawFolderState(state, RAW_FOLDER_STATES.COMPLETE);
+  if (normalizedState === RAW_FOLDER_STATES.INCOMPLETE) {
+    return `${RAW_INCOMPLETE_PREFIX}${baseName}`;
+  }
+  if (normalizedState === RAW_FOLDER_STATES.RIP_COMPLETE) {
+    return `${RAW_RIP_COMPLETE_PREFIX}${baseName}`;
+  }
+  return baseName;
+}
+
+function resolveRawFolderStateFromPath(rawPath) {
+  const sourcePath = String(rawPath || '').trim();
+  if (!sourcePath) {
+    return RAW_FOLDER_STATES.COMPLETE;
+  }
+  const folderName = path.basename(sourcePath);
+  if (/^Incomplete_/i.test(folderName)) {
+    return RAW_FOLDER_STATES.INCOMPLETE;
+  }
+  if (/^Rip_Complete_/i.test(folderName)) {
+    return RAW_FOLDER_STATES.RIP_COMPLETE;
+  }
+  return RAW_FOLDER_STATES.COMPLETE;
+}
+
+function resolveRawFolderStateFromOptions(options = {}) {
+  if (options && Object.prototype.hasOwnProperty.call(options, 'state')) {
+    return normalizeRawFolderState(options.state, RAW_FOLDER_STATES.INCOMPLETE);
+  }
+  if (options && options.ripComplete) {
+    return RAW_FOLDER_STATES.RIP_COMPLETE;
+  }
+  if (options && Object.prototype.hasOwnProperty.call(options, 'incomplete')) {
+    return options.incomplete ? RAW_FOLDER_STATES.INCOMPLETE : RAW_FOLDER_STATES.COMPLETE;
+  }
+  return RAW_FOLDER_STATES.INCOMPLETE;
+}
+
+function buildRawDirName(metadataBase, jobId, options = {}) {
+  const state = resolveRawFolderStateFromOptions(options);
+  const baseName = sanitizeFileName(`${metadataBase} - RAW - job-${jobId}`);
+  return sanitizeFileName(applyRawFolderStateToName(baseName, state));
+}
+
+function buildRawPathForState(rawPath, state) {
   const sourcePath = String(rawPath || '').trim();
   if (!sourcePath) {
     return null;
   }
   const folderName = path.basename(sourcePath);
-  if (!new RegExp(`^${RAW_INCOMPLETE_PREFIX}`, 'i').test(folderName)) {
+  const nextFolderName = applyRawFolderStateToName(folderName, state);
+  if (!nextFolderName) {
     return sourcePath;
   }
-  const completedFolderName = folderName.replace(new RegExp(`^${RAW_INCOMPLETE_PREFIX}`, 'i'), '');
-  if (!completedFolderName) {
-    return sourcePath;
-  }
-  return path.join(path.dirname(sourcePath), completedFolderName);
+  return path.join(path.dirname(sourcePath), nextFolderName);
+}
+
+function buildRipCompleteRawPath(rawPath) {
+  return buildRawPathForState(rawPath, RAW_FOLDER_STATES.RIP_COMPLETE);
+}
+
+function buildCompletedRawPath(rawPath) {
+  return buildRawPathForState(rawPath, RAW_FOLDER_STATES.COMPLETE);
 }
 
 function normalizeComparablePath(inputPath) {
@@ -1812,11 +2208,54 @@ function buildPlaylistCandidates(playlistAnalysis) {
       const sequenceCoherence = Number(source?.structuralMetrics?.sequenceCoherence);
       const titleId = Number(source?.titleId ?? source?.id);
       const handBrakeTitleId = Number(source?.handBrakeTitleId);
+      const durationSecondsRaw = Number(source?.durationSeconds ?? source?.duration ?? 0);
+      const durationSeconds = Number.isFinite(durationSecondsRaw) && durationSecondsRaw > 0
+        ? Math.trunc(durationSecondsRaw)
+        : 0;
+      const sizeBytesRaw = Number(source?.sizeBytes ?? source?.size ?? 0);
+      const sizeBytes = Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0
+        ? Math.trunc(sizeBytesRaw)
+        : 0;
+      const durationLabelRaw = String(source?.durationLabel || '').trim();
+      const durationLabel = durationLabelRaw || formatDurationClock(durationSeconds);
+      const sourceAudioTracks = Array.isArray(source?.audioTracks) ? source.audioTracks : [];
+      const fallbackAudioTrackPreview = sourceAudioTracks
+        .slice(0, 8)
+        .map((track) => {
+          const rawTrackId = Number(track?.sourceTrackId ?? track?.id);
+          const trackId = Number.isFinite(rawTrackId) && rawTrackId > 0 ? Math.trunc(rawTrackId) : null;
+          const language = normalizeTrackLanguage(track?.language || track?.languageLabel || 'und');
+          const languageLabel = String(track?.languageLabel || track?.language || language).trim() || language;
+          const format = String(track?.format || '').trim();
+          const channels = String(track?.channels || '').trim();
+          const parts = [];
+          if (trackId !== null) {
+            parts.push(`#${trackId}`);
+          }
+          parts.push(language);
+          parts.push(languageLabel);
+          if (format) {
+            parts.push(format);
+          }
+          if (channels) {
+            parts.push(channels);
+          }
+          return parts.join(' | ');
+        })
+        .filter((line) => line.length > 0);
+      const sourceAudioTrackPreview = Array.isArray(source?.audioTrackPreview)
+        ? source.audioTrackPreview.map((line) => String(line || '').trim()).filter((line) => line.length > 0)
+        : [];
+      const audioTrackPreview = sourceAudioTrackPreview.length > 0 ? sourceAudioTrackPreview : fallbackAudioTrackPreview;
+      const audioSummary = String(source?.audioSummary || '').trim() || buildHandBrakeAudioSummary(audioTrackPreview);
 
       return {
         playlistId,
         playlistFile: toPlaylistFile(playlistId),
         titleId: Number.isFinite(titleId) ? Math.trunc(titleId) : null,
+        durationSeconds,
+        durationLabel: durationLabel || null,
+        sizeBytes,
         score: Number.isFinite(score) ? score : null,
         recommended: Boolean(source?.recommended),
         evaluationLabel: source?.evaluationLabel || null,
@@ -1830,8 +2269,8 @@ function buildPlaylistCandidates(playlistAnalysis) {
         handBrakeTitleId: Number.isFinite(handBrakeTitleId) && handBrakeTitleId > 0
           ? Math.trunc(handBrakeTitleId)
           : null,
-        audioSummary: source?.audioSummary || null,
-        audioTrackPreview: Array.isArray(source?.audioTrackPreview) ? source.audioTrackPreview : []
+        audioSummary: audioSummary || null,
+        audioTrackPreview
       };
     });
 }
@@ -1967,6 +2406,19 @@ function hasCachedHandBrakeDataForPlaylistCandidates(scanCache, playlistCandidat
 }
 
 function buildHandBrakePlaylistScanCache(scanJson, playlistCandidates = [], rawPath = null) {
+  const candidateMetaByPlaylist = new Map();
+  for (const row of (Array.isArray(playlistCandidates) ? playlistCandidates : [])) {
+    const playlistId = normalizePlaylistId(row?.playlistId || row?.playlistFile || row);
+    if (!playlistId || candidateMetaByPlaylist.has(playlistId)) {
+      continue;
+    }
+    candidateMetaByPlaylist.set(playlistId, {
+      expectedMakemkvTitleId: normalizeNonNegativeInteger(row?.titleId),
+      expectedDurationSeconds: Number(row?.durationSeconds || 0) || null,
+      expectedSizeBytes: Number(row?.sizeBytes || 0) || null
+    });
+  }
+
   const candidateIds = Array.from(new Set(
     (Array.isArray(playlistCandidates) ? playlistCandidates : [])
       .map((item) => normalizePlaylistId(item?.playlistId || item?.playlistFile || item))
@@ -1975,7 +2427,8 @@ function buildHandBrakePlaylistScanCache(scanJson, playlistCandidates = [], rawP
 
   const byPlaylist = {};
   for (const playlistId of candidateIds) {
-    const handBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(scanJson, playlistId);
+    const expected = candidateMetaByPlaylist.get(playlistId) || {};
+    const handBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(scanJson, playlistId, expected);
     if (!handBrakeTitleId) {
       continue;
     }
@@ -1984,6 +2437,13 @@ function buildHandBrakePlaylistScanCache(scanJson, playlistCandidates = [], rawP
       handBrakeTitleId
     });
     if (!titleInfo) {
+      continue;
+    }
+    if (!isHandBrakePlaylistCacheEntryCompatible({
+      playlistId,
+      handBrakeTitleId,
+      titleInfo
+    }, playlistId, expected)) {
       continue;
     }
     const audioTrackPreview = buildHandBrakeAudioTrackPreview(titleInfo);
@@ -2634,6 +3094,21 @@ class PipelineService extends EventEmitter {
     return String(mkInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
   }
 
+  isEncodeSuccessful(job = null) {
+    const handBrakeInfo = this.safeParseJson(job?.handbrake_info_json);
+    return String(handBrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  }
+
+  resolveDesiredRawFolderState(job = null) {
+    if (!this.isRipSuccessful(job)) {
+      return RAW_FOLDER_STATES.INCOMPLETE;
+    }
+    if (this.isEncodeSuccessful(job)) {
+      return RAW_FOLDER_STATES.COMPLETE;
+    }
+    return RAW_FOLDER_STATES.RIP_COMPLETE;
+  }
+
   resolveCurrentRawPath(rawBaseDir, storedRawPath, extraBaseDirs = []) {
     const stored = String(storedRawPath || '').trim();
     if (!stored) {
@@ -2674,7 +3149,7 @@ class PipelineService extends EventEmitter {
     }
 
     const rows = await db.all(`
-      SELECT id, title, year, detected_title, raw_path, status, last_state, rip_successful, makemkv_info_json
+      SELECT id, title, year, detected_title, raw_path, status, last_state, rip_successful, makemkv_info_json, handbrake_info_json
       FROM jobs
       WHERE raw_path IS NOT NULL AND TRIM(raw_path) <> ''
     `);
@@ -2749,7 +3224,7 @@ class PipelineService extends EventEmitter {
 
       // Keep renamed folder in the same base dir as the current path
       const currentBaseDir = path.dirname(currentRawPath);
-      const currentFolderName = path.basename(currentRawPath).replace(/^Incomplete_/i, '').trim();
+      const currentFolderName = stripRawStatePrefix(path.basename(currentRawPath));
       const folderYearMatch = currentFolderName.match(/\((19|20)\d{2}\)/);
       const fallbackYear = folderYearMatch
         ? Number(String(folderYearMatch[0]).replace(/[()]/g, ''))
@@ -2759,10 +3234,10 @@ class PipelineService extends EventEmitter {
         year: row.year || null,
         fallbackYear
       }, jobId);
-      const shouldBeIncomplete = !isJobFinished(row);
+      const desiredRawFolderState = this.resolveDesiredRawFolderState(row);
       const desiredRawPath = path.join(
         currentBaseDir,
-        buildRawDirName(metadataBase, jobId, { incomplete: shouldBeIncomplete })
+        buildRawDirName(metadataBase, jobId, { state: desiredRawFolderState })
       );
 
       let finalRawPath = currentRawPath;
@@ -4279,6 +4754,7 @@ class PipelineService extends EventEmitter {
 
     const mode = String(options?.mode || 'rip').trim().toLowerCase() || 'rip';
     const forcePlaylistReselection = Boolean(options?.forcePlaylistReselection);
+    const forceFreshAnalyze = Boolean(options?.forceFreshAnalyze);
     const mkInfo = this.safeParseJson(job.makemkv_info_json);
     const mediaProfile = this.resolveMediaProfileForJob(job, {
       mediaProfile: options?.mediaProfile,
@@ -4287,18 +4763,22 @@ class PipelineService extends EventEmitter {
     });
     const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
     const analyzeContext = mkInfo?.analyzeContext || {};
-    let playlistAnalysis = analyzeContext.playlistAnalysis || this.snapshot.context?.playlistAnalysis || null;
-    let handBrakePlaylistScan = normalizeHandBrakePlaylistScanCache(analyzeContext.handBrakePlaylistScan || null);
+    let playlistAnalysis = forceFreshAnalyze
+      ? null
+      : (analyzeContext.playlistAnalysis || this.snapshot.context?.playlistAnalysis || null);
+    let handBrakePlaylistScan = forceFreshAnalyze
+      ? null
+      : normalizeHandBrakePlaylistScanCache(analyzeContext.handBrakePlaylistScan || null);
     if (playlistAnalysis && handBrakePlaylistScan) {
       playlistAnalysis = enrichPlaylistAnalysisWithHandBrakeCache(playlistAnalysis, handBrakePlaylistScan);
     }
-    const selectedPlaylistSource = forcePlaylistReselection
+    const selectedPlaylistSource = (forcePlaylistReselection || forceFreshAnalyze)
       ? (options?.selectedPlaylist || null)
       : (options?.selectedPlaylist || analyzeContext.selectedPlaylist || this.snapshot.context?.selectedPlaylist || null);
     const selectedPlaylistId = normalizePlaylistId(
       selectedPlaylistSource
     );
-    const selectedTitleSource = forcePlaylistReselection
+    const selectedTitleSource = (forcePlaylistReselection || forceFreshAnalyze)
       ? (options?.selectedTitleId ?? null)
       : (options?.selectedTitleId ?? analyzeContext.selectedTitleId ?? this.snapshot.context?.selectedTitleId ?? null);
     const selectedMakemkvTitleId = normalizeNonNegativeInteger(selectedTitleSource);
@@ -4346,6 +4826,13 @@ class PipelineService extends EventEmitter {
         jobId,
         'SYSTEM',
         'Re-Encode: gespeicherte Playlist-Auswahl wird ignoriert. Bitte Playlist manuell neu auswählen.'
+      );
+    }
+    if (forceFreshAnalyze) {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        'Review-Neustart erzwingt frische MakeMKV Full-Analyse (kein Reuse von Playlist-/HandBrake-Cache).'
       );
     }
 
@@ -4556,12 +5043,13 @@ class PipelineService extends EventEmitter {
         const playlistFile = toPlaylistFile(candidate?.playlistId) || `Titel #${candidate?.titleId || '-'}`;
         const score = Number(candidate?.score);
         const scoreLabel = Number.isFinite(score) ? score.toFixed(0) : '-';
+        const durationLabel = String(candidate?.durationLabel || '').trim() || formatDurationClock(candidate?.durationSeconds) || '-';
         const recommendedLabel = candidate?.recommended ? ' (empfohlen)' : '';
         const evaluationLabel = candidate?.evaluationLabel ? ` | ${candidate.evaluationLabel}` : '';
         await historyService.appendLog(
           jobId,
           'SYSTEM',
-          `${playlistFile} -> Score ${scoreLabel}${recommendedLabel}${evaluationLabel}`
+          `${playlistFile} -> Dauer ${durationLabel} | Score ${scoreLabel}${recommendedLabel}${evaluationLabel}`
         );
       }
       await historyService.appendLog(
@@ -4661,12 +5149,25 @@ class PipelineService extends EventEmitter {
     }
 
     const cachedHandBrakePlaylistEntry = getCachedHandBrakePlaylistEntry(handBrakePlaylistScan, resolvedPlaylistId);
+    const expectedDurationForCache = Number(selectedTitleFromAnalysis?.durationSeconds || 0) || null;
+    const expectedSizeForCache = Number(selectedTitleFromAnalysis?.sizeBytes || 0) || null;
     const hasCachedHandBrakeEntry = Boolean(
-      cachedHandBrakePlaylistEntry
-      && cachedHandBrakePlaylistEntry.titleInfo
-      && Number.isFinite(Number(cachedHandBrakePlaylistEntry.handBrakeTitleId))
-      && Number(cachedHandBrakePlaylistEntry.handBrakeTitleId) > 0
+      isHandBrakePlaylistCacheEntryCompatible(
+        cachedHandBrakePlaylistEntry,
+        resolvedPlaylistId,
+        {
+          expectedDurationSeconds: expectedDurationForCache,
+          expectedSizeBytes: expectedSizeForCache
+        }
+      )
     );
+    if (cachedHandBrakePlaylistEntry && !hasCachedHandBrakeEntry) {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `HandBrake Cache für ${toPlaylistFile(resolvedPlaylistId)} verworfen (inkompatible Playlist-/Dauerdaten).`
+      );
+    }
 
     if (this.isPrimaryJob(jobId)) {
       await this.updateProgress(
@@ -4683,10 +5184,16 @@ class PipelineService extends EventEmitter {
     let handBrakeTitleRunInfo = null;
     let resolvedHandBrakeTitleId = null;
     const reviewTitleSource = 'handbrake';
+    const makeMkvSubtitleTracksForSelection = Array.isArray(selectedTitleFromAnalysis?.subtitleTracks)
+      ? selectedTitleFromAnalysis.subtitleTracks
+      : [];
     let reviewTitleInfo = null;
     if (hasCachedHandBrakeEntry) {
       resolvedHandBrakeTitleId = Math.trunc(Number(cachedHandBrakePlaylistEntry.handBrakeTitleId));
-      reviewTitleInfo = cachedHandBrakePlaylistEntry.titleInfo;
+      reviewTitleInfo = enrichTitleInfoWithForcedSubtitleAvailability(
+        cachedHandBrakePlaylistEntry.titleInfo,
+        makeMkvSubtitleTracksForSelection
+      );
       handBrakeResolveRunInfo = {
         source: 'HANDBRAKE_SCAN_PLAYLIST_MAP_CACHE',
         stage: 'MEDIAINFO_CHECK',
@@ -4738,9 +5245,17 @@ class PipelineService extends EventEmitter {
           throw error;
         }
 
-        resolvedHandBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(resolveScanJson, resolvedPlaylistId);
+        resolvedHandBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(resolveScanJson, resolvedPlaylistId, {
+          expectedMakemkvTitleId: selectedTitleForReview,
+          expectedDurationSeconds: expectedDurationForCache,
+          expectedSizeBytes: expectedSizeForCache
+        });
         if (!resolvedHandBrakeTitleId) {
-          const error = new Error(`Kein HandBrake-Titel für ${toPlaylistFile(resolvedPlaylistId)} gefunden.`);
+          const knownPlaylists = listAvailableHandBrakePlaylists(resolveScanJson);
+          const error = new Error(
+            `Kein HandBrake-Titel für ${toPlaylistFile(resolvedPlaylistId)} gefunden.`
+            + ` ${knownPlaylists.length > 0 ? `Scan-Playlists: ${knownPlaylists.map((id) => `${id}.mpls`).join(', ')}` : 'Scan enthält keine erkennbaren Playlist-IDs.'}`
+          );
           error.statusCode = 400;
           error.runInfo = handBrakeResolveRunInfo;
           throw error;
@@ -4748,11 +5263,27 @@ class PipelineService extends EventEmitter {
 
         reviewTitleInfo = parseHandBrakeSelectedTitleInfo(resolveScanJson, {
           playlistId: resolvedPlaylistId,
-          handBrakeTitleId: resolvedHandBrakeTitleId
+          handBrakeTitleId: resolvedHandBrakeTitleId,
+          makeMkvSubtitleTracks: makeMkvSubtitleTracksForSelection
         });
         if (!reviewTitleInfo) {
           const error = new Error(
             `HandBrake lieferte keine verwertbaren Trackdaten für ${toPlaylistFile(resolvedPlaylistId)} (-t ${resolvedHandBrakeTitleId}).`
+          );
+          error.statusCode = 400;
+          error.runInfo = handBrakeResolveRunInfo;
+          throw error;
+        }
+        if (!isHandBrakePlaylistCacheEntryCompatible({
+          playlistId: resolvedPlaylistId,
+          handBrakeTitleId: resolvedHandBrakeTitleId,
+          titleInfo: reviewTitleInfo
+        }, resolvedPlaylistId, {
+          expectedDurationSeconds: expectedDurationForCache,
+          expectedSizeBytes: expectedSizeForCache
+        })) {
+          const error = new Error(
+            `HandBrake Titel-Mapping inkonsistent für ${toPlaylistFile(resolvedPlaylistId)} (-t ${resolvedHandBrakeTitleId}).`
           );
           error.statusCode = 400;
           error.runInfo = handBrakeResolveRunInfo;
@@ -4840,24 +5371,52 @@ class PipelineService extends EventEmitter {
     review = remapReviewTrackIdsToSourceIds(review);
 
     const resolvedPlaylistInfo = resolvePlaylistInfoFromAnalysis(playlistAnalysis, resolvedPlaylistId);
+    const subtitleTrackMetaBySourceId = new Map(
+      (Array.isArray(reviewTitleInfo?.subtitleTracks) ? reviewTitleInfo.subtitleTracks : [])
+        .map((track) => {
+          const sourceTrackId = normalizeTrackIdList([track?.sourceTrackId ?? track?.id])[0] || null;
+          return sourceTrackId ? [sourceTrackId, track] : null;
+        })
+        .filter(Boolean)
+    );
     const normalizedTitles = (Array.isArray(review.titles) ? review.titles : [])
       .slice(0, 1)
-      .map((title) => ({
-        ...title,
-        filePath: rawPath,
-        fileName: reviewTitleInfo?.fileName || title?.fileName || `Title #${selectedTitleForReview}`,
-        durationSeconds: Number(reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0),
-        durationMinutes: Number((((reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0) / 60)).toFixed(2)),
-        sizeBytes: Number(reviewTitleInfo?.sizeBytes || title?.sizeBytes || 0),
-        playlistId: resolvedPlaylistInfo.playlistId || title?.playlistId || null,
-        playlistFile: resolvedPlaylistInfo.playlistFile || title?.playlistFile || null,
-        playlistRecommended: Boolean(resolvedPlaylistInfo.recommended || title?.playlistRecommended),
-        playlistEvaluationLabel: resolvedPlaylistInfo.evaluationLabel || title?.playlistEvaluationLabel || null,
-        playlistSegmentCommand: resolvedPlaylistInfo.segmentCommand || title?.playlistSegmentCommand || null,
-        playlistSegmentFiles: Array.isArray(resolvedPlaylistInfo.segmentFiles) && resolvedPlaylistInfo.segmentFiles.length > 0
-          ? resolvedPlaylistInfo.segmentFiles
-          : (Array.isArray(title?.playlistSegmentFiles) ? title.playlistSegmentFiles : [])
-      }));
+      .map((title) => {
+        const subtitleTracks = (Array.isArray(title?.subtitleTracks) ? title.subtitleTracks : []).map((track) => {
+          const sourceTrackId = normalizeTrackIdList([track?.sourceTrackId ?? track?.id])[0] || null;
+          const sourceMeta = sourceTrackId ? (subtitleTrackMetaBySourceId.get(sourceTrackId) || null) : null;
+          return {
+            ...track,
+            id: sourceTrackId || track?.id || null,
+            sourceTrackId: sourceTrackId || track?.sourceTrackId || track?.id || null,
+            language: sourceMeta?.language || track?.language || 'und',
+            languageLabel: sourceMeta?.languageLabel || track?.languageLabel || track?.language || 'und',
+            title: sourceMeta?.title ?? track?.title ?? null,
+            format: sourceMeta?.format || track?.format || null,
+            forcedTrack: Boolean(sourceMeta?.forcedTrack),
+            forcedAvailable: Boolean(sourceMeta?.forcedAvailable),
+            forcedSourceTrackIds: normalizeTrackIdList(sourceMeta?.forcedSourceTrackIds || [])
+          };
+        });
+
+        return {
+          ...title,
+          filePath: rawPath,
+          fileName: reviewTitleInfo?.fileName || title?.fileName || `Title #${selectedTitleForReview}`,
+          durationSeconds: Number(reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0),
+          durationMinutes: Number((((reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0) / 60)).toFixed(2)),
+          sizeBytes: Number(reviewTitleInfo?.sizeBytes || title?.sizeBytes || 0),
+          playlistId: resolvedPlaylistInfo.playlistId || title?.playlistId || null,
+          playlistFile: resolvedPlaylistInfo.playlistFile || title?.playlistFile || null,
+          playlistRecommended: Boolean(resolvedPlaylistInfo.recommended || title?.playlistRecommended),
+          playlistEvaluationLabel: resolvedPlaylistInfo.evaluationLabel || title?.playlistEvaluationLabel || null,
+          playlistSegmentCommand: resolvedPlaylistInfo.segmentCommand || title?.playlistSegmentCommand || null,
+          playlistSegmentFiles: Array.isArray(resolvedPlaylistInfo.segmentFiles) && resolvedPlaylistInfo.segmentFiles.length > 0
+            ? resolvedPlaylistInfo.segmentFiles
+            : (Array.isArray(title?.playlistSegmentFiles) ? title.playlistSegmentFiles : []),
+          subtitleTracks
+        };
+      });
 
     const encodeInputTitleId = Number(normalizedTitles[0]?.id || review.encodeInputTitleId || null) || null;
     review = {
@@ -5115,14 +5674,18 @@ class PipelineService extends EventEmitter {
     const existingRawPath = findExistingRawDirectory(settings.raw_dir, metadataBase);
     let updatedRawPath = existingRawPath || null;
     if (existingRawPath) {
-      const renamedDirName = buildRawDirName(metadataBase, jobId, { incomplete: true });
+      const existingRawState = resolveRawFolderStateFromPath(existingRawPath);
+      const renameState = existingRawState === RAW_FOLDER_STATES.INCOMPLETE
+        ? RAW_FOLDER_STATES.INCOMPLETE
+        : RAW_FOLDER_STATES.RIP_COMPLETE;
+      const renamedDirName = buildRawDirName(metadataBase, jobId, { state: renameState });
       const renamedRawPath = path.join(settings.raw_dir, renamedDirName);
       if (existingRawPath !== renamedRawPath && !fs.existsSync(renamedRawPath)) {
         try {
           fs.renameSync(existingRawPath, renamedRawPath);
           updatedRawPath = renamedRawPath;
           await historyService.updateRawPathByOldPath(existingRawPath, renamedRawPath);
-          logger.info('metadata:raw-dir-renamed', { from: existingRawPath, to: renamedRawPath, jobId });
+          logger.info('metadata:raw-dir-renamed', { from: existingRawPath, to: renamedRawPath, jobId, state: renameState });
         } catch (renameError) {
           logger.warn('metadata:raw-dir-rename-failed', { existingRawPath, renamedRawPath, error: errorToMeta(renameError) });
         }
@@ -6661,6 +7224,23 @@ class PipelineService extends EventEmitter {
           || this.snapshot.context?.selectedPlaylist
           || null
         );
+        const selectedEncodeTitle = Array.isArray(encodePlan?.titles)
+          ? (
+            encodePlan.titles.find((title) =>
+              Boolean(title?.selectedForEncode) && normalizePlaylistId(title?.playlistId) === selectedPlaylistId
+            )
+            || encodePlan.titles.find((title) => Boolean(title?.selectedForEncode))
+            || null
+          )
+          : null;
+        const expectedMakemkvTitleIdForResolve = normalizeNonNegativeInteger(
+          selectedEncodeTitle?.makemkvTitleId
+          ?? encodePlan?.playlistRecommendation?.makemkvTitleId
+          ?? this.snapshot.context?.selectedTitleId
+          ?? null
+        );
+        const expectedDurationSecondsForResolve = Number(selectedEncodeTitle?.durationSeconds || 0) || null;
+        const expectedSizeBytesForResolve = Number(selectedEncodeTitle?.sizeBytes || 0) || null;
         if (!handBrakeTitleId && selectedPlaylistId) {
           const titleResolveScanLines = [];
           const titleResolveScanConfig = await settingsService.buildHandBrakeScanConfigForInput(inputPath, {
@@ -6689,9 +7269,17 @@ class PipelineService extends EventEmitter {
             error.runInfo = titleResolveRunInfo;
             throw error;
           }
-          handBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(titleResolveParsed, selectedPlaylistId);
+          handBrakeTitleId = resolveHandBrakeTitleIdForPlaylist(titleResolveParsed, selectedPlaylistId, {
+            expectedMakemkvTitleId: expectedMakemkvTitleIdForResolve,
+            expectedDurationSeconds: expectedDurationSecondsForResolve,
+            expectedSizeBytes: expectedSizeBytesForResolve
+          });
           if (!handBrakeTitleId) {
-            const error = new Error(`Kein HandBrake-Titel für Playlist ${selectedPlaylistId}.mpls gefunden.`);
+            const knownPlaylists = listAvailableHandBrakePlaylists(titleResolveParsed);
+            const error = new Error(
+              `Kein HandBrake-Titel für Playlist ${selectedPlaylistId}.mpls gefunden.`
+              + ` ${knownPlaylists.length > 0 ? `Scan-Playlists: ${knownPlaylists.map((id) => `${id}.mpls`).join(', ')}` : 'Scan enthält keine erkennbaren Playlist-IDs.'}`
+            );
             error.statusCode = 400;
             throw error;
           }
@@ -6812,7 +7400,7 @@ class PipelineService extends EventEmitter {
             await historyService.appendLog(
               jobId,
               'SYSTEM',
-              `RAW-Ordner konnte nicht als abgeschlossen markiert werden (Ziel existiert bereits): ${completedRawPath}`
+              `RAW-Ordner konnte nicht finalisiert werden (Ziel existiert bereits): ${completedRawPath}`
             );
           } else {
             try {
@@ -6822,7 +7410,7 @@ class PipelineService extends EventEmitter {
               await historyService.appendLog(
                 jobId,
                 'SYSTEM',
-                `RAW-Ordner als abgeschlossen markiert: ${currentRawPath} -> ${completedRawPath}`
+                `RAW-Ordner nach erfolgreichem Encode finalisiert (Prefix entfernt): ${currentRawPath} -> ${completedRawPath}`
               );
             } catch (rawRenameError) {
               logger.warn('encoding:raw-dir-finalize:rename-failed', {
@@ -6834,7 +7422,7 @@ class PipelineService extends EventEmitter {
               await historyService.appendLog(
                 jobId,
                 'SYSTEM',
-                `RAW-Ordner konnte nicht als abgeschlossen markiert werden: ${rawRenameError.message}`
+                `RAW-Ordner konnte nach Encode nicht finalisiert werden: ${rawRenameError.message}`
               );
             }
           }
@@ -6982,7 +7570,7 @@ class PipelineService extends EventEmitter {
       title: job.title || job.detected_title || null,
       year: job.year || null
     }, jobId);
-    const rawDirName = buildRawDirName(metadataBase, jobId, { incomplete: true });
+    const rawDirName = buildRawDirName(metadataBase, jobId, { state: RAW_FOLDER_STATES.INCOMPLETE });
     const rawJobDir = path.join(rawBaseDir, rawDirName);
     ensureDir(rawJobDir);
     chownRecursive(rawJobDir, settings.raw_dir_owner);
@@ -7120,6 +7708,18 @@ class PipelineService extends EventEmitter {
         }
       }
 
+      // Check for MakeMKV backup failure even when exit code is 0.
+      // MakeMKV can exit 0 but still output "Backup failed" in stdout.
+      const backupFailed = Array.isArray(makemkvInfo?.highlights) &&
+        makemkvInfo.highlights.some(line => /backup failed/i.test(line));
+      if (backupFailed) {
+        const failMsg = makemkvInfo.highlights.find(line => /backup failed/i.test(line)) || 'Backup failed';
+        throw Object.assign(
+          new Error(`MakeMKV Backup fehlgeschlagen (Exit Code 0): ${failMsg}`),
+          { runInfo: makemkvInfo }
+        );
+      }
+
       const mkInfoBeforeRip = this.safeParseJson(job.makemkv_info_json);
       await historyService.updateJob(jobId, {
         makemkv_info_json: JSON.stringify(this.withAnalyzeContextMediaProfile({
@@ -7129,39 +7729,39 @@ class PipelineService extends EventEmitter {
         rip_successful: 1
       });
 
-      // Rename Incomplete_ prefix away now that the rip is complete and successful.
+      // Mark RAW as rip-complete until encode succeeds.
       let activeRawJobDir = rawJobDir;
-      const completedRawJobDir = buildCompletedRawPath(rawJobDir);
-      if (completedRawJobDir && completedRawJobDir !== rawJobDir) {
-        if (fs.existsSync(completedRawJobDir)) {
-          logger.warn('rip:raw-complete:rename-skip', { jobId, rawJobDir, completedRawJobDir });
+      const ripCompleteRawJobDir = buildRipCompleteRawPath(rawJobDir);
+      if (ripCompleteRawJobDir && ripCompleteRawJobDir !== rawJobDir) {
+        if (fs.existsSync(ripCompleteRawJobDir)) {
+          logger.warn('rip:raw-complete:rename-skip', { jobId, rawJobDir, ripCompleteRawJobDir });
           await historyService.appendLog(
             jobId,
             'SYSTEM',
-            `RAW-Ordner konnte nach Rip nicht umbenannt werden (Zielordner existiert): ${completedRawJobDir}`
+            `RAW-Ordner konnte nach Rip nicht als Rip_Complete markiert werden (Zielordner existiert): ${ripCompleteRawJobDir}`
           );
         } else {
           try {
-            fs.renameSync(rawJobDir, completedRawJobDir);
-            activeRawJobDir = completedRawJobDir;
+            fs.renameSync(rawJobDir, ripCompleteRawJobDir);
+            activeRawJobDir = ripCompleteRawJobDir;
             chownRecursive(activeRawJobDir, settings.raw_dir_owner);
-            await historyService.updateRawPathByOldPath(rawJobDir, completedRawJobDir);
+            await historyService.updateRawPathByOldPath(rawJobDir, ripCompleteRawJobDir);
             await historyService.appendLog(
               jobId,
               'SYSTEM',
-              `RAW-Ordner nach erfolgreichem Rip umbenannt: ${rawJobDir} → ${completedRawJobDir}`
+              `RAW-Ordner nach erfolgreichem Rip als Rip_Complete markiert: ${rawJobDir} → ${ripCompleteRawJobDir}`
             );
           } catch (renameError) {
             logger.warn('rip:raw-complete:rename-failed', {
               jobId,
               rawJobDir,
-              completedRawJobDir,
+              ripCompleteRawJobDir,
               error: errorToMeta(renameError)
             });
             await historyService.appendLog(
               jobId,
               'SYSTEM',
-              `RAW-Ordner konnte nach Rip nicht umbenannt werden: ${renameError.message}`
+              `RAW-Ordner konnte nach Rip nicht als Rip_Complete markiert werden: ${renameError.message}`
             );
           }
         }
@@ -7525,13 +8125,15 @@ class PipelineService extends EventEmitter {
     const nextMakemkvInfoJson = mkInfo && typeof mkInfo === 'object'
       ? JSON.stringify({
         ...mkInfo,
-        analyzeContext: forcePlaylistReselection
-          ? {
-            ...(mkInfo?.analyzeContext || {}),
-            selectedPlaylist: null,
-            selectedTitleId: null
-          }
-          : (mkInfo?.analyzeContext || null)
+        analyzeContext: {
+          ...(mkInfo?.analyzeContext || {}),
+          playlistAnalysis: null,
+          playlistDecisionRequired: false,
+          selectedPlaylist: null,
+          selectedTitleId: null,
+          handBrakePlaylistScan: null
+        },
+        postBackupAnalyze: null
       })
       : sourceJob.makemkv_info_json;
 
@@ -7556,7 +8158,7 @@ class PipelineService extends EventEmitter {
     await historyService.appendLog(
       jobId,
       'USER_ACTION',
-      `Review-Neustart aus RAW angefordert.${forcePlaylistReselection ? ' Playlist-Auswahl wird zurückgesetzt.' : ''}`
+      `Review-Neustart aus RAW angefordert.${forcePlaylistReselection ? ' Playlist-Auswahl wird zurückgesetzt.' : ''} MakeMKV Full-Analyse wird vollständig neu ausgeführt.`
     );
 
     await this.setState('MEDIAINFO_CHECK', {
@@ -7575,7 +8177,8 @@ class PipelineService extends EventEmitter {
     this.runReviewForRawJob(jobId, resolvedReviewRawPath, {
       mode: options?.mode || 'reencode',
       sourceJobId: jobId,
-      forcePlaylistReselection
+      forcePlaylistReselection,
+      forceFreshAnalyze: true
     }).catch((error) => {
       logger.error('restartReviewFromRaw:background-failed', { jobId, error: errorToMeta(error) });
       this.failJob(jobId, 'MEDIAINFO_CHECK', error).catch((failError) => {

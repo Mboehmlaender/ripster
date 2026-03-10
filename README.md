@@ -1,35 +1,21 @@
 # Ripster
 
-Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit MakeMKV + HandBrake inklusive Metadaten-Auswahl, Titel-/Spurprüfung und Job-Historie.
-
----
-
-> **Neu seit letztem Release**
->
-> - **Profil-spezifische Einstellungen** – Separate Konfiguration für Blu-ray und DVD: eigene Pfade, HandBrake-Presets, Rip-Modi, Extra-Args, Dateinamen-Templates; automatische Auflösung anhand des erkannten Medientyps
-> - **Cron-Job-System** – Skripte und Skript-Ketten zeitgesteuert ausführen; eigener Expression-Parser, Ausführungs-Logs, manuelle Auslösung, PushOver-Integration pro Job
-> - **User-Presets** – benannte HandBrake-Preset-Sammlungen (Preset + Extra-Args) pro Medientyp anlegen und im Review-Panel auswählen
-> - **DVD-/Blu-ray-Erkennung verbessert** – robuste Media-Profil-Erkennung aus UDF/ISO9660-Dateisystemtyp, Laufwerk-Modell und Disc-Label; Medientyp-Indikator in der UI
-> - **Pre-Encode-Ausführungen** – Skripte und Ketten können nun auch *vor* dem Encode-Schritt ausgeführt werden (zusätzlich zu Post-Encode)
-> - **Sortierbare Skripte & Ketten** – Reihenfolge über Drag & Drop festlegen; wird persistent gespeichert
-> - **Granulares PushOver** – je Event konfigurierbar (Metadaten bereit, Rip-Start, Encode-Start, Fertig, Fehler, Abbruch, Re-Encode)
-> - **`rip_successful`-Flag in Jobs** – separates Feld zur Nachverfolgung ob der Rip-Schritt abgeschlossen wurde (unabhängig vom Encode-Status)
-> - **`handbrake_restart_delete_incomplete_output`** – unvollständige Ausgabe wird beim Encode-Neustart automatisch gelöscht
+Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit MakeMKV + HandBrake inklusive Metadaten-Auswahl, Track-Review, Queue, Skripten/Ketten und Job-Historie.
 
 ---
 
 ## Was Ripster kann
 
 - Disc-Erkennung mit Pipeline-Status in Echtzeit (WebSocket)
-- Robuste Erkennung von Blu-ray, DVD und CD (UDF/ISO9660-Heuristik + Laufwerk-Modell)
+- Medienprofil-Erkennung (`bluray`/`dvd`/`other`) aus Device-/Filesystem-Heuristik
 - Metadaten-Suche und Zuordnung über OMDb
-- MakeMKV-Analyse und Rip (MKV oder Backup-Modus)
-- HandBrake-Encode mit Preset + Extra-Args + Track-Override
-- Manuelle Playlist-/Titel-Auswahl bei komplexen Blu-rays
-- Pre- und Post-Encode-Skripte & Skript-Ketten (inkl. Drag-and-Drop-Sortierung)
-- Cron-Jobs: Skripte und Ketten zeitgesteuert ausführen (eigener Expression-Parser, Logs, PushOver)
-- Historie mit Re-Encode, Löschfunktionen und Detailansicht
-- Dateibasierte Logs (Backend + Job-Prozesslogs)
+- MakeMKV-Analyse und Rip (`mkv` oder `backup`) mit profilspezifischen Settings
+- HandBrake-Review und Encoding mit Track-Auswahl, User-Presets, Extra-Args
+- Pre- und Post-Encode-Ausführungen (Skripte und/oder Skript-Ketten)
+- Pipeline-Queue mit Job- und Nicht-Job-Einträgen (`script`, `chain`, `wait`)
+- Cron-Jobs für Skripte/Ketten (inkl. Logs und manueller Auslösung)
+- Historie mit Re-Encode, Review-Neustart, File-/Job-Löschung und Orphan-Import
+- Hardware-Monitoring (CPU/RAM/GPU/Storage) im Dashboard
 
 ## Tech-Stack
 
@@ -39,7 +25,7 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 
 ## Voraussetzungen
 
-- Linux-System mit optischem Laufwerk (oder gemountete Quelle)
+- Linux-System mit optischem Laufwerk (oder gemounteter Quelle)
 - Node.js `>= 20.19.0` (siehe [.nvmrc](.nvmrc))
 - Installierte CLI-Tools im `PATH`:
   - `makemkvcon`
@@ -54,7 +40,7 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 
 `start.sh` erledigt:
 
-1. Node-Version prüfen/umschalten (inkl. `nvm`/`node@20`-Fallback)
+1. Node-Version prüfen/umschalten (`nvm`/`npx node@20` Fallback)
 2. Dependencies installieren (Root, Backend, Frontend)
 3. Dev-Umgebung starten (`backend` + `frontend`)
 
@@ -63,11 +49,7 @@ Danach:
 - Frontend: `http://localhost:5173`
 - Backend API: `http://localhost:3001/api`
 
-Stoppen:
-
-```bash
-./kill.sh
-```
+Stoppen: laufenden Prozess mit `Ctrl+C` im Terminal beenden.
 
 ## Manueller Start
 
@@ -99,23 +81,23 @@ npm run start
 
 ## Konfiguration
 
-### 1) UI-Settings (empfohlen)
+### UI-Settings (empfohlen)
 
 Die meisten Einstellungen werden in der App unter `Settings` gepflegt und in SQLite gespeichert:
 
-- Pfade: `raw_dir`, `movie_dir`, `log_dir`
+- Pfade: `raw_dir[_bluray/_dvd/_other]`, `movie_dir[_bluray/_dvd/_other]`, `log_dir`
 - Tools: `makemkv_command`, `handbrake_command`, `mediainfo_command`
-- Encode: `handbrake_preset`, `handbrake_extra_args`, `output_extension`, `filename_template`
-- Laufwerk/Scan: `drive_mode`, `drive_device`, Polling
+- Profile: `*_bluray` / `*_dvd` Varianten für Rip-/Encode-Verhalten
+- Queue/Monitoring: `pipeline_max_parallel_jobs`, `hardware_monitoring_*`
 - Benachrichtigungen: PushOver
 
-### 2) Umgebungsvariablen
+### Umgebungsvariablen
 
 Backend (`backend/src/config.js`):
 
 - `PORT` (Default: `3001`)
 - `DB_PATH` (Default: `backend/data/ripster.db`)
-- `LOG_DIR` (Fallback-Logpfad, Default: `backend/logs`)
+- `LOG_DIR` (Default: `backend/logs`)
 - `CORS_ORIGIN` (Default: `*`)
 - `LOG_LEVEL` (`debug|info|warn|error`, Default: `info`)
 
@@ -123,7 +105,7 @@ Frontend (Vite):
 
 - `VITE_API_BASE` (Default: `/api`)
 - `VITE_WS_URL` (optional, überschreibt automatische WS-URL)
-- `VITE_PUBLIC_ORIGIN`, `VITE_ALLOWED_HOSTS`, `VITE_HMR_*` (Remote-Dev/HMR)
+- optional für Remote-Dev: `VITE_PUBLIC_ORIGIN`, `VITE_ALLOWED_HOSTS`, `VITE_HMR_PROTOCOL`, `VITE_HMR_HOST`, `VITE_HMR_CLIENT_PORT`
 
 ## Logs und Daten
 
@@ -131,9 +113,9 @@ Log-Ziel ist primär der in den Settings gepflegte `log_dir`.
 
 - Backend-Logs: `<log_dir>/backend/backend-latest.log` und Tagesdateien
 - Job-Logs: `<log_dir>/job-<id>.process.log`
-- DB: `backend/data/ripster.db` (inkl. Job-/Settings-Daten)
+- DB: `backend/data/ripster.db`
 
-Hinweis: Beim DB-Init wird das Schema gegen die Soll-Struktur abgeglichen und migriert.
+Hinweis: Beim DB-Init wird das Schema geprüft und fehlende Elemente werden migriert.
 
 ## Projektstruktur
 
@@ -150,28 +132,55 @@ ripster/
       pages/
       components/
       api/
+  db/schema.sql
   start.sh
-  kill.sh
-  deploy-ripster.sh
+  install.sh
+  install-dev.sh
 ```
 
 ## API-Überblick
 
+**Health**
+- `GET /api/health`
+
 **Pipeline**
 - `GET /api/pipeline/state`
 - `POST /api/pipeline/analyze`
+- `POST /api/pipeline/rescan-disc`
+- `POST /api/pipeline/select-metadata`
 - `POST /api/pipeline/start/:jobId`
 - `POST /api/pipeline/confirm-encode/:jobId`
+- `POST /api/pipeline/cancel`
+- `POST /api/pipeline/retry/:jobId`
+- `POST /api/pipeline/reencode/:jobId`
+- `POST /api/pipeline/restart-review/:jobId`
+- `POST /api/pipeline/restart-encode/:jobId`
+- `POST /api/pipeline/resume-ready/:jobId`
+- `GET /api/pipeline/queue`
+- `POST /api/pipeline/queue/reorder`
+- `POST /api/pipeline/queue/entry`
+- `DELETE /api/pipeline/queue/entry/:entryId`
 
 **History**
 - `GET /api/history`
 - `GET /api/history/:id`
+- `GET /api/history/database`
+- `GET /api/history/orphan-raw`
+- `POST /api/history/orphan-raw/import`
+- `POST /api/history/:id/omdb/assign`
+- `POST /api/history/:id/delete-files`
+- `POST /api/history/:id/delete`
 
 **Settings**
 - `GET /api/settings`
+- `PUT /api/settings/:key`
 - `PUT /api/settings`
+- `GET/POST/PUT/DELETE /api/settings/scripts...`
+- `GET/POST/PUT/DELETE /api/settings/script-chains...`
+- `GET/POST/PUT/DELETE /api/settings/user-presets...`
+- `POST /api/settings/pushover/test`
 
-**Cron-Jobs** _(neu)_
+**Cron-Jobs**
 - `GET /api/crons`
 - `POST /api/crons`
 - `GET /api/crons/:id`
@@ -185,17 +194,16 @@ ripster/
 
 - WebSocket verbindet nicht:
   - prüfen, ob Frontend über Vite-Proxy läuft (`/ws` -> Backend)
-  - bei Reverse-Proxy `VITE_PUBLIC_ORIGIN`/HMR korrekt setzen
+  - bei Reverse-Proxy Upgrade-Header für `/ws` setzen
 - Keine Disc erkannt:
   - `drive_mode=explicit` testen und `drive_device` setzen (z. B. `/dev/sr0`)
 - HandBrake/MakeMKV Fehler:
   - CLI-Binaries im `PATH` prüfen
-  - Preset-Name exakt wie in `HandBrakeCLI -z` hinterlegen
+  - Preset-Name mit `HandBrakeCLI -z` prüfen
 - Startfehler wegen Schema:
-  - sicherstellen, dass die erwartete Schema-Datei vorhanden ist (`db/schema.sql`)
+  - `db/schema.sql` vorhanden halten
 
 ## Sicherheit
 
 - Keine echten Tokens/Passwörter ins Repository committen.
 - Lokale Secrets in `.env` oder in Settings pflegen, aber nicht versionieren.
-

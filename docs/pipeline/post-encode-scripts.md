@@ -1,173 +1,70 @@
 # Encode-Skripte (Pre & Post)
 
-Ripster unterstützt **Pre-Encode-** und **Post-Encode-Ausführungen**: Beliebige Shell-Skripte oder Skript-Ketten können automatisch vor und/oder nach dem Encoding-Schritt laufen – z. B. zum Vorbereiten von Verzeichnissen, Verschieben von Dateien oder Benachrichtigen externer Dienste.
+Ripster kann Skripte und Skript-Ketten vor und nach dem Encode ausführen.
 
 ---
 
-## Funktionsweise
+## Ablauf
 
-```
+```text
 READY_TO_ENCODE
-        ↓
-[Pre-Encode-Ausführungen]  ← Fehler? → Abbruch
-  Skript/Kette 1, 2, …
-        ↓
-ENCODING
-        ↓
-[Post-Encode-Ausführungen]  ← Fehler? → Abbruch
-  Skript/Kette 1, 2, …
-        ↓
-FINISHED
-```
-
-!!! warning "Abbruch bei Fehler"
-    Schlägt eine Ausführung fehl (Exit-Code ≠ 0), werden alle nachfolgenden Ausführungen der gleichen Phase **nicht mehr ausgeführt**.
-    Der Job bleibt im Abschlusszustand `FINISHED`; der Fehler wird in Log/Status-Text und im Summary festgehalten.
-
----
-
-## Skript- und Ketten-Verwaltung
-
-Skripte und Skript-Ketten werden über die **Einstellungen-Seite** angelegt und verwaltet. Die Reihenfolge in der Liste kann per **Drag & Drop** geändert werden und bleibt persistent gespeichert.
-
-### Skript anlegen
-
-Navigiere zu **Einstellungen → Skripte** und klicke **"Neues Skript"**:
-
-| Feld | Beschreibung |
-|------|-------------|
-| **Name** | Anzeigename des Skripts (z. B. `Zu Plex verschieben`) |
-| **Befehl** | Shell-Befehl oder Skriptpfad (z. B. `/home/michael/scripts/move-to-plex.sh`) |
-| **Beschreibung** | Optionale Erklärung |
-
-### Skript-Ketten
-
-Eine **Skript-Kette** fasst mehrere Skripte zu einer benannten Einheit zusammen, die als ganzes ausgewählt werden kann. Nützlich für wiederkehrende Kombinationen (z. B. „Move + Notify Plex + Webhook"). Ketten werden genauso wie einzelne Skripte im Review-Panel ausgewählt.
-
-### Verfügbare Umgebungsvariablen
-
-Jedes Skript wird mit folgenden Umgebungsvariablen aufgerufen:
-
-| Variable | Inhalt | Beispiel |
-|---------|--------|---------|
-| `RIPSTER_OUTPUT_PATH` | Absoluter Pfad der encodierten Datei | `/mnt/movies/Inception (2010).mkv` |
-| `RIPSTER_JOB_ID` | Job-ID in der Datenbank | `42` |
-| `RIPSTER_TITLE` | Filmtitel | `Inception` |
-| `RIPSTER_YEAR` | Erscheinungsjahr | `2010` |
-| `RIPSTER_IMDB_ID` | IMDb-ID | `tt1375666` |
-| `RIPSTER_RAW_PATH` | Pfad zur Raw-MKV-Datei | `/mnt/raw/Inception-2010/t00.mkv` |
-
-### Beispiel-Skript: Datei nach Jellyfin verschieben
-
-```bash
-#!/bin/bash
-# /home/michael/scripts/move-to-jellyfin.sh
-
-TARGET_DIR="/mnt/media/movies"
-mkdir -p "$TARGET_DIR"
-mv "$RIPSTER_OUTPUT_PATH" "$TARGET_DIR/"
-echo "Verschoben: $RIPSTER_TITLE nach $TARGET_DIR"
-```
-
-### Beispiel-Skript: Webhook auslösen
-
-```bash
-#!/bin/bash
-# /home/michael/scripts/notify-webhook.sh
-
-curl -s -X POST https://mein-webhook.example.com/ripster \
-  -H "Content-Type: application/json" \
-  -d "{\"title\": \"$RIPSTER_TITLE\", \"year\": \"$RIPSTER_YEAR\", \"path\": \"$RIPSTER_OUTPUT_PATH\"}"
+  -> Pre-Encode Skripte/Ketten
+  -> HandBrake Encoding
+  -> Post-Encode Skripte/Ketten
+  -> FINISHED oder ERROR
 ```
 
 ---
 
-## Im Encode-Review auswählen
+## Auswahl im Review
 
-Im `READY_TO_ENCODE`-Zustand zeigt das **MediaInfoReviewPanel** zwei Abschnitte:
+Im Review-Panel kannst du getrennt wählen:
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ Pre-Encode Ausführungen (optional)                       │
-├──────────────────────────────────────────────────────────┤
-│  ≡  1. Verzeichnis vorbereiten (Skript)       [Entfernen]│
-├──────────────────────────────────────────────────────────┤
-│ Hinzufügen: [Skript/Kette auswählen ▾]       [+ Hinzuf.]│
-└──────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────┐
-│ Post-Encode Ausführungen (optional)                      │
-├──────────────────────────────────────────────────────────┤
-│  ≡  1. Zu Plex verschieben (Skript)           [Entfernen]│
-│  ≡  2. Notify-Kette (Kette)                   [Entfernen]│
-├──────────────────────────────────────────────────────────┤
-│ Hinzufügen: [Skript/Kette auswählen ▾]       [+ Hinzuf.]│
-└──────────────────────────────────────────────────────────┘
-```
-
-- **Pre-Encode** und **Post-Encode** werden separat konfiguriert
-- Sowohl **einzelne Skripte** als auch **Skript-Ketten** können in beiden Phasen ausgewählt werden
-- **Reihenfolge** per Drag & Drop innerhalb jeder Phase ändern
-- **Hinzufügen** aus der Dropdown-Liste aller konfigurierten Skripte und Ketten
-- **Entfernen** einzelner Einträge
-- Auswahl kann pro Job frei variiert werden
+- `selectedPreEncodeScriptIds`
+- `selectedPostEncodeScriptIds`
+- `selectedPreEncodeChainIds`
+- `selectedPostEncodeChainIds`
 
 ---
 
-## Skript testen
+## Fehlerverhalten
 
-Über die Einstellungen kann jedes Skript mit einem Test-Job ausgeführt werden:
-
-```http
-POST /api/settings/scripts/:scriptId/test
-```
-
-Der Test-Aufruf befüllt die Umgebungsvariablen mit Platzhalter-Werten.
+- Pre-Encode-Fehler stoppen die Kette und führen zu `ERROR`.
+- Post-Encode-Fehler stoppen die restlichen Post-Schritte; Job kann dennoch `FINISHED` sein (mit Fehlerzusatz im Status/Log).
 
 ---
 
-## Ausführungs-Ergebnis
+## Verfügbare Umgebungsvariablen
 
-Das Ergebnis der Skript-Ausführung wird im Job-Datensatz gespeichert und in der History angezeigt:
+Beim Script-Run werden gesetzt:
 
-```json
-{
-  "postEncodeScripts": {
-    "configured": 2,
-    "attempted": 2,
-    "succeeded": 2,
-    "failed": 0,
-    "skipped": 0,
-    "aborted": false,
-    "results": [
-      {
-        "scriptId": 1,
-        "scriptName": "Zu Plex verschieben",
-        "status": "SUCCESS"
-      },
-      {
-        "scriptId": 2,
-        "scriptName": "Webhook auslösen",
-        "status": "SUCCESS"
-      }
-    ]
-  }
-}
-```
-
-| Feld | Beschreibung |
-|------|-------------|
-| `configured` | Anzahl ausgewählter Skripte |
-| `attempted` | Anzahl tatsächlich gestarteter Skripte |
-| `succeeded` | Erfolgreich ausgeführt (Exit-Code 0) |
-| `failed` | Fehlgeschlagen |
-| `skipped` | Nicht ausgeführt (wegen vorherigem Fehler) |
-| `aborted` | `true`, wenn die Kette abgebrochen wurde |
+- `RIPSTER_SCRIPT_RUN_AT`
+- `RIPSTER_JOB_ID`
+- `RIPSTER_JOB_TITLE`
+- `RIPSTER_MODE`
+- `RIPSTER_INPUT_PATH`
+- `RIPSTER_OUTPUT_PATH`
+- `RIPSTER_RAW_PATH`
+- `RIPSTER_SCRIPT_ID`
+- `RIPSTER_SCRIPT_NAME`
+- `RIPSTER_SCRIPT_SOURCE`
 
 ---
 
-## API-Referenz
+## Skript-Ketten
 
-Eine vollständige API-Dokumentation der Skript-Endpunkte findest du unter:
+Ketten unterstützen zwei Step-Typen:
 
-[:octicons-arrow-right-24: Settings API – Skripte](../api/settings.md#skript-verwaltung)
+- `script` (führt ein hinterlegtes Skript aus)
+- `wait` (wartet `waitSeconds`)
+
+Bei Fehler in einem Script-Step wird die Kette abgebrochen.
+
+---
+
+## Testläufe
+
+- Skript testen: `POST /api/settings/scripts/:id/test`
+- Kette testen: `POST /api/settings/script-chains/:id/test`
+
+Ergebnisse enthalten Erfolg/Exit-Code, Laufzeit und stdout/stderr.

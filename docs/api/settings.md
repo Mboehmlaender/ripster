@@ -1,38 +1,36 @@
 # Settings API
 
-Endpunkte zum Lesen und Schreiben der Anwendungseinstellungen.
+Endpunkte für Einstellungen, Skripte, Skript-Ketten und User-Presets.
 
 ---
 
 ## GET /api/settings
 
-Gibt alle Einstellungen kategorisiert zurück.
+Liefert alle Einstellungen kategorisiert.
 
-**Response:**
+**Response (Struktur):**
 
 ```json
 {
-  "paths": {
-    "raw_dir": {
-      "value": "/mnt/nas/raw",
-      "schema": {
-        "type": "string",
-        "label": "Raw-Verzeichnis",
-        "description": "Speicherort für rohe MKV-Dateien",
-        "required": true
-      }
-    },
-    "movie_dir": {
-      "value": "/mnt/nas/movies",
-      "schema": { ... }
+  "categories": [
+    {
+      "category": "Pfade",
+      "settings": [
+        {
+          "key": "raw_dir",
+          "label": "Raw Ausgabeordner",
+          "type": "path",
+          "required": true,
+          "description": "...",
+          "defaultValue": "data/output/raw",
+          "options": [],
+          "validation": { "minLength": 1 },
+          "value": "data/output/raw",
+          "orderIndex": 100
+        }
+      ]
     }
-  },
-  "tools": { ... },
-  "encoding": { ... },
-  "drive": { ... },
-  "makemkv": { ... },
-  "omdb": { ... },
-  "notifications": { ... }
+  ]
 }
 ```
 
@@ -42,42 +40,44 @@ Gibt alle Einstellungen kategorisiert zurück.
 
 Aktualisiert eine einzelne Einstellung.
 
-**URL-Parameter:** `key` – Einstellungs-Schlüssel
-
 **Request:**
 
 ```json
-{
-  "value": "/mnt/storage/raw"
-}
+{ "value": "/mnt/storage/raw" }
 ```
 
 **Response:**
 
 ```json
-{ "ok": true, "key": "raw_dir", "value": "/mnt/storage/raw" }
+{
+  "setting": {
+    "key": "raw_dir",
+    "value": "/mnt/storage/raw"
+  },
+  "reviewRefresh": {
+    "triggered": false,
+    "reason": "not_ready"
+  }
+}
 ```
 
-**Fehlerfälle:**
-- `400` – Ungültiger Wert (Validierungsfehler)
-- `404` – Einstellung nicht gefunden
-
-!!! note "Encode-Review-Refresh"
-    Wenn eine encoding-relevante Einstellung geändert wird (z.B. `handbrake_preset`), wird der Encode-Plan für den aktuell wartenden Job automatisch neu berechnet.
+`reviewRefresh` ist `null` oder ein Objekt mit Status der optionalen Review-Neuberechnung.
 
 ---
 
 ## PUT /api/settings
 
-Aktualisiert mehrere Einstellungen auf einmal.
+Aktualisiert mehrere Einstellungen atomar.
 
 **Request:**
 
 ```json
 {
-  "raw_dir": "/mnt/storage/raw",
-  "movie_dir": "/mnt/storage/movies",
-  "handbrake_preset": "H.265 MKV 720p30"
+  "settings": {
+    "raw_dir": "/mnt/storage/raw",
+    "movie_dir": "/mnt/storage/movies",
+    "handbrake_preset_bluray": "H.264 MKV 1080p30"
+  }
 }
 ```
 
@@ -85,9 +85,36 @@ Aktualisiert mehrere Einstellungen auf einmal.
 
 ```json
 {
-  "ok": true,
-  "updated": ["raw_dir", "movie_dir", "handbrake_preset"],
-  "errors": []
+  "changes": [
+    { "key": "raw_dir", "value": "/mnt/storage/raw" },
+    { "key": "movie_dir", "value": "/mnt/storage/movies" }
+  ],
+  "reviewRefresh": {
+    "triggered": true,
+    "jobId": 42,
+    "relevantKeys": ["handbrake_preset_bluray"]
+  }
+}
+```
+
+Bei Validierungsfehlern kommt `400` mit `error.details[]`.
+
+---
+
+## GET /api/settings/handbrake-presets
+
+Liest Preset-Liste via `HandBrakeCLI -z` (mit Fallback auf konfigurierte Presets).
+
+**Response (Beispiel):**
+
+```json
+{
+  "source": "handbrake-cli",
+  "message": null,
+  "options": [
+    { "label": "General/", "value": "__group__general", "disabled": true, "category": "General" },
+    { "label": "   Fast 1080p30", "value": "Fast 1080p30", "category": "General" }
+  ]
 }
 ```
 
@@ -95,260 +122,217 @@ Aktualisiert mehrere Einstellungen auf einmal.
 
 ## POST /api/settings/pushover/test
 
-Sendet eine Test-Benachrichtigung über PushOver.
+Sendet Testnachricht über aktuelle PushOver-Settings.
 
-**Request:** Kein Body erforderlich (verwendet gespeicherte Zugangsdaten)
-
-**Response (Erfolg):**
-
-```json
-{ "ok": true, "message": "Test-Benachrichtigung gesendet" }
-```
-
-**Response (Fehler):**
-
-```json
-{ "ok": false, "error": "Ungültiger API-Token" }
-```
-
----
-
-## Skript-Verwaltung
-
-Skripte werden über eigene Endpunkte unter `/api/settings/scripts` verwaltet. Jedes Skript hat eine `scriptBody`-Property (der Shell-Befehl oder mehrzeiliges Skript) und einen `orderIndex` für die Sortierung.
-
-### GET /api/settings/scripts
-
-Gibt alle Skripte zurück, sortiert nach `orderIndex`.
-
-**Response:**
+**Request (optional):**
 
 ```json
 {
-  "scripts": [
-    {
-      "id": 1,
-      "name": "Zu Plex verschieben",
-      "scriptBody": "mv \"$RIPSTER_OUTPUT_PATH\" /mnt/plex/movies/",
-      "orderIndex": 1,
-      "createdAt": "2026-01-15T10:00:00.000Z",
-      "updatedAt": "2026-01-15T10:00:00.000Z"
-    }
-  ]
+  "title": "Test",
+  "message": "Ripster Test"
 }
 ```
-
----
-
-### POST /api/settings/scripts
-
-Legt ein neues Skript an.
-
-**Request:**
-
-```json
-{
-  "name": "Zu Plex verschieben",
-  "scriptBody": "mv \"$RIPSTER_OUTPUT_PATH\" /mnt/plex/movies/"
-}
-```
-
-| Feld | Typ | Pflicht | Beschreibung |
-|------|-----|---------|-------------|
-| `name` | string | ✅ | Anzeigename (eindeutig) |
-| `scriptBody` | string | ✅ | Shell-Befehl oder mehrzeiliges Skript |
-
-**Response:** `201 Created` – `{ "script": { ... } }`
-
----
-
-### PUT /api/settings/scripts/:id
-
-Aktualisiert ein vorhandenes Skript. Alle Felder optional.
-
----
-
-### DELETE /api/settings/scripts/:id
-
-Löscht ein Skript.
-
-!!! warning "Referenzen"
-    Das Skript wird gelöscht, auch wenn es in Job-Historien referenziert ist. In zukünftigen Reviews erscheint es nicht mehr.
-
----
-
-### POST /api/settings/scripts/:id/test
-
-Führt ein Skript mit Platzhalter-Umgebungsvariablen aus (Testlauf).
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "exitCode": 0,
-  "stdout": "Testausgabe des Skripts",
-  "stderr": "",
-  "durationMs": 245
-}
-```
-
-**Platzhalter-Werte beim Testlauf:**
-
-| Variable | Testwert |
-|---------|---------|
-| `RIPSTER_OUTPUT_PATH` | `/tmp/ripster-test-output.mkv` |
-| `RIPSTER_JOB_ID` | `0` |
-| `RIPSTER_TITLE` | `Test Film` |
-| `RIPSTER_YEAR` | `2024` |
-| `RIPSTER_IMDB_ID` | `tt0000000` |
-| `RIPSTER_RAW_PATH` | `/tmp/ripster-test-raw.mkv` |
-
----
-
-### POST /api/settings/scripts/reorder
-
-Ändert die Reihenfolge der Skripte (persistiert in `order_index`).
-
-**Request:**
-
-```json
-{ "orderedScriptIds": [3, 1, 2] }
-```
-
-**Response:** `{ "scripts": [ ... ] }` – alle Skripte in neuer Reihenfolge.
-
----
-
-## Skript-Ketten-Verwaltung
-
-Skript-Ketten werden unter `/api/settings/script-chains` verwaltet.
-
-### GET /api/settings/script-chains
-
-Gibt alle Ketten zurück (inkl. Schritte).
-
-### POST /api/settings/script-chains
-
-Legt eine neue Kette an.
-
-```json
-{ "name": "Nach Jellyfin deployen" }
-```
-
-### PUT /api/settings/script-chains/:id
-
-Aktualisiert eine Kette (Name, Schritte).
-
-### DELETE /api/settings/script-chains/:id
-
-Löscht eine Kette und alle ihre Schritte.
-
-### POST /api/settings/script-chains/:id/test
-
-Führt eine Kette mit Platzhalter-Umgebungsvariablen aus (Testlauf).
 
 **Response:**
 
 ```json
 {
   "result": {
-    "success": true,
-    "steps": [
-      { "scriptId": 1, "scriptName": "Zu Plex verschieben", "success": true, "exitCode": 0 }
-    ]
+    "sent": true,
+    "eventKey": "test",
+    "requestId": "..."
   }
 }
 ```
 
+Wenn PushOver deaktiviert ist oder Credentials fehlen, kommt i. d. R. ebenfalls `200` mit `sent: false` + `reason`.
+
+---
+
+## Skripte
+
+Basis: `/api/settings/scripts`
+
+### GET /api/settings/scripts
+
+```json
+{ "scripts": [ { "id": 1, "name": "...", "scriptBody": "...", "orderIndex": 1, "createdAt": "...", "updatedAt": "..." } ] }
+```
+
+### POST /api/settings/scripts
+
+```json
+{ "name": "Move", "scriptBody": "mv \"$RIPSTER_OUTPUT_PATH\" /mnt/movies/" }
+```
+
+Response: `201` mit `{ "script": { ... } }`
+
+### PUT /api/settings/scripts/:id
+
+Body wie `POST`, Response `{ "script": { ... } }`.
+
+### DELETE /api/settings/scripts/:id
+
+Response `{ "removed": { ... } }`.
+
+### POST /api/settings/scripts/reorder
+
+```json
+{ "orderedScriptIds": [3, 1, 2] }
+```
+
+Response `{ "scripts": [ ... ] }`.
+
+### POST /api/settings/scripts/:id/test
+
+Führt Skript als Testlauf aus.
+
+```json
+{
+  "result": {
+    "scriptId": 1,
+    "scriptName": "Move",
+    "success": true,
+    "exitCode": 0,
+    "signal": null,
+    "timedOut": false,
+    "durationMs": 120,
+    "stdout": "...",
+    "stderr": "...",
+    "stdoutTruncated": false,
+    "stderrTruncated": false
+  }
+}
+```
+
+### Umgebungsvariablen für Skripte
+
+Diese Variablen werden beim Ausführen gesetzt:
+
+- `RIPSTER_SCRIPT_RUN_AT`
+- `RIPSTER_JOB_ID`
+- `RIPSTER_JOB_TITLE`
+- `RIPSTER_MODE`
+- `RIPSTER_INPUT_PATH`
+- `RIPSTER_OUTPUT_PATH`
+- `RIPSTER_RAW_PATH`
+- `RIPSTER_SCRIPT_ID`
+- `RIPSTER_SCRIPT_NAME`
+- `RIPSTER_SCRIPT_SOURCE`
+
+---
+
+## Skript-Ketten
+
+Basis: `/api/settings/script-chains`
+
+Eine Kette hat Schritte vom Typ:
+
+- `script` (`scriptId` erforderlich)
+- `wait` (`waitSeconds` 1..3600)
+
+### GET /api/settings/script-chains
+
+Response `{ "chains": [ ... ] }` (inkl. `steps[]`).
+
+### GET /api/settings/script-chains/:id
+
+Response `{ "chain": { ... } }`.
+
+### POST /api/settings/script-chains
+
+```json
+{
+  "name": "After Encode",
+  "steps": [
+    { "stepType": "script", "scriptId": 1 },
+    { "stepType": "wait", "waitSeconds": 15 },
+    { "stepType": "script", "scriptId": 2 }
+  ]
+}
+```
+
+Response: `201` mit `{ "chain": { ... } }`
+
+### PUT /api/settings/script-chains/:id
+
+Body wie `POST`, Response `{ "chain": { ... } }`.
+
+### DELETE /api/settings/script-chains/:id
+
+Response `{ "removed": { ... } }`.
+
 ### POST /api/settings/script-chains/reorder
-
-Ändert die Reihenfolge der Ketten (persistiert in `order_index`).
-
-**Request:**
 
 ```json
 { "orderedChainIds": [2, 1, 3] }
+```
+
+Response `{ "chains": [ ... ] }`.
+
+### POST /api/settings/script-chains/:id/test
+
+Response:
+
+```json
+{
+  "result": {
+    "chainId": 2,
+    "chainName": "After Encode",
+    "steps": 3,
+    "succeeded": 3,
+    "failed": 0,
+    "aborted": false,
+    "results": []
+  }
+}
 ```
 
 ---
 
 ## User-Presets
 
-Benannte HandBrake-Preset-Sammlungen, die im Encode-Review schnell angewendet werden können. Unter `/api/settings/user-presets` verwaltet.
+Basis: `/api/settings/user-presets`
 
 ### GET /api/settings/user-presets
 
-Gibt alle User-Presets zurück. Optional gefiltert per Query-Parameter `mediaType`.
-
-**Query-Parameter:**
-
-| Parameter | Werte | Beschreibung |
-|-----------|-------|-------------|
-| `mediaType` | `bluray`, `dvd`, `other`, `all` | Filtert Presets nach Medientyp |
-
-**Response:**
+Optionaler Query-Parameter: `media_type=bluray|dvd|other|all`
 
 ```json
 {
   "presets": [
     {
       "id": 1,
-      "name": "Blu-ray High Quality",
+      "name": "Blu-ray HQ",
       "mediaType": "bluray",
-      "handbrakePreset": "H.265 MKV 1080p30",
+      "handbrakePreset": "H.264 MKV 1080p30",
       "extraArgs": "--encoder-preset slow",
-      "description": "Langsam, aber beste Qualität",
-      "createdAt": "2026-01-15T10:00:00.000Z",
-      "updatedAt": "2026-01-15T10:00:00.000Z"
+      "description": "...",
+      "createdAt": "...",
+      "updatedAt": "..."
     }
   ]
 }
 ```
 
----
-
 ### POST /api/settings/user-presets
-
-Legt ein neues User-Preset an.
-
-**Request:**
 
 ```json
 {
-  "name": "Blu-ray High Quality",
+  "name": "Blu-ray HQ",
   "mediaType": "bluray",
-  "handbrakePreset": "H.265 MKV 1080p30",
+  "handbrakePreset": "H.264 MKV 1080p30",
   "extraArgs": "--encoder-preset slow",
-  "description": "Langsam, aber beste Qualität"
+  "description": "optional"
 }
 ```
 
-| Feld | Typ | Pflicht | Beschreibung |
-|------|-----|---------|-------------|
-| `name` | string | ✅ | Anzeigename |
-| `mediaType` | string | — | `bluray`, `dvd`, `other`, `all` (Standard: `all`) |
-| `handbrakePreset` | string | — | HandBrake-Preset-Name (`-Z`) |
-| `extraArgs` | string | — | Zusatz-CLI-Argumente |
-| `description` | string | — | Optionale Beschreibung |
-
-**Response:** `201 Created` – `{ "preset": { ... } }`
-
----
+Response: `201` mit `{ "preset": { ... } }`
 
 ### PUT /api/settings/user-presets/:id
 
-Aktualisiert ein User-Preset. Alle Felder optional.
-
----
+Body mit beliebigen Feldern aus `POST`, Response `{ "preset": { ... } }`.
 
 ### DELETE /api/settings/user-presets/:id
 
-Löscht ein User-Preset.
-
----
-
-## Einstellungs-Schlüssel Referenz
-
-Eine vollständige Übersicht aller Schlüssel:
-[:octicons-arrow-right-24: Einstellungsreferenz](../configuration/settings-reference.md)
+Response `{ "removed": { ... } }`.

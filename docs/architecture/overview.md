@@ -2,144 +2,93 @@
 
 ---
 
-## Kern-Designprinzipien
+## Kernprinzipien
 
-### Event-Driven Pipeline
+### Event-getriebene Pipeline
 
-Der gesamte Ripping-Workflow ist als **State Machine** implementiert. Der `pipelineService` verwaltet den aktuellen Zustand und emittiert Ereignisse bei jedem Zustandswechsel. Der WebSocket-Service überträgt diese Ereignisse sofort an alle verbundenen Clients.
+`pipelineService` hält einen Snapshot der State-Machine und broadcastet Änderungen sofort via WebSocket.
 
-```
-Zustandswechsel → Event → WebSocket → Frontend-Update
-```
-
-### Service-Layer-Muster
-
-```
-HTTP-Route → Service → Datenbank
+```text
+State-Änderung -> PIPELINE_STATE_CHANGED/PIPELINE_PROGRESS -> Frontend-Update
 ```
 
-Routes delegieren die gesamte Business-Logik an Services. Services sind voneinander unabhängig und können einzeln getestet werden.
+### Service-Layer
 
-### Schema-getriebene Einstellungen
+```text
+Route -> Service -> DB/Tool-Execution
+```
 
-Die Settings-Konfiguration definiert **sowohl** die Validierungsregeln als auch die UI-Struktur in einer einzigen Quelle (`settings_schema`-Tabelle). Die `DynamicSettingsForm`-Komponente rendert das Formular dynamisch aus dem Schema.
+Routes enthalten kaum Business-Logik.
+
+### Schema-getriebene Settings
+
+Settings sind DB-schema-getrieben (`settings_schema` + `settings_values`), UI rendert dynamisch aus diesen Daten.
 
 ---
 
 ## Echtzeit-Kommunikation
 
-### WebSocket-Protokoll
+WebSocket läuft auf `/ws`.
 
-Der WebSocket-Server läuft unter dem Pfad `/ws`. Nachrichten werden als JSON übertragen:
+Wichtige Events:
 
-```json
-{
-  "type": "PIPELINE_STATE_CHANGED",
-  "payload": {
-    "state": "ENCODING",
-    "activeJobId": 42,
-    "progress": 73.5,
-    "eta": "00:12:34"
-  }
-}
-```
-
-**Nachrichtentypen:**
-
-| Typ | Beschreibung |
-|----|-------------|
-| `PIPELINE_STATE_CHANGED` | Pipeline-Zustand hat gewechselt |
-| `PIPELINE_PROGRESS` | Fortschritt (% und ETA) |
-| `PIPELINE_QUEUE_CHANGED` | Queue-Status geändert |
-| `DISC_DETECTED` | Disc wurde erkannt |
-| `DISC_REMOVED` | Disc wurde entfernt |
-| `PIPELINE_ERROR` | Pipeline-Fehler aufgetreten |
-| `DISK_DETECTION_ERROR` | Laufwerkserkennung-Fehler |
-
-### Reconnect-Logik
-
-Der Frontend-Hook `useWebSocket.js` implementiert automatisches Reconnect mit festem Intervall von 1500ms bei Verbindungsabbrüchen.
+- `PIPELINE_STATE_CHANGED`, `PIPELINE_PROGRESS`, `PIPELINE_QUEUE_CHANGED`
+- `DISC_DETECTED`, `DISC_REMOVED`
+- `HARDWARE_MONITOR_UPDATE`
+- `SETTINGS_UPDATED`, `SETTINGS_BULK_UPDATED`
+- `SETTINGS_SCRIPTS_UPDATED`, `SETTINGS_SCRIPT_CHAINS_UPDATED`, `USER_PRESETS_UPDATED`
+- `CRON_JOBS_UPDATED`, `CRON_JOB_UPDATED`
+- `PIPELINE_ERROR`, `DISK_DETECTION_ERROR`
 
 ---
 
-## Prozess-Management
+## Prozessausführung
 
-### processRunner.js
+Externe Tools werden als Child-Processes gestartet (`processRunner`):
 
-Externe Tools (MakeMKV, HandBrake, MediaInfo) werden als **Child Processes** gestartet:
-
-```js
-spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-```
-
-- **stdout/stderr** werden zeilenweise gelesen und in Echtzeit verarbeitet
-- **Progress-Parsing** erfolgt über reguläre Ausdrücke in `progressParsers.js`
-- **Graceful Shutdown**: SIGINT → Timeout → SIGKILL
-- **Prozess-Tracking**: Aktive Prozesse werden registriert für sauberes Beenden
+- Streaming von stdout/stderr
+- Progress-Parsing (`progressParsers.js`)
+- kontrollierter Abbruch (SIGINT/SIGKILL-Fallback)
 
 ---
 
-## Datenpersistenz
+## Persistenz
 
-### SQLite-Datenbank
+SQLite-Datei: `backend/data/ripster.db`
 
-Ripster verwendet eine **einzige SQLite-Datei** für alle persistenten Daten:
+Kern-Tabellen:
 
-```
-backend/data/ripster.db
-```
+- `jobs`, `pipeline_state`
+- `settings_schema`, `settings_values`
+- `scripts`, `script_chains`, `script_chain_steps`
+- `user_presets`
+- `cron_jobs`, `cron_run_logs`
 
-**Tabellen:**
-
-| Tabelle | Inhalt |
-|---------|--------|
-| `jobs` | Alle Rip-Jobs mit Status, Logs, Metadaten |
-| `pipeline_state` | Aktueller Pipeline-Zustand (Singleton) |
-| `settings_schema` | Schema aller verfügbaren Einstellungen |
-| `settings_values` | Benutzer-konfigurierte Werte |
-
-### Migrations-Strategie
-
-Beim Start prüft `database.js` automatisch, ob das Schema aktuell ist, und führt fehlende Migrationen aus. Korrupte Datenbankdateien werden in ein Quarantäne-Verzeichnis verschoben und eine neue Datenbank erstellt.
+Beim Start werden Schema und Settings-Migrationen automatisch ausgeführt.
 
 ---
 
 ## Fehlerbehandlung
 
-### Strukturierte Fehler
+Zentrales Error-Handling liefert:
 
-Alle Fehler werden mit Kontext-Metadaten protokolliert:
-
-```js
-logger.error('Encoding fehlgeschlagen', {
-  jobId: job.id,
-  command: cmd,
-  exitCode: code,
-  stderr: lastLines
-});
+```json
+{
+  "error": {
+    "message": "...",
+    "statusCode": 400,
+    "reqId": "...",
+    "details": []
+  }
+}
 ```
 
-### Job-Fehler-Recovery
-
-- Fehlgeschlagene Jobs bleiben in der Datenbank (Status `ERROR`)
-- Vollständige Fehler-Logs werden im Job-Datensatz gespeichert
-- **Retry-Funktion** ermöglicht Neustart von einem Fehler-Zustand
-- **Re-Encode** erlaubt erneutes Encodieren ohne neu zu rippen
+Fehlgeschlagene Jobs bleiben in der Historie (`ERROR` oder `CANCELLED`) und können erneut gestartet werden.
 
 ---
 
-## Sicherheit
+## CORS & Runtime-Konfig
 
-### Eingabe-Validierung
-
-- Alle Benutzer-Eingaben werden in `validators.js` validiert
-- CLI-Argumente werden sicher über `commandLine.js` konstruiert (kein Shell-Injection-Risiko)
-- Pfade werden sanitisiert bevor sie an externe Prozesse übergeben werden
-
-### CORS-Konfiguration
-
-```env
-CORS_ORIGIN=http://localhost:5173
-```
-
-In Produktion sollte dieser Wert auf die tatsächliche Frontend-URL gesetzt werden.
+- `CORS_ORIGIN` default: `*`
+- `LOG_LEVEL` default: `info`
+- DB-/Log-Pfade über `DB_PATH`/`LOG_DIR` konfigurierbar

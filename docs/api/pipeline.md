@@ -1,14 +1,14 @@
 # Pipeline API
 
-Alle Endpunkte zur Steuerung des Ripster-Workflows.
+Endpunkte zur Steuerung des Pipeline-Workflows.
 
 ---
 
 ## GET /api/pipeline/state
 
-Liefert den aktuellen Pipeline-Snapshot.
+Liefert aktuellen Pipeline- und Hardware-Monitoring-Snapshot.
 
-**Response:**
+**Response (Beispiel):**
 
 ```json
 {
@@ -17,45 +17,46 @@ Liefert den aktuellen Pipeline-Snapshot.
     "activeJobId": 42,
     "progress": 0,
     "eta": null,
-    "statusText": "Mediainfo geladen - bitte bestätigen",
+    "statusText": "Mediainfo bestätigt - Encode manuell starten",
     "context": {
       "jobId": 42
     },
+    "jobProgress": {
+      "42": {
+        "state": "MEDIAINFO_CHECK",
+        "progress": 68.5,
+        "eta": null,
+        "statusText": "MEDIAINFO_CHECK 68.50%"
+      }
+    },
     "queue": {
       "maxParallelJobs": 1,
-      "runningCount": 0,
-      "queuedCount": 0,
+      "runningCount": 1,
+      "queuedCount": 2,
       "runningJobs": [],
       "queuedJobs": []
     }
+  },
+  "hardwareMonitoring": {
+    "enabled": true,
+    "intervalMs": 5000,
+    "updatedAt": "2026-03-10T09:00:00.000Z",
+    "sample": {
+      "cpu": {},
+      "memory": {},
+      "gpu": {},
+      "storage": {}
+    },
+    "error": null
   }
 }
 ```
-
-**Pipeline-Zustände:**
-
-| Wert | Beschreibung |
-|------|-------------|
-| `IDLE` | Wartet auf Medium |
-| `DISC_DETECTED` | Medium erkannt, wartet auf Analyse-Start |
-| `METADATA_SELECTION` | Metadaten-Dialog aktiv |
-| `WAITING_FOR_USER_DECISION` | Manuelle Playlist-Auswahl erforderlich |
-| `READY_TO_START` | Übergang/Fallback vor Start |
-| `RIPPING` | MakeMKV läuft |
-| `MEDIAINFO_CHECK` | HandBrake-Scan + Plan-Erstellung |
-| `READY_TO_ENCODE` | Review bereit |
-| `ENCODING` | HandBrake-Encoding läuft (inkl. Post-Skripte) |
-| `FINISHED` | Abgeschlossen |
-| `CANCELLED` | Vom Benutzer abgebrochen |
-| `ERROR` | Fehler |
 
 ---
 
 ## POST /api/pipeline/analyze
 
-Startet die Analyse für die aktuell erkannte Disc.
-
-**Request:** kein Body
+Startet Disc-Analyse und legt Job an.
 
 **Response:**
 
@@ -73,14 +74,21 @@ Startet die Analyse für die aktuell erkannte Disc.
 
 ## POST /api/pipeline/rescan-disc
 
-Erzwingt eine erneute Laufwerksprüfung.
+Erzwingt erneute Laufwerksprüfung.
 
 **Response (Beispiel):**
 
 ```json
 {
   "result": {
-    "emitted": "discInserted"
+    "present": true,
+    "changed": true,
+    "emitted": "discInserted",
+    "device": {
+      "path": "/dev/sr0",
+      "discLabel": "INCEPTION",
+      "mediaProfile": "bluray"
+    }
   }
 }
 ```
@@ -89,7 +97,7 @@ Erzwingt eine erneute Laufwerksprüfung.
 
 ## GET /api/pipeline/omdb/search?q=<query>
 
-Sucht OMDb-Titel.
+OMDb-Titelsuche.
 
 **Response:**
 
@@ -111,7 +119,7 @@ Sucht OMDb-Titel.
 
 ## POST /api/pipeline/select-metadata
 
-Setzt Metadaten (und optional Playlist-Entscheidung).
+Setzt Metadaten (und optional Playlist) für einen Job.
 
 **Request:**
 
@@ -127,38 +135,35 @@ Setzt Metadaten (und optional Playlist-Entscheidung).
 }
 ```
 
-**Response:** `{ "job": { ... } }`
+**Response:**
 
-!!! note "Startlogik"
-    Nach Metadaten-Bestätigung wird der nächste Schritt automatisch ausgelöst (`startPreparedJob`).
-    Der Job startet direkt oder wird in die Queue eingereiht.
+```json
+{ "job": { "id": 42, "status": "READY_TO_START" } }
+```
 
 ---
 
 ## POST /api/pipeline/start/:jobId
 
-Startet einen vorbereiteten Job manuell (z. B. Fallback/Queue-Szenario).
+Startet vorbereiteten Job oder queued ihn (je nach Parallel-Limit).
 
-**Response (Beispiel):**
+**Mögliche Responses:**
 
 ```json
-{
-  "result": {
-    "started": true,
-    "stage": "RIPPING"
-  }
-}
+{ "result": { "started": true, "stage": "RIPPING" } }
 ```
 
-Mögliche `stage`-Werte sind u. a. `RIPPING`, `MEDIAINFO_CHECK`, `ENCODING`.
+```json
+{ "result": { "queued": true, "started": false, "queuePosition": 2, "action": "START_PREPARED" } }
+```
 
 ---
 
 ## POST /api/pipeline/confirm-encode/:jobId
 
-Bestätigt Review-Auswahl (Titel/Tracks/Post-Skripte).
+Bestätigt Review-Auswahl (Tracks, Pre/Post-Skripte/Ketten, User-Preset).
 
-**Request:**
+**Request (typisch):**
 
 ```json
 {
@@ -169,78 +174,70 @@ Bestätigt Review-Auswahl (Titel/Tracks/Post-Skripte).
       "subtitleTrackIds": [3]
     }
   },
+  "selectedPreEncodeScriptIds": [1],
   "selectedPostEncodeScriptIds": [2, 7],
+  "selectedPreEncodeChainIds": [3],
+  "selectedPostEncodeChainIds": [4],
+  "selectedUserPresetId": 5,
   "skipPipelineStateUpdate": false
 }
 ```
 
-**Response:** `{ "job": { ... } }`
+**Response:**
+
+```json
+{ "job": { "id": 42, "encode_review_confirmed": 1 } }
+```
 
 ---
 
 ## POST /api/pipeline/cancel
 
-Bricht laufenden Job ab oder entfernt einen Queue-Eintrag.
+Bricht laufenden Job ab oder entfernt Queue-Eintrag.
 
 **Request (optional):**
 
 ```json
-{
-  "jobId": 42
-}
+{ "jobId": 42 }
 ```
 
-**Response (Beispiel):**
+**Mögliche Responses:**
 
 ```json
-{
-  "result": {
-    "cancelled": true,
-    "queuedOnly": false,
-    "jobId": 42
-  }
-}
+{ "result": { "cancelled": true, "queuedOnly": true, "jobId": 42 } }
+```
+
+```json
+{ "result": { "cancelled": true, "queuedOnly": false, "jobId": 42 } }
+```
+
+```json
+{ "result": { "cancelled": true, "queuedOnly": false, "pending": true, "jobId": 42 } }
 ```
 
 ---
 
 ## POST /api/pipeline/retry/:jobId
 
-Startet einen Job aus `ERROR`/`CANCELLED` erneut (oder reiht ihn in die Queue ein).
-
-**Response:** `{ "result": { ... } }`
-
----
-
-## POST /api/pipeline/resume-ready/:jobId
-
-Lädt einen `READY_TO_ENCODE`-Job nach Neustart wieder in die aktive Session.
-
-**Response:** `{ "job": { ... } }`
-
----
+Retry für `ERROR`/`CANCELLED`-Jobs (oder Queue-Einreihung).
 
 ## POST /api/pipeline/reencode/:jobId
 
 Startet Re-Encode aus bestehendem RAW.
 
-**Response:** `{ "result": { ... } }`
-
----
-
 ## POST /api/pipeline/restart-review/:jobId
 
-Berechnet die Review aus vorhandenem RAW neu.
-
-**Response:** `{ "result": { ... } }`
-
----
+Berechnet Review aus RAW neu.
 
 ## POST /api/pipeline/restart-encode/:jobId
 
-Startet Encoding mit der zuletzt bestätigten Auswahl neu.
+Startet Encoding mit letzter bestätigter Review neu.
 
-**Response:** `{ "result": { ... } }`
+## POST /api/pipeline/resume-ready/:jobId
+
+Lädt `READY_TO_ENCODE`-Job nach Neustart wieder in aktive Session.
+
+Alle Endpunkte liefern `{ result: ... }` bzw. `{ job: ... }`.
 
 ---
 
@@ -248,9 +245,51 @@ Startet Encoding mit der zuletzt bestätigten Auswahl neu.
 
 ### GET /api/pipeline/queue
 
-Liefert den aktuellen Queue-Status.
+Liefert Queue-Snapshot.
 
-**Response:** `{ "queue": { ... } }`
+```json
+{
+  "queue": {
+    "maxParallelJobs": 1,
+    "runningCount": 1,
+    "queuedCount": 3,
+    "runningJobs": [
+      {
+        "jobId": 41,
+        "title": "Inception",
+        "status": "ENCODING",
+        "lastState": "ENCODING"
+      }
+    ],
+    "queuedJobs": [
+      {
+        "entryId": 11,
+        "position": 1,
+        "type": "job",
+        "jobId": 42,
+        "action": "START_PREPARED",
+        "actionLabel": "Start",
+        "title": "Matrix",
+        "status": "READY_TO_ENCODE",
+        "lastState": "READY_TO_ENCODE",
+        "hasScripts": true,
+        "hasChains": false,
+        "enqueuedAt": "2026-03-10T09:00:00.000Z"
+      },
+      {
+        "entryId": 12,
+        "position": 2,
+        "type": "wait",
+        "waitSeconds": 30,
+        "title": "Warten 30s",
+        "status": "QUEUED",
+        "enqueuedAt": "2026-03-10T09:01:00.000Z"
+      }
+    ],
+    "updatedAt": "2026-03-10T09:01:02.000Z"
+  }
+}
+```
 
 ### POST /api/pipeline/queue/reorder
 
@@ -260,8 +299,71 @@ Sortiert Queue-Einträge neu.
 
 ```json
 {
-  "orderedJobIds": [42, 43, 41]
+  "orderedEntryIds": [12, 11]
 }
 ```
 
-**Response:** `{ "queue": { ... } }`
+Legacy fallback wird akzeptiert:
+
+```json
+{
+  "orderedJobIds": [42, 43]
+}
+```
+
+### POST /api/pipeline/queue/entry
+
+Fügt Nicht-Job-Queue-Eintrag hinzu (`script`, `chain`, `wait`).
+
+**Request-Beispiele:**
+
+```json
+{ "type": "script", "scriptId": 3 }
+```
+
+```json
+{ "type": "chain", "chainId": 2, "insertAfterEntryId": 11 }
+```
+
+```json
+{ "type": "wait", "waitSeconds": 45 }
+```
+
+**Response:**
+
+```json
+{
+  "result": { "entryId": 12, "type": "wait", "position": 2 },
+  "queue": { "...": "..." }
+}
+```
+
+### DELETE /api/pipeline/queue/entry/:entryId
+
+Entfernt Queue-Eintrag.
+
+**Response:**
+
+```json
+{ "queue": { "...": "..." } }
+```
+
+---
+
+## Pipeline-Zustände
+
+| State | Bedeutung |
+|------|-----------|
+| `IDLE` | Wartet auf Medium |
+| `DISC_DETECTED` | Medium erkannt |
+| `ANALYZING` | MakeMKV-Analyse läuft |
+| `METADATA_SELECTION` | Metadaten-Auswahl |
+| `WAITING_FOR_USER_DECISION` | Playlist-Entscheidung erforderlich |
+| `READY_TO_START` | Übergang vor Start |
+| `RIPPING` | MakeMKV-Rip läuft |
+| `MEDIAINFO_CHECK` | Titel-/Track-Auswertung |
+| `READY_TO_ENCODE` | Review bereit |
+| `ENCODING` | HandBrake-Encoding läuft |
+| `FINISHED` | Abgeschlossen |
+| `CANCELLED` | Abgebrochen |
+| `ERROR` | Fehler |

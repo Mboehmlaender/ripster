@@ -33,12 +33,12 @@ function parseMakeMkvProgress(line) {
   const prgv = line.match(/PRGV:(\d+),(\d+),(\d+)/);
   if (prgv) {
     // Format: PRGV:current,total,max  (official makemkv docs)
-    // progress = current / max
-    const current = Number(prgv[1]);
+    // current = per-file progress, total = overall progress across all files
+    const total = Number(prgv[2]);
     const max = Number(prgv[3]);
 
     if (max > 0) {
-      return { percent: clampPercent((current / max) * 100), eta: null };
+      return { percent: clampPercent((total / max) * 100), eta: null };
     }
   }
 

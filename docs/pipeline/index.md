@@ -1,6 +1,6 @@
 # Pipeline
 
-Der Pipeline-Abschnitt beschreibt den Kern-Workflow von Ripster.
+Der Pipeline-Bereich beschreibt den Kern-Workflow von Ripster.
 
 <div class="grid cards" markdown>
 
@@ -8,7 +8,7 @@ Der Pipeline-Abschnitt beschreibt den Kern-Workflow von Ripster.
 
     ---
 
-    Der vollständige Ripping-Workflow mit allen Zustandsübergängen.
+    Zustände, Übergänge und Queue-Verhalten.
 
     [:octicons-arrow-right-24: Workflow](workflow.md)
 
@@ -16,7 +16,7 @@ Der Pipeline-Abschnitt beschreibt den Kern-Workflow von Ripster.
 
     ---
 
-    Wie Ripster Audio- und Untertitel-Tracks analysiert und Encode-Pläne erstellt.
+    Wie Titel/Tracks für HandBrake vorbereitet und bestätigt werden.
 
     [:octicons-arrow-right-24: Encoding](encoding.md)
 
@@ -24,16 +24,16 @@ Der Pipeline-Abschnitt beschreibt den Kern-Workflow von Ripster.
 
     ---
 
-    Erkennung von Blu-ray Playlist-Obfuskierung und Auswahl der korrekten Playlist.
+    Bewertung mehrdeutiger Blu-ray-Playlists und manuelle Entscheidung.
 
     [:octicons-arrow-right-24: Playlist-Analyse](playlist-analysis.md)
 
--   :material-script-text: **Post-Encode-Skripte**
+-   :material-script-text: **Encode-Skripte (Pre & Post)**
 
     ---
 
-    Automatische Ausführung von Shell-Skripten nach erfolgreichem Encoding – z. B. zum Verschieben oder Benachrichtigen.
+    Skripte/Ketten vor und nach dem Encode ausführen.
 
-    [:octicons-arrow-right-24: Post-Encode-Skripte](post-encode-scripts.md)
+    [:octicons-arrow-right-24: Encode-Skripte](post-encode-scripts.md)
 
 </div>

@@ -31,6 +31,8 @@ sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "set -e
 echo "Uebertrage lokalen Ordner ${LOCAL_PATH} nach ${REMOTE_TARGET} ..."
 echo "backend/data wird weder uebertragen noch auf dem Ziel geloescht: ${DATA_RELATIVE_DIR}"
 sshpass -p "$SSH_PASSWORD" rsync -az --progress --delete \
+  --exclude "${DATA_RELATIVE_DIR}" \
+  --filter "protect ${DATA_RELATIVE_DIR}" \
   --filter "protect debug" \
   -e "ssh $SSH_OPTS" \
   "${LOCAL_PATH}/" "${REMOTE_TARGET}/"

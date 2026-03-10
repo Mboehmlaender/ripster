@@ -1,192 +1,82 @@
 # Frontend-Komponenten
 
-Das Frontend ist mit **React 18** und **PrimeReact** gebaut und kommuniziert über REST-API und WebSocket mit dem Backend.
+Frontend: React + PrimeReact + Vite.
 
 ---
 
-## Seiten (Pages)
+## Hauptseiten
 
-### DashboardPage.jsx
+### `DashboardPage.jsx`
 
-Die Hauptseite von Ripster – zeigt den aktuellen Pipeline-Status und ermöglicht alle Workflow-Aktionen.
+Pipeline-Steuerung:
 
-**Funktionen:**
-- Anzeige des aktuellen Pipeline-Zustands (IDLE, DISC_DETECTED, METADATA_SELECTION, RIPPING, MEDIAINFO_CHECK, READY_TO_ENCODE, ENCODING, ...)
-- Live-Fortschrittsbalken mit ETA
-- Trigger für Metadaten-Dialog
-- Playlist-Entscheidungs-UI (bei Blu-ray Obfuskierung)
-- Encode-Review mit Track-Auswahl
-- Job-Steuerung (Start, Abbruch, Retry, Queue-Interaktion)
+- Status/Progress/ETA
+- Metadaten-Dialog
+- Playlist-Entscheidung
+- Review-Panel
+- Queue-Interaktion (reorder/add/remove)
+- Job-Aktionen (Start/Cancel/Retry/Re-Encode)
+- Hardware-Monitoring-Anzeige
 
-**Zugehörige Komponenten:**
-- `PipelineStatusCard` – Status-Widget
-- `MetadataSelectionDialog` – OMDb-Suche und Playlist-Auswahl
-- `MediaInfoReviewPanel` – Track-Auswahl vor dem Encoding
-- Queue- und Job-Karten-UI direkt in `DashboardPage`
+### `SettingsPage.jsx`
 
-### SettingsPage.jsx
+Konfiguration:
 
-Konfigurationsoberfläche für alle Ripster-Einstellungen.
+- dynamisches Settings-Formular (`DynamicSettingsForm`)
+- Skripte/Ketten inkl. Reorder/Test
+- User-Presets
+- Cron-Jobs (`CronJobsTab`)
 
-**Funktionen:**
-- Dynamisch generiertes Formular aus dem Settings-Schema
-- Echtzeit-Validierungsfeedback
-- PushOver-Verbindungstest
-- Automatische Aktualisierung des Encode-Reviews bei relevanten Änderungen
+### `HistoryPage.jsx`
 
-### DatabasePage.jsx (`/history`)
+Historie:
 
-Job-Historie und Datenbankansicht mit vollständigem Audit-Trail.
-
-**Funktionen:**
-- Sortier- und filterbares Job-Verzeichnis
-- Statusfilter (FINISHED, ERROR, WAITING_FOR_USER_DECISION, ...)
-- Job-Detail-Dialog mit vollständigen Logs
-- Re-Encode, Löschen und Metadaten-Zuweisung
-- Import von Orphan-Raw-Ordnern
+- Job-Liste/Filter
+- Job-Details + Logs
+- OMDb-Nachzuweisung
+- Re-Encode/Restart-Workflows
 
 ---
 
-## Komponenten (Components)
+## Wichtige Komponenten
 
-### MetadataSelectionDialog.jsx
-
-Dialog für die Metadaten-Auswahl nach der Disc-Analyse.
-
-```
-┌─────────────────────────────────────┐
-│ Metadaten auswählen                 │
-├─────────────────────────────────────┤
-│ Suche: [Inception              ] 🔍 │
-├─────────────────────────────────────┤
-│ Ergebnisse:                         │
-│ ▶ Inception (2010) – Movie          │
-│   Inception: ... (2011) – Series    │
-├─────────────────────────────────────┤
-│ Playlist (nur Blu-ray):             │
-│ ▶ 00800.mpls (2:30:15) ✓ Empfohlen  │
-│   00801.mpls (0:01:23)              │
-├─────────────────────────────────────┤
-│                   [Bestätigen]      │
-└─────────────────────────────────────┘
-```
-
-### MediaInfoReviewPanel.jsx
-
-Track-Auswahl-Panel vor dem Encoding.
-
-```
-┌─────────────────────────────────────┐
-│ Encode-Review                       │
-├─────────────────────────────────────┤
-│ Audio-Tracks:                       │
-│ ☑ Track 1: Deutsch (AC-3, 5.1)     │
-│ ☑ Track 2: English (TrueHD, 7.1)   │
-│ ☐ Track 3: Français (AC-3, 2.0)    │
-├─────────────────────────────────────┤
-│ Untertitel:                         │
-│ ☑ Track 1: Deutsch                  │
-│ ☐ Track 2: English                  │
-├─────────────────────────────────────┤
-│                [Encoding starten]   │
-└─────────────────────────────────────┘
-```
-
-### DynamicSettingsForm.jsx
-
-Wiederverwendbares Formular, das aus dem Settings-Schema generiert wird.
-
-**Unterstützte Feldtypen:**
-
-| Typ | UI-Element |
-|----|-----------|
-| `string` | Text-Input |
-| `number` | Zahlen-Input mit Min/Max |
-| `boolean` | Toggle/Checkbox |
-| `select` | Dropdown |
-| `password` | Passwort-Input |
-
-### PipelineStatusCard.jsx
-
-Status-Anzeige-Widget für die Dashboard-Seite.
-
-### JobDetailDialog.jsx
-
-Vollständiger Job-Detail-Dialog mit Logs-Viewer.
+- `PipelineStatusCard.jsx`
+- `MetadataSelectionDialog.jsx`
+- `MediaInfoReviewPanel.jsx`
+- `JobDetailDialog.jsx`
+- `CronJobsTab.jsx`
 
 ---
 
-## Hooks
+## API-Client (`api/client.js`)
 
-### useWebSocket.js
-
-Zentraler Custom-Hook für die WebSocket-Verbindung.
-
-```js
-useWebSocket({
-  onMessage: (msg) => {
-    if (msg.type === 'PIPELINE_STATE_CHANGED') {
-      setPipelineState(msg.payload);
-    }
-  }
-});
-```
-
-**Features:**
-- Automatische Verbindung zu `/ws`
-- Reconnect mit festem Intervall (`1500ms`)
-- Message-Parsing (JSON)
+- zentraler `request()` mit JSON-Handling
+- Fehlerobjekt aus API wird auf `Error(message)` gemappt
+- `VITE_API_BASE` default `/api`
 
 ---
 
-## API-Client (client.js)
+## WebSocket (`hooks/useWebSocket.js`)
 
-Zentraler HTTP-Client für alle Backend-Anfragen.
+- URL: `VITE_WS_URL` oder automatisch `ws(s)://<host>/ws`
+- Auto-Reconnect mit 1500ms Intervall
 
-```js
-// Beispiel-Aufrufe
-const state = await api.getPipelineState();
-const results = await api.searchOmdb('Inception');
-await api.selectMetadata({ jobId, title, year, imdbId, selectedPlaylist });
-await api.confirmEncodeReview(jobId, {
-  selectedEncodeTitleId: 1,
-  selectedTrackSelection: { 1: { audioTrackIds: [1], subtitleTrackIds: [3] } }
-});
-```
+In `App.jsx` werden u. a. verarbeitet:
 
-**Features:**
-- Zentralisierte Fehlerbehandlung
-- Automatische JSON-Serialisierung
-- Basis-URL aus Umgebungsvariable (`VITE_API_BASE`)
+- `PIPELINE_STATE_CHANGED`
+- `PIPELINE_PROGRESS`
+- `PIPELINE_QUEUE_CHANGED`
+- `DISC_DETECTED` / `DISC_REMOVED`
+- `HARDWARE_MONITOR_UPDATE`
 
 ---
 
-## Build & Entwicklung
-
-### Entwicklungsserver
+## Build/Run
 
 ```bash
-cd frontend
-npm run dev
-# → http://localhost:5173
-```
+# dev
+npm run dev --prefix frontend
 
-### Vite-Proxy-Konfiguration
-
-In der Entwicklungsumgebung proxied Vite API-Anfragen zum Backend:
-
-```js
-// vite.config.js
-proxy: {
-  '/api': 'http://localhost:3001',
-  '/ws': { target: 'ws://localhost:3001', ws: true }
-}
-```
-
-### Production-Build
-
-```bash
-cd frontend
-npm run build
-# → frontend/dist/
+# prod build
+npm run build --prefix frontend
 ```

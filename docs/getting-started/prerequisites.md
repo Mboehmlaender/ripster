@@ -145,15 +145,6 @@ Für mobile Push-Benachrichtigungen bei Fertigstellung oder Fehlern:
 - App kaufen auf [pushover.net](https://pushover.net) (~5 USD einmalig)
 - **User Key** und **API Token** notieren
 
-### SSH-Zugang (Deployment)
-
-Für Remote-Deployment via `deploy-ripster.sh`:
-
-```bash
-# sshpass installieren
-sudo apt-get install sshpass
-```
-
 ---
 
 ## Checkliste

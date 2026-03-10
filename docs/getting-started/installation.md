@@ -11,50 +11,46 @@ cd ripster
 
 ---
 
-## Automatischer Start
-
-Ripster enthält ein `start.sh`-Skript, das alle Abhängigkeiten installiert und Backend + Frontend gleichzeitig startet:
+## Dev-Start (empfohlen)
 
 ```bash
 ./start.sh
 ```
 
-Das Skript führt automatisch folgende Schritte durch:
+`start.sh`:
 
-1. **Node.js-Versionscheck** – prüft ob >= 20.19.0 verfügbar ist (mit nvm/npx-Fallback)
-2. **Abhängigkeiten installieren** – `npm install` für Root, Backend und Frontend
-3. **Dienste starten** – Backend und Frontend werden parallel gestartet
+1. prüft Node-Version (`>= 20.19.0`)
+2. installiert Dependencies (Root/Backend/Frontend)
+3. startet Backend + Frontend parallel
 
-!!! success "Erfolgreich gestartet"
-    - Backend läuft auf `http://localhost:3001`
-    - Frontend läuft auf `http://localhost:5173`
+Danach:
+
+- Backend: `http://localhost:3001`
+- Frontend: `http://localhost:5173`
+
+Stoppen: mit `Ctrl+C` im laufenden Terminal.
 
 ---
 
-## Manuelle Installation
-
-Falls du mehr Kontrolle benötigst:
+## Manuell starten
 
 ```bash
-# Root-Abhängigkeiten
 npm install
+npm --prefix backend install
+npm --prefix frontend install
+npm run dev
+```
 
-# Backend-Abhängigkeiten
-cd backend && npm install && cd ..
+Oder getrennt:
 
-# Frontend-Abhängigkeiten
-cd frontend && npm install && cd ..
-
-# Backend starten (Terminal 1)
-cd backend && npm run dev
-
-# Frontend starten (Terminal 2)
-cd frontend && npm run dev
+```bash
+npm run dev:backend
+npm run dev:frontend
 ```
 
 ---
 
-## Umgebungsvariablen konfigurieren
+## Optional: .env-Dateien anlegen
 
 ### Backend
 
@@ -62,13 +58,13 @@ cd frontend && npm run dev
 cp backend/.env.example backend/.env
 ```
 
-Bearbeite `backend/.env`:
+Beispiel:
 
 ```env
 PORT=3001
 DB_PATH=./data/ripster.db
-CORS_ORIGIN=http://localhost:5173
 LOG_DIR=./logs
+CORS_ORIGIN=http://localhost:5173
 LOG_LEVEL=info
 ```
 
@@ -78,63 +74,30 @@ LOG_LEVEL=info
 cp frontend/.env.example frontend/.env
 ```
 
-Bearbeite `frontend/.env`:
+Beispiel:
 
 ```env
-VITE_API_BASE=http://localhost:3001
-VITE_WS_URL=ws://localhost:3001
-```
-
-!!! tip "Alle Umgebungsvariablen"
-    Eine vollständige Übersicht aller Umgebungsvariablen findest du unter [Umgebungsvariablen](../configuration/environment.md).
-
----
-
-## Datenbank initialisieren
-
-Die SQLite-Datenbank wird **automatisch** beim ersten Start erstellt und mit dem Schema aus `db/schema.sql` initialisiert. Es sind keine manuellen Datenbankschritte erforderlich.
-
-```
-backend/data/
-└── ripster.db    ← Wird automatisch angelegt
+VITE_API_BASE=/api
+# optional:
+# VITE_WS_URL=ws://localhost:3001/ws
 ```
 
 ---
 
-## Stoppen
+## Datenbank
 
-```bash
-./kill.sh
+SQLite wird automatisch beim Backend-Start initialisiert:
+
+```text
+backend/data/ripster.db
 ```
 
-Das Skript beendet Backend- und Frontend-Prozesse graceful.
-
----
-
-## Verzeichnisstruktur nach Installation
-
-```
-ripster/
-├── backend/
-│   ├── data/           ← SQLite-Datenbank (nach erstem Start)
-│   ├── logs/           ← Log-Dateien
-│   ├── node_modules/   ← Backend-Abhängigkeiten
-│   └── .env            ← Backend-Konfiguration
-├── frontend/
-│   ├── node_modules/   ← Frontend-Abhängigkeiten
-│   ├── dist/           ← Production-Build (nach npm run build)
-│   └── .env            ← Frontend-Konfiguration
-└── node_modules/       ← Root-Abhängigkeiten (concurrently etc.)
-```
+Schema-Quelle: `db/schema.sql`
 
 ---
 
 ## Nächste Schritte
 
-Nach erfolgreicher Installation:
-
-1. Öffne [http://localhost:5173](http://localhost:5173)
-2. Navigiere zu **Einstellungen**
-3. Konfiguriere Pfade, API-Keys und Encoding-Presets
-
-[:octicons-arrow-right-24: Zur Konfiguration](configuration.md)
+1. Browser öffnen: `http://localhost:5173`
+2. In `Settings` Pfade/Tools/API-Keys prüfen
+3. Erste Disc einlegen und Workflow starten

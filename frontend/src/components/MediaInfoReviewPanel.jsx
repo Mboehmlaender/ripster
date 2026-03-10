@@ -65,6 +65,23 @@ function isBurnedSubtitleTrack(track) {
   );
 }
 
+function isForcedOnlySubtitleTrack(track) {
+  const summary = `${track?.title || ''} ${track?.description || ''} ${track?.languageLabel || ''}`.toLowerCase();
+  return Boolean(
+    track?.forcedTrack
+    || /forced only/.test(summary)
+    || /nur erzwungen/.test(summary)
+    || /\berzwungen\b/.test(summary)
+  );
+}
+
+function hasForcedSubtitleAvailable(track) {
+  const sourceTrackIds = normalizeTrackIdList(
+    Array.isArray(track?.forcedSourceTrackIds) ? track.forcedSourceTrackIds : []
+  );
+  return Boolean(track?.forcedAvailable || sourceTrackIds.length > 0);
+}
+
 function splitArgs(input) {
   if (!input || typeof input !== 'string') {
     return [];
@@ -601,6 +618,8 @@ function TrackList({
             const displayAudioTitle = audioChannelLabel(track.channels);
             const audioVariant = type === 'audio' ? extractAudioVariant(displayHint) : '';
             const disabled = !allowSelection || (type === 'subtitle' && burned);
+            const forcedOnlyTrack = type === 'subtitle' ? isForcedOnlySubtitleTrack(track) : false;
+            const forcedAvailable = type === 'subtitle' ? hasForcedSubtitleAvailable(track) : false;
 
             let displayText = `#${track.id} | ${displayLanguage} | ${displayCodec}`;
             if (type === 'audio') {
@@ -616,6 +635,10 @@ function TrackList({
             }
             if (type === 'subtitle' && burned) {
               displayText += ' | burned';
+            } else if (type === 'subtitle' && forcedOnlyTrack) {
+              displayText += ' | forced-only';
+            } else if (type === 'subtitle' && forcedAvailable) {
+              displayText += ' | forced verfügbar';
             }
 
             return (
@@ -1074,7 +1097,6 @@ export default function MediaInfoReviewPanel({
             allowTrackSelection
             && allowTitleSelection
             && titleChecked
-            && titleEligible
           );
 
           return (
@@ -1090,7 +1112,7 @@ export default function MediaInfoReviewPanel({
                     onSelectEncodeTitle(normalizeTitleId(title.id));
                   }}
                   readOnly={!allowTitleSelection}
-                  disabled={!allowTitleSelection || !titleEligible}
+                  disabled={!allowTitleSelection}
                 />
                 <span>
                   #{title.id} | {title.fileName} | {formatDuration(title.durationMinutes)} | {formatBytes(title.sizeBytes)}

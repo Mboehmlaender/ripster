@@ -74,3 +74,9 @@ frontend/.env.*
 Thumbs.db
 .idea/
 .vscode/
+
+# ----------------------------
+# Scripts
+# ----------------------------
+deploy-ripster.sh
+build-handbrake-nvdec.sh

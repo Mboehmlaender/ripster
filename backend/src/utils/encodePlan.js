@@ -444,7 +444,9 @@ function buildBaseTrackSelectors(settings, presetProfile = null) {
       explicitIds: [],
       firstOnly: baseSubtitleMode === 'first',
       selectionSource: profile.source === 'preset-export' ? 'preset' : 'default',
-      burnBehavior: normalizeBurnBehavior(profile.subtitleBurnBehavior),
+      // Do not auto-burn subtitle tracks from exported preset metadata.
+      // Burn-in should only be activated via explicit CLI args/selection.
+      burnBehavior: 'none',
       burnedTrackId: null,
       defaultTrackId: null,
       forcedTrackId: null,

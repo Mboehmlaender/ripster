@@ -4,42 +4,44 @@
 
 ## Empfohlene Architektur
 
+```text
+Client
+  -> nginx (Reverse Proxy + statisches Frontend)
+    -> Backend API/WebSocket (Node.js, Port 3001)
 ```
-Internet / Heimnetz
-        ↓
-   nginx (Reverse Proxy)
-        ↓
-   ┌────┴────┐
-   │         │
-Backend   Frontend
- :3001     (statische Dateien)
-```
+
+Wichtig: Das Backend serviert im aktuellen Stand keine `frontend/dist`-Dateien automatisch.
 
 ---
 
-## systemd-Service
-
-Für ein dauerhaftes Betreiben als systemd-Service:
+## 1) Frontend builden
 
 ```bash
-sudo nano /etc/systemd/system/ripster.service
+cd frontend
+npm install
+npm run build
 ```
+
+Artefakte liegen in `frontend/dist/`.
+
+---
+
+## 2) Backend als systemd-Service
+
+Beispiel `/etc/systemd/system/ripster-backend.service`:
 
 ```ini
 [Unit]
-Description=Ripster - Disc Ripping Service
+Description=Ripster Backend
 After=network.target
 
 [Service]
 Type=simple
-User=michael
-WorkingDirectory=/home/michael/ripster
-ExecStart=/bin/bash /home/michael/ripster/start.sh
-ExecStop=/bin/bash /home/michael/ripster/kill.sh
+User=ripster
+WorkingDirectory=/opt/ripster/backend
+ExecStart=/usr/bin/env node src/index.js
 Restart=on-failure
-RestartSec=10s
-
-# Umgebungsvariablen
+RestartSec=5
 Environment=NODE_ENV=production
 Environment=PORT=3001
 Environment=LOG_LEVEL=info
@@ -48,61 +50,40 @@ Environment=LOG_LEVEL=info
 WantedBy=multi-user.target
 ```
 
+Aktivieren:
+
 ```bash
-# Service aktivieren und starten
 sudo systemctl daemon-reload
-sudo systemctl enable ripster
-sudo systemctl start ripster
-
-# Status prüfen
-sudo systemctl status ripster
-
-# Logs anzeigen
-journalctl -u ripster -f
+sudo systemctl enable --now ripster-backend
+sudo systemctl status ripster-backend
 ```
 
 ---
 
-## Frontend-Build
+## 3) nginx konfigurieren
 
-Für Produktion das Frontend bauen:
-
-```bash
-cd frontend
-npm run build
-```
-
-Die statischen Dateien landen in `frontend/dist/`.
-
----
-
-## nginx-Konfiguration
+Beispiel `/etc/nginx/sites-available/ripster`:
 
 ```nginx
-# /etc/nginx/sites-available/ripster
 server {
     listen 80;
     server_name ripster.local;
 
-    # Statisches Frontend
-    root /home/michael/ripster/frontend/dist;
+    root /opt/ripster/frontend/dist;
     index index.html;
 
-    # SPA Fallback (React Router)
     location / {
         try_files $uri $uri/ /index.html;
     }
 
-    # API-Proxy zum Backend
     location /api/ {
-        proxy_pass http://localhost:3001;
+        proxy_pass http://127.0.0.1:3001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
-    # WebSocket-Proxy
     location /ws {
-        proxy_pass http://localhost:3001;
+        proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -111,83 +92,27 @@ server {
 }
 ```
 
+Aktivieren:
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/ripster /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t
+sudo systemctl reload nginx
 ```
-
----
-
-## Nur-Backend-Produktion (ohne nginx)
-
-Falls kein Reverse Proxy gewünscht ist, kann das Backend die Frontend-Dateien direkt ausliefern:
-
-```bash
-# Frontend bauen
-cd frontend && npm run build
-
-# Backend startet und serviert frontend/dist/
-cd backend && NODE_ENV=production npm start
-```
-
-Das Backend ist so konfiguriert, dass es im Produktionsmodus die `frontend/dist/`-Dateien als statische Assets ausliefert.
 
 ---
 
 ## Datenbank-Backup
 
 ```bash
-# Datenbank sichern
-cp backend/data/ripster.db backend/data/ripster.db.backup.$(date +%Y%m%d)
-
-# Oder mit SQLite-eigenem Backup-Befehl
-sqlite3 backend/data/ripster.db ".backup '/mnt/backup/ripster.db'"
-```
-
-!!! tip "Automatisches Backup"
-    Cron-Job für tägliches Backup:
-    ```cron
-    0 3 * * * sqlite3 /home/michael/ripster/backend/data/ripster.db ".backup '/mnt/backup/ripster-$(date +\%Y\%m\%d).db'"
-    ```
-
----
-
-## Log-Rotation
-
-Ripster rotiert Logs automatisch täglich. Falls zusätzlich systemd-Journal-Rotation gewünscht ist:
-
-```bash
-# /etc/logrotate.d/ripster
-/home/michael/ripster/backend/logs/*.log {
-    daily
-    rotate 14
-    compress
-    missingok
-    notifempty
-}
+sqlite3 /opt/ripster/backend/data/ripster.db \
+  ".backup '/var/backups/ripster-$(date +%Y%m%d).db'"
 ```
 
 ---
 
-## Sicherheitshinweise
+## Sicherheit
 
-!!! warning "Heimnetz-Einsatz"
-    Ripster ist für den Einsatz im **lokalen Heimnetz** konzipiert und enthält **keine Authentifizierung**. Stelle sicher, dass der Dienst nicht öffentlich erreichbar ist.
-
-Falls öffentlicher Zugang benötigt wird:
-
-1. **Basic Auth** via nginx:
-   ```bash
-   sudo htpasswd -c /etc/nginx/.htpasswd michael
-   ```
-   ```nginx
-   location / {
-       auth_basic "Ripster";
-       auth_basic_user_file /etc/nginx/.htpasswd;
-       # ...
-   }
-   ```
-
-2. **VPN-Zugang** (empfohlen): Zugriff nur über WireGuard/OpenVPN
-
-3. **SSL/TLS**: Let's Encrypt mit certbot für HTTPS
+- Ripster hat keine eingebaute Authentifizierung.
+- Für externen Zugriff mindestens Basic Auth + TLS + Netzwerksegmentierung/VPN einsetzen.
+- Secrets nicht ins Repo committen (`.env`, Settings-Felder).

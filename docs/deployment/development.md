@@ -5,7 +5,7 @@
 ## Voraussetzungen
 
 - Node.js >= 20.19.0
-- Alle [externen Tools](../getting-started/prerequisites.md) installiert
+- externe Tools installiert (`makemkvcon`, `HandBrakeCLI`, `mediainfo`)
 
 ---
 
@@ -15,15 +15,18 @@
 ./start.sh
 ```
 
-Das Skript startet automatisch:
-- **Backend** auf Port 3001 (mit Nodemon für Hot-Reload)
-- **Frontend** auf Port 5173 (mit Vite HMR)
+Startet:
+
+- Backend (`http://localhost:3001`, mit nodemon)
+- Frontend (`http://localhost:5173`, mit Vite HMR)
+
+Stoppen: `Ctrl+C`.
 
 ---
 
-## Manuelle Entwicklungsumgebung
+## Manuell
 
-### Terminal 1 – Backend
+### Backend
 
 ```bash
 cd backend
@@ -31,9 +34,7 @@ npm install
 npm run dev
 ```
 
-Backend läuft auf `http://localhost:3001` mit **Nodemon** – Neustart bei Dateiänderungen.
-
-### Terminal 2 – Frontend
+### Frontend
 
 ```bash
 cd frontend
@@ -41,97 +42,44 @@ npm install
 npm run dev
 ```
 
-Frontend läuft auf `http://localhost:5173` mit **Vite HMR** – sofortige Browser-Updates.
+---
+
+## Vite-Proxy (Dev)
+
+`frontend/vite.config.js` proxied standardmäßig:
+
+- `/api` -> `http://127.0.0.1:3001`
+- `/ws` -> `ws://127.0.0.1:3001`
 
 ---
 
-## Vite-Proxy
+## Remote-Dev (optional)
 
-Im Entwicklungsmodus proxied Vite alle API- und WebSocket-Anfragen zum Backend:
-
-```js
-// frontend/vite.config.js
-server: {
-  proxy: {
-    '/api': {
-      target: 'http://localhost:3001',
-      changeOrigin: true
-    },
-    '/ws': {
-      target: 'ws://localhost:3001',
-      ws: true
-    }
-  }
-}
-```
-
-Das bedeutet: Im Browser macht das Frontend Anfragen an `localhost:5173/api/...` – Vite leitet diese an `localhost:3001/api/...` weiter.
-
----
-
-## Remote-Entwicklung
-
-Falls Ripster auf einem entfernten Server entwickelt wird (z.B. Homeserver), muss die Vite-Konfiguration angepasst werden:
+Beispiel `frontend/.env.local`:
 
 ```env
-# frontend/.env.local
-VITE_API_BASE=http://192.168.1.100:3001
-VITE_WS_URL=ws://192.168.1.100:3001
+VITE_API_BASE=http://192.168.1.100:3001/api
+VITE_WS_URL=ws://192.168.1.100:3001/ws
+VITE_PUBLIC_ORIGIN=http://192.168.1.100:5173
+VITE_ALLOWED_HOSTS=192.168.1.100,ripster.local
+VITE_HMR_PROTOCOL=ws
 VITE_HMR_HOST=192.168.1.100
-VITE_HMR_PORT=5173
+VITE_HMR_CLIENT_PORT=5173
 ```
 
 ---
 
-## Log-Level für Entwicklung
-
-```env
-# backend/.env
-LOG_LEVEL=debug
-```
-
-Im Debug-Modus werden alle Ausgaben der externen Tools (MakeMKV, HandBrake) vollständig geloggt.
-
----
-
-## Stoppen
+## Nützliche Kommandos
 
 ```bash
-./kill.sh
+# Root dev (backend + frontend)
+npm run dev
+
+# einzeln
+npm run dev:backend
+npm run dev:frontend
+
+# Frontend Build
+npm run build:frontend
 ```
 
----
-
-## Linting & Type-Checking
-
-```bash
-# Frontend (ESLint)
-cd frontend && npm run lint
-
-# Backend hat keine separaten Lint-Scripts,
-# nutze direkt eslint falls konfiguriert
-```
-
----
-
-## Deployment-Script
-
-Das `deploy-ripster.sh`-Script überträgt Code auf einen Remote-Server per SSH:
-
-```bash
-./deploy-ripster.sh
-```
-
-**Was das Script tut:**
-1. `rsync` synchronisiert den Code (Backend-Quellcode ohne `data/`)
-2. Die Datenbank (`backend/data/`) wird **nicht** überschrieben
-3. Verbindung via SSH (konfigurierbar im Script)
-
-**Anpassung des Scripts:**
-
-```bash
-# deploy-ripster.sh
-REMOTE_HOST="192.168.1.100"
-REMOTE_USER="michael"
-REMOTE_PATH="/home/michael/ripster"
-```

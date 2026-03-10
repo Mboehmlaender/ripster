@@ -1,6 +1,6 @@
 # Architektur
 
-Ripster ist als klassische **Client-Server-Anwendung** mit Echtzeit-Kommunikation über WebSockets aufgebaut.
+Ripster ist eine Client-Server-Anwendung mit REST + WebSocket.
 
 ---
 
@@ -9,104 +9,63 @@ Ripster ist als klassische **Client-Server-Anwendung** mit Echtzeit-Kommunikatio
 ```mermaid
 graph TB
     subgraph Browser["Browser (React)"]
-        Dashboard["Dashboard"]
-        Settings["Einstellungen"]
-        History["History"]
+        Dashboard[Dashboard]
+        Settings[Einstellungen]
+        History[Historie]
     end
 
     subgraph Backend["Node.js Backend"]
-        API["REST API\n(Express)"]
-        WS["WebSocket\nServer"]
-        Pipeline["Pipeline\nService"]
-        DB["SQLite\nDatenbank"]
+        API[REST API\nExpress]
+        WS[WebSocket\n/ws]
+        Pipeline[pipelineService]
+        Cron[cronService]
+        DB[(SQLite)]
     end
 
-    subgraph ExternalTools["Externe Tools"]
-        MakeMKV["makemkvcon"]
-        HandBrake["HandBrakeCLI"]
-        MediaInfo["mediainfo"]
+    subgraph Tools["Externe Tools"]
+        MakeMKV[makemkvcon]
+        HandBrake[HandBrakeCLI]
+        MediaInfo[mediainfo]
     end
 
-    subgraph ExternalAPIs["Externe APIs"]
-        OMDb["OMDb API"]
-        PushOver["PushOver"]
-    end
-
-    Browser <-->|HTTP REST| API
+    Browser <-->|HTTP| API
     Browser <-->|WebSocket| WS
     Pipeline --> MakeMKV
     Pipeline --> HandBrake
     Pipeline --> MediaInfo
-    Pipeline <-->|Metadaten| OMDb
-    Pipeline -->|Benachrichtigungen| PushOver
     API --> DB
     Pipeline --> DB
+    Cron --> DB
 ```
 
 ---
 
-## Schichten-Architektur
+## Schichten
 
 ### Backend
 
-```
-index.js (Express Server)
-├── Routes (API-Endpunkte)
-│   ├── pipelineRoutes.js
-│   ├── settingsRoutes.js
-│   └── historyRoutes.js
-├── Services (Business Logic)
-│   ├── pipelineService.js    ← Kern-Orchestrierung
-│   ├── diskDetectionService.js
-│   ├── processRunner.js
-│   ├── websocketService.js
-│   ├── omdbService.js
-│   ├── settingsService.js
-│   ├── notificationService.js
-│   ├── historyService.js
-│   └── logger.js
-├── Database
-│   ├── database.js
-│   └── defaultSettings.js
-└── Utils
-    ├── encodePlan.js
-    ├── playlistAnalysis.js
-    ├── progressParsers.js
-    └── files.js
-```
+- `src/index.js` (Bootstrapping, Routes, WS, Services)
+- `src/routes/*` (Pipeline, Settings, History, Crons)
+- `src/services/*` (Business-Logik)
+- `src/db/database.js` (Init/Migration)
+- `src/utils/*` (Parser, Dateifunktionen, Validierung)
 
 ### Frontend
 
-```
-App.jsx (React Router)
-├── Pages
-│   ├── DashboardPage.jsx     ← Haupt-Interface
-│   ├── SettingsPage.jsx
-│   └── DatabasePage.jsx      ← Historie/DB-Ansicht
-├── Components
-│   ├── PipelineStatusCard.jsx
-│   ├── MetadataSelectionDialog.jsx
-│   ├── MediaInfoReviewPanel.jsx
-│   ├── DynamicSettingsForm.jsx
-│   └── JobDetailDialog.jsx
-├── Hooks
-│   └── useWebSocket.js
-└── API
-    └── client.js
-```
+- `App.jsx` + `pages/*` (Dashboard, Settings, History)
+- `components/*` (Status-/Review-/Dialog-Komponenten)
+- `api/client.js` (REST-Client)
+- `hooks/useWebSocket.js` (WS-Reconnect)
 
 ---
 
-## Weiterführende Dokumentation
+## Weiterführend
 
 <div class="grid cards" markdown>
 
--   [:octicons-arrow-right-24: Übersicht](overview.md)
-
--   [:octicons-arrow-right-24: Backend-Services](backend.md)
-
--   [:octicons-arrow-right-24: Frontend-Komponenten](frontend.md)
-
--   [:octicons-arrow-right-24: Datenbank](database.md)
+- [:octicons-arrow-right-24: Übersicht](overview.md)
+- [:octicons-arrow-right-24: Backend-Services](backend.md)
+- [:octicons-arrow-right-24: Frontend-Komponenten](frontend.md)
+- [:octicons-arrow-right-24: Datenbank](database.md)
 
 </div>

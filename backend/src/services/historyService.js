@@ -21,6 +21,8 @@ function parseJsonSafe(raw, fallback = null) {
 const PROCESS_LOG_TAIL_MAX_BYTES = 1024 * 1024;
 const processLogStreams = new Map();
 const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'other'];
+const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
+const RAW_RIP_COMPLETE_PREFIX = 'Rip_Complete_';
 
 function inspectDirectory(dirPath) {
   if (!dirPath) {
@@ -430,9 +432,29 @@ function normalizeComparablePath(inputPath) {
   return resolveSafe(String(inputPath || '')).replace(/[\\/]+$/, '');
 }
 
+function stripRawFolderStatePrefix(folderName) {
+  const rawName = String(folderName || '').trim();
+  if (!rawName) {
+    return '';
+  }
+  return rawName
+    .replace(new RegExp(`^${RAW_INCOMPLETE_PREFIX}`, 'i'), '')
+    .replace(new RegExp(`^${RAW_RIP_COMPLETE_PREFIX}`, 'i'), '')
+    .trim();
+}
+
+function applyRawFolderPrefix(folderName, prefix = '') {
+  const normalized = stripRawFolderStatePrefix(folderName);
+  if (!normalized) {
+    return normalized;
+  }
+  const safePrefix = String(prefix || '').trim();
+  return safePrefix ? `${safePrefix}${normalized}` : normalized;
+}
+
 function parseRawFolderMetadata(folderName) {
   const rawName = String(folderName || '').trim();
-  const normalizedRawName = rawName.replace(/^Incomplete_/i, '').trim();
+  const normalizedRawName = stripRawFolderStatePrefix(rawName);
   const folderJobIdMatch = normalizedRawName.match(/-\s*RAW\s*-\s*job-(\d+)\s*$/i);
   const folderJobId = folderJobIdMatch ? Number(folderJobIdMatch[1]) : null;
   let working = normalizedRawName.replace(/\s*-\s*RAW\s*-\s*job-\d+\s*$/i, '').trim();
@@ -1053,6 +1075,7 @@ class HistoryService {
       detectedTitle: effectiveTitle
     });
 
+    const renameSteps = [];
     let finalRawPath = absRawPath;
     const renamedRawPath = buildRawPathForJobId(absRawPath, created.id);
     const shouldRenameRawFolder = normalizeComparablePath(renamedRawPath) !== absRawPath;
@@ -1067,9 +1090,34 @@ class HistoryService {
       try {
         fs.renameSync(absRawPath, renamedRawPath);
         finalRawPath = normalizeComparablePath(renamedRawPath);
+        renameSteps.push({ from: absRawPath, to: finalRawPath });
       } catch (error) {
         await db.run('DELETE FROM jobs WHERE id = ?', [created.id]);
         const wrapped = new Error(`RAW-Ordner konnte nicht auf neue Job-ID umbenannt werden: ${error.message}`);
+        wrapped.statusCode = 500;
+        throw wrapped;
+      }
+    }
+
+    const ripCompleteFolderName = applyRawFolderPrefix(path.basename(finalRawPath), RAW_RIP_COMPLETE_PREFIX);
+    const ripCompleteRawPath = path.join(path.dirname(finalRawPath), ripCompleteFolderName);
+    const shouldMarkRipComplete = normalizeComparablePath(ripCompleteRawPath) !== normalizeComparablePath(finalRawPath);
+    if (shouldMarkRipComplete) {
+      if (fs.existsSync(ripCompleteRawPath)) {
+        await db.run('DELETE FROM jobs WHERE id = ?', [created.id]);
+        const error = new Error(`RAW-Ordner für Rip_Complete-Zustand existiert bereits: ${ripCompleteRawPath}`);
+        error.statusCode = 409;
+        throw error;
+      }
+
+      try {
+        const previousRawPath = finalRawPath;
+        fs.renameSync(previousRawPath, ripCompleteRawPath);
+        finalRawPath = normalizeComparablePath(ripCompleteRawPath);
+        renameSteps.push({ from: previousRawPath, to: finalRawPath });
+      } catch (error) {
+        await db.run('DELETE FROM jobs WHERE id = ?', [created.id]);
+        const wrapped = new Error(`RAW-Ordner konnte nicht als Rip_Complete markiert werden: ${error.message}`);
         wrapped.statusCode = 500;
         throw wrapped;
       }
@@ -1105,8 +1153,8 @@ class HistoryService {
     await this.appendLog(
       created.id,
       'SYSTEM',
-      shouldRenameRawFolder
-        ? `Historieneintrag aus RAW erstellt. Ordner umbenannt: ${absRawPath} -> ${finalRawPath}`
+      renameSteps.length > 0
+        ? `Historieneintrag aus RAW erstellt. Ordner umbenannt: ${renameSteps.map((step) => `${step.from} -> ${step.to}`).join(' | ')}`
         : `Historieneintrag aus bestehendem RAW-Ordner erstellt: ${finalRawPath}`
     );
     if (metadata.imdbId) {

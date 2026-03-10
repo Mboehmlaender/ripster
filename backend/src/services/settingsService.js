@@ -716,7 +716,16 @@ class SettingsService {
       options?.mediaProfile || deviceInfo?.mediaProfile || null
     );
     const cmd = map.makemkv_command;
-    const args = ['-r', 'info', this.resolveSourceArg(map, deviceInfo), ...splitArgs(map.makemkv_analyze_extra_args)];
+    const extraArgs = splitArgs(map.makemkv_analyze_extra_args);
+    const hasExplicitMinLength = extraArgs.some((arg) => /^--minlength(?:=|$)/i.test(String(arg || '').trim()));
+    const minLengthMinutes = Number(map.makemkv_min_length_minutes || 0);
+    const minLengthSeconds = Number.isFinite(minLengthMinutes) && minLengthMinutes > 0
+      ? Math.round(minLengthMinutes * 60)
+      : 0;
+    const minLengthArgs = (!hasExplicitMinLength && minLengthSeconds > 0)
+      ? [`--minlength=${minLengthSeconds}`]
+      : [];
+    const args = ['-r', ...minLengthArgs, ...extraArgs, 'info', this.resolveSourceArg(map, deviceInfo)];
     logger.debug('cli:makemkv:analyze', { cmd, args, deviceInfo });
     return { cmd, args };
   }
@@ -726,7 +735,16 @@ class SettingsService {
     const map = this.resolveEffectiveToolSettings(rawMap, options?.mediaProfile || null);
     const cmd = map.makemkv_command;
     const sourceArg = `file:${sourcePath}`;
-    const args = ['-r', 'info', sourceArg, ...splitArgs(map.makemkv_analyze_extra_args)];
+    const extraArgs = splitArgs(map.makemkv_analyze_extra_args);
+    const hasExplicitMinLength = extraArgs.some((arg) => /^--minlength(?:=|$)/i.test(String(arg || '').trim()));
+    const minLengthMinutes = Number(map.makemkv_min_length_minutes || 0);
+    const minLengthSeconds = Number.isFinite(minLengthMinutes) && minLengthMinutes > 0
+      ? Math.round(minLengthMinutes * 60)
+      : 0;
+    const minLengthArgs = (!hasExplicitMinLength && minLengthSeconds > 0)
+      ? [`--minlength=${minLengthSeconds}`]
+      : [];
+    const args = ['-r', ...minLengthArgs, ...extraArgs, 'info', sourceArg];
     const titleIdRaw = Number(options?.titleId);
     // "makemkvcon info" supports only <source>; title filtering is done in app parser.
     logger.debug('cli:makemkv:analyze:path', {

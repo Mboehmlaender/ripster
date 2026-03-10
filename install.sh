@@ -392,7 +392,7 @@ else
   ok "Benutzer '$SERVICE_USER' angelegt"
 fi
 
-for grp in cdrom optical disk; do
+for grp in cdrom optical disk video render; do
   if getent group "$grp" &>/dev/null; then
     usermod -aG "$grp" "$SERVICE_USER" 2>/dev/null || true
     info "Benutzer '$SERVICE_USER' zur Gruppe '$grp' hinzugefügt"
@@ -540,6 +540,16 @@ EnvironmentFile=${INSTALL_DIR}/backend/.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ripster-backend
+
+# Device-Zugriff fuer GPU und CD-ROM
+DeviceAllow=/dev/sr0 rw
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/dri/renderD129 rw
+SupplementaryGroups=video render cdrom disk
 
 NoNewPrivileges=true
 ProtectSystem=full

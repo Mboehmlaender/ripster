@@ -24,6 +24,18 @@ function normalizePlaylistId(value) {
   return match ? String(match[1]).padStart(5, '0') : null;
 }
 
+function formatDurationClock(seconds) {
+  const total = Number(seconds || 0);
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  const rounded = Math.max(0, Math.trunc(total));
+  const h = Math.floor(rounded / 3600);
+  const m = Math.floor((rounded % 3600) / 60);
+  const s = rounded % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 function normalizeTrackId(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -376,10 +388,18 @@ export default function PipelineStatusCard({
           item?.structuralMetrics?.sequenceCoherence ?? item?.sequenceCoherence
         );
         const handBrakeTitleId = Number(item?.handBrakeTitleId);
+        const durationSecondsRaw = Number(item?.durationSeconds ?? item?.duration ?? 0);
+        const durationSeconds = Number.isFinite(durationSecondsRaw) && durationSecondsRaw > 0
+          ? Math.trunc(durationSecondsRaw)
+          : 0;
+        const durationLabelRaw = String(item?.durationLabel || '').trim();
+        const durationLabel = durationLabelRaw || formatDurationClock(durationSeconds);
         return {
           playlistId,
           playlistFile,
           titleId: Number.isFinite(Number(item?.titleId)) ? Number(item.titleId) : null,
+          durationSeconds,
+          durationLabel: durationLabel || null,
           score: Number.isFinite(score) ? score : null,
           evaluationLabel: item?.evaluationLabel || null,
           segmentCommand: item?.segmentCommand
@@ -688,6 +708,7 @@ export default function PipelineStatusCard({
                     <span>
                       {row.playlistFile}
                       {row.titleId !== null ? ` | Titel #${row.titleId}` : ''}
+                      {row.durationLabel ? ` | Dauer ${row.durationLabel}` : ''}
                       {row.score !== null ? ` | Score ${row.score}` : ''}
                       {row.recommended ? ' | empfohlen' : ''}
                     </span>
@@ -757,7 +778,7 @@ export default function PipelineStatusCard({
       {(state === 'READY_TO_ENCODE' || state === 'MEDIAINFO_CHECK' || mediaInfoReview) ? (
         <div className="mediainfo-review-block">
           <h3>Titel-/Spurprüfung</h3>
-          {state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked ? (
+          {state === 'READY_TO_ENCODE' && !queueLocked ? (
             <small>
               {isPreRipReview
                 ? 'Spurauswahl kann direkt übernommen werden. Beim Klick auf "Backup + Encoding starten" wird automatisch bestätigt und gestartet.'
@@ -770,9 +791,9 @@ export default function PipelineStatusCard({
             presetDisplayValue={presetDisplayValue}
             commandOutputPath={commandOutputPath}
             selectedEncodeTitleId={normalizeTitleId(selectedEncodeTitleId)}
-            allowTitleSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            allowTitleSelection={state === 'READY_TO_ENCODE' && !queueLocked}
             onSelectEncodeTitle={(titleId) => setSelectedEncodeTitleId(normalizeTitleId(titleId))}
-            allowTrackSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            allowTrackSelection={state === 'READY_TO_ENCODE' && !queueLocked}
             trackSelectionByTitle={trackSelectionByTitle}
             onTrackSelectionChange={(titleId, trackType, trackId, checked) => {
               const normalizedTitleId = normalizeTitleId(titleId);
@@ -808,7 +829,7 @@ export default function PipelineStatusCard({
             userPresets={filteredUserPresets}
             selectedUserPresetId={selectedUserPresetId}
             onUserPresetChange={(presetId) => setSelectedUserPresetId(presetId)}
-            allowEncodeItemSelection={state === 'READY_TO_ENCODE' && !reviewConfirmed && !queueLocked}
+            allowEncodeItemSelection={state === 'READY_TO_ENCODE' && !queueLocked}
             onAddPreEncodeItem={(itemType) => {
               setPreEncodeItems((prev) => {
                 const current = Array.isArray(prev) ? prev : [];

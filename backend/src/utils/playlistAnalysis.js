@@ -1,5 +1,7 @@
 const LARGE_JUMP_THRESHOLD = 20;
 const DEFAULT_DURATION_SIMILARITY_SECONDS = 90;
+const RAW_MIRROR_DURATION_TOLERANCE_SECONDS = 2;
+const RAW_MIRROR_SIZE_TOLERANCE_BYTES = 64 * 1024 * 1024;
 
 function parseDurationSeconds(raw) {
   const text = String(raw || '').trim();
@@ -151,6 +153,7 @@ function parseAnalyzeTitles(lines) {
         chapters: 0,
         segmentNumbers: [],
         segmentFiles: [],
+        streams: {},
         fields: {}
       });
     }
@@ -162,6 +165,57 @@ function parseAnalyzeTitles(lines) {
     if (mapping && Number.isFinite(mapping.titleId) && mapping.titleId >= 0) {
       const title = ensureTitle(mapping.titleId);
       title.playlistIdFromMap = normalizePlaylistId(mapping.playlistId);
+    }
+
+    const sinfo = String(line || '').match(/^SINFO:(\d+),(\d+),(\d+),\d+,"([^"]*)"/i);
+    if (sinfo) {
+      const titleId = Number(sinfo[1]);
+      const streamIndex = Number(sinfo[2]);
+      const fieldId = Number(sinfo[3]);
+      const value = String(sinfo[4] || '').trim();
+      if (
+        Number.isFinite(titleId) && titleId >= 0
+        && Number.isFinite(streamIndex) && streamIndex >= 0
+        && Number.isFinite(fieldId)
+      ) {
+        const title = ensureTitle(titleId);
+        const streamKey = String(Math.trunc(streamIndex));
+        if (!title.streams[streamKey]) {
+          title.streams[streamKey] = {
+            index: Math.trunc(streamIndex),
+            type: null,
+            language: null,
+            languageLabel: null,
+            format: null,
+            channels: null,
+            description: null
+          };
+        }
+        const stream = title.streams[streamKey];
+        if (fieldId === 1) {
+          const lowered = value.toLowerCase();
+          if (lowered.includes('audio')) {
+            stream.type = 'audio';
+          } else if (lowered.includes('subtitle') || lowered.includes('untertitel') || lowered.includes('text')) {
+            stream.type = 'subtitle';
+          }
+        } else if (fieldId === 3) {
+          stream.language = value ? value.toLowerCase() : null;
+        } else if (fieldId === 4) {
+          stream.languageLabel = value || null;
+        } else if (fieldId === 6 || fieldId === 7) {
+          if (!stream.format || fieldId === 6) {
+            stream.format = value || null;
+          }
+        } else if (fieldId === 14 || fieldId === 40) {
+          if (!stream.channels || fieldId === 40) {
+            stream.channels = value || null;
+          }
+        } else if (fieldId === 30) {
+          stream.description = value || null;
+        }
+      }
+      continue;
     }
 
     const tinfo = String(line || '').match(/^TINFO:(\d+),(\d+),\d+,"([^"]*)"/i);
@@ -242,20 +296,64 @@ function parseAnalyzeTitles(lines) {
       const playlistId = normalizePlaylistId(item.playlistId);
       const playlistIdFromMap = normalizePlaylistId(item.playlistIdFromMap);
       const playlistIdFromField16 = normalizePlaylistId(item.playlistIdFromField16);
-      // Prefer explicit title<->playlist map lines from MakeMKV (MSG:3016).
-      const resolvedPlaylistId = playlistIdFromMap || playlistIdFromField16 || playlistId;
+      const field16Raw = String(item?.fields?.[16] || '').trim();
+      const hasField16 = field16Raw.length > 0;
+      const field16LooksPlaylist = /\.mpls$/i.test(field16Raw) || /^\d{1,5}$/i.test(field16Raw);
+      const field16LooksClip = /\.(?:m2ts|m2t|mts)$/i.test(field16Raw);
+      let resolvedPlaylistId = null;
+
+      // TINFO:16 is part of the final title block and is more reliable than MSG:3307
+      // lines, which can include pre-dedup title ids.
+      if (field16LooksPlaylist && playlistIdFromField16) {
+        resolvedPlaylistId = playlistIdFromField16;
+      } else if (!hasField16) {
+        resolvedPlaylistId = playlistIdFromField16 || playlistIdFromMap || playlistId;
+      } else if (!field16LooksClip && playlistIdFromField16) {
+        resolvedPlaylistId = playlistIdFromField16;
+      }
       const segmentNumbers = Array.isArray(item.segmentNumbers) ? item.segmentNumbers : [];
       const segmentFiles = segmentNumbers
         .map((number) => toSegmentFile(number))
         .filter(Boolean);
+      const streams = item?.streams && typeof item.streams === 'object' ? Object.values(item.streams) : [];
+      const sortedStreams = streams
+        .filter((stream) => Number.isFinite(Number(stream?.index)))
+        .sort((a, b) => Number(a.index) - Number(b.index));
+      const audioTracks = sortedStreams
+        .filter((stream) => String(stream?.type || '').toLowerCase() === 'audio')
+        .map((stream) => ({
+          id: Number(stream.index) + 1,
+          sourceTrackId: Number(stream.index) + 1,
+          language: stream.language || 'und',
+          languageLabel: stream.languageLabel || stream.language || 'und',
+          title: stream.description || null,
+          format: stream.format || null,
+          channels: stream.channels || null
+        }));
+      const subtitleTracks = sortedStreams
+        .filter((stream) => String(stream?.type || '').toLowerCase() === 'subtitle')
+        .map((stream) => ({
+          id: Number(stream.index) + 1,
+          sourceTrackId: Number(stream.index) + 1,
+          language: stream.language || 'und',
+          languageLabel: stream.languageLabel || stream.language || 'und',
+          title: stream.description || null,
+          format: stream.format || null,
+          channels: null
+        }));
 
+      const { streams: _omitStreams, ...restItem } = item;
       return {
-        ...item,
+        ...restItem,
         playlistId: resolvedPlaylistId,
         playlistIdFromMap,
         playlistIdFromField16,
         playlistFile: resolvedPlaylistId ? `${resolvedPlaylistId}.mpls` : null,
         durationLabel: item.durationLabel || formatDuration(item.durationSeconds),
+        audioTracks,
+        subtitleTracks,
+        audioTrackCount: audioTracks.length,
+        subtitleTrackCount: subtitleTracks.length,
         segmentNumbers,
         segmentFiles
       };
@@ -275,6 +373,58 @@ function uniqueOrdered(values) {
     output.push(String(value).trim());
   }
   return output;
+}
+
+function parseReportedTitleCount(lines) {
+  for (let index = (Array.isArray(lines) ? lines.length : 0) - 1; index >= 0; index -= 1) {
+    const line = String(lines[index] || '').trim();
+    const match = line.match(/^TCOUNT:(\d+)/i);
+    if (!match) {
+      continue;
+    }
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value >= 0) {
+      return Math.trunc(value);
+    }
+  }
+  return null;
+}
+
+function likelyRawMirrorOfPlaylist(rawTitle, playlistTitle) {
+  const rawDuration = Number(rawTitle?.durationSeconds || 0);
+  const playlistDuration = Number(playlistTitle?.durationSeconds || 0);
+  const rawSize = Number(rawTitle?.sizeBytes || 0);
+  const playlistSize = Number(playlistTitle?.sizeBytes || 0);
+  if (!Number.isFinite(rawDuration) || !Number.isFinite(playlistDuration) || rawDuration <= 0 || playlistDuration <= 0) {
+    return false;
+  }
+  if (Math.abs(rawDuration - playlistDuration) > RAW_MIRROR_DURATION_TOLERANCE_SECONDS) {
+    return false;
+  }
+
+  if (rawSize > 0 && playlistSize > 0) {
+    return Math.abs(rawSize - playlistSize) <= RAW_MIRROR_SIZE_TOLERANCE_BYTES;
+  }
+  return true;
+}
+
+function suppressRawMirrorCandidates(candidates) {
+  const rows = Array.isArray(candidates) ? candidates : [];
+  if (rows.length <= 1) {
+    return rows;
+  }
+
+  const playlistRows = rows.filter((item) => normalizePlaylistId(item?.playlistId));
+  if (playlistRows.length === 0) {
+    return rows;
+  }
+
+  return rows.filter((item) => {
+    if (normalizePlaylistId(item?.playlistId)) {
+      return true;
+    }
+    return !playlistRows.some((playlistRow) => likelyRawMirrorOfPlaylist(item, playlistRow));
+  });
 }
 
 function buildSimilarityGroups(candidates, durationSimilaritySeconds) {
@@ -506,37 +656,45 @@ function extractPlaylistMismatchWarnings(titles) {
     .filter((title) => String(title.playlistIdFromMap) !== String(title.playlistIdFromField16))
     .slice(0, 25)
     .map((title) =>
-      `Titel #${title.titleId}: MSG-Playlist=${title.playlistIdFromMap}.mpls, TINFO16=${title.playlistIdFromField16}.mpls (MSG bevorzugt)`
+      `Titel #${title.titleId}: MSG-Playlist=${title.playlistIdFromMap}.mpls, TINFO16=${title.playlistIdFromField16}.mpls (TINFO16 bevorzugt)`
     );
 }
 
 function analyzePlaylistObfuscation(lines, minLengthMinutes = 60, options = {}) {
   const parsedTitles = parseAnalyzeTitles(lines);
+  const reportedTitleCount = parseReportedTitleCount(lines);
   const minSeconds = Math.max(0, Math.round(Number(minLengthMinutes || 0) * 60));
   const durationSimilaritySeconds = Math.max(
     0,
     Math.round(Number(options.durationSimilaritySeconds || DEFAULT_DURATION_SIMILARITY_SECONDS))
   );
 
-  const candidates = parsedTitles
+  const candidatesRaw = parsedTitles
     .filter((item) => Number(item.durationSeconds || 0) >= minSeconds)
     .sort((a, b) => b.durationSeconds - a.durationSeconds || b.sizeBytes - a.sizeBytes || a.titleId - b.titleId);
+  const candidates = suppressRawMirrorCandidates(candidatesRaw)
+    .slice()
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || b.sizeBytes - a.sizeBytes || a.titleId - b.titleId);
+  const playlistBackedCandidates = candidates
+    .filter((item) => normalizePlaylistId(item?.playlistId));
+  const candidatePlaylistsAll = uniqueOrdered(
+    playlistBackedCandidates.map((item) => item.playlistId).filter(Boolean)
+  );
 
-  const similarityGroups = buildSimilarityGroups(candidates, durationSimilaritySeconds);
+  const similarityGroups = buildSimilarityGroups(playlistBackedCandidates, durationSimilaritySeconds);
   const obfuscationDetected = similarityGroups.length > 0;
-  const multipleCandidatesDetected = candidates.length > 1;
+  const multipleCandidatesDetected = candidatePlaylistsAll.length > 1;
   const manualDecisionRequired = multipleCandidatesDetected;
-  const decisionPool = manualDecisionRequired ? candidates : [];
+  const decisionPool = manualDecisionRequired ? playlistBackedCandidates : [];
   const evaluatedCandidates = decisionPool.length > 0 ? scoreCandidates(decisionPool) : [];
   const recommendation = evaluatedCandidates[0] || null;
-  const candidatePlaylists = manualDecisionRequired
-    ? uniqueOrdered(decisionPool.map((item) => item.playlistId).filter(Boolean))
-    : [];
+  const candidatePlaylists = manualDecisionRequired ? candidatePlaylistsAll : [];
   const playlistSegments = buildPlaylistSegmentMap(decisionPool);
   const playlistToTitleId = buildPlaylistToTitleIdMap(parsedTitles);
 
   return {
     generatedAt: new Date().toISOString(),
+    reportedTitleCount,
     minLengthMinutes: Number(minLengthMinutes || 0),
     minLengthSeconds: minSeconds,
     durationSimilaritySeconds,
@@ -570,6 +728,9 @@ function analyzePlaylistObfuscation(lines, minLengthMinutes = 60, options = {}) 
     },
     warningLines: [
       ...extractWarningLines(lines),
+      ...(reportedTitleCount !== null && reportedTitleCount !== parsedTitles.length
+        ? [`Titel-Anzahl abweichend: TCOUNT=${reportedTitleCount}, geparst=${parsedTitles.length}`]
+        : []),
       ...extractPlaylistMismatchWarnings(parsedTitles)
     ].slice(0, 60)
   };
