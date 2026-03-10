@@ -99,6 +99,9 @@ router.post(
     const selectedEncodeTitleId = req.body?.selectedEncodeTitleId ?? null;
     const selectedTrackSelection = req.body?.selectedTrackSelection ?? null;
     const selectedPostEncodeScriptIds = req.body?.selectedPostEncodeScriptIds;
+    const selectedPreEncodeScriptIds = req.body?.selectedPreEncodeScriptIds;
+    const selectedPostEncodeChainIds = req.body?.selectedPostEncodeChainIds;
+    const selectedPreEncodeChainIds = req.body?.selectedPreEncodeChainIds;
     const skipPipelineStateUpdate = Boolean(req.body?.skipPipelineStateUpdate);
     const selectedUserPresetId = req.body?.selectedUserPresetId ?? null;
     logger.info('post:confirm-encode', {
@@ -110,12 +113,24 @@ router.post(
       selectedUserPresetId,
       selectedPostEncodeScriptIdsCount: Array.isArray(selectedPostEncodeScriptIds)
         ? selectedPostEncodeScriptIds.length
+        : 0,
+      selectedPreEncodeScriptIdsCount: Array.isArray(selectedPreEncodeScriptIds)
+        ? selectedPreEncodeScriptIds.length
+        : 0,
+      selectedPostEncodeChainIdsCount: Array.isArray(selectedPostEncodeChainIds)
+        ? selectedPostEncodeChainIds.length
+        : 0,
+      selectedPreEncodeChainIdsCount: Array.isArray(selectedPreEncodeChainIds)
+        ? selectedPreEncodeChainIds.length
         : 0
     });
     const job = await pipelineService.confirmEncodeReview(jobId, {
       selectedEncodeTitleId,
       selectedTrackSelection,
       selectedPostEncodeScriptIds,
+      selectedPreEncodeScriptIds,
+      selectedPostEncodeChainIds,
+      selectedPreEncodeChainIds,
       skipPipelineStateUpdate,
       selectedUserPresetId
     });

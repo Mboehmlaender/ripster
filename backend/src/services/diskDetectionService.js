@@ -98,8 +98,12 @@ function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
   }
 
   if (fstype.includes('udf')) {
+    // UDF is used by both DVDs (UDF 1.x) and Blu-rays (UDF 2.x).
+    // Drive model alone (hasBlurayModelMarker) is not reliable: a BD-ROM drive
+    // with a DVD inside would incorrectly be detected as Blu-ray.
+    // Return null so UDF version detection via blkid can decide.
     if (hasBlurayModelMarker) {
-      return 'bluray';
+      return null;
     }
     if (hasDvdModelMarker) {
       return 'dvd';
@@ -108,15 +112,38 @@ function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
   }
 
   if (fstype.includes('iso9660') || fstype.includes('cdfs')) {
-    if (hasBlurayModelMarker) {
-      return 'bluray';
-    }
+    // iso9660/cdfs is never used by Blu-ray discs (they use UDF 2.x).
+    // Ignore hasBlurayModelMarker – it only reflects drive capability.
     if (hasCdOnlyModelMarker) {
       return 'other';
     }
     return 'dvd';
   }
 
+  return null;
+}
+
+function inferMediaProfileFromUdevProperties(properties = {}) {
+  const flags = Object.entries(properties).reduce((acc, [key, rawValue]) => {
+    const normalizedKey = String(key || '').trim().toUpperCase();
+    if (!normalizedKey) {
+      return acc;
+    }
+
+    acc[normalizedKey] = String(rawValue || '').trim();
+    return acc;
+  }, {});
+
+  const hasFlag = (prefix) => Object.entries(flags).some(([key, value]) => key.startsWith(prefix) && value === '1');
+  if (hasFlag('ID_CDROM_MEDIA_BD')) {
+    return 'bluray';
+  }
+  if (hasFlag('ID_CDROM_MEDIA_DVD')) {
+    return 'dvd';
+  }
+  if (hasFlag('ID_CDROM_MEDIA_CD')) {
+    return 'other';
+  }
   return null;
 }
 
@@ -496,29 +523,58 @@ class DiskDetectionService extends EventEmitter {
     }
   }
 
+  async inferMediaProfileFromUdev(devicePath) {
+    const normalizedPath = String(devicePath || '').trim();
+    if (!normalizedPath) {
+      return null;
+    }
+
+    try {
+      const { stdout } = await execFileAsync('udevadm', ['info', '--query=property', '--name', normalizedPath]);
+      const properties = {};
+      for (const line of String(stdout || '').split(/\r?\n/)) {
+        const idx = line.indexOf('=');
+        if (idx <= 0) {
+          continue;
+        }
+        const key = String(line.slice(0, idx)).trim();
+        const value = String(line.slice(idx + 1)).trim();
+        if (!key) {
+          continue;
+        }
+        properties[key] = value;
+      }
+
+      const inferred = inferMediaProfileFromUdevProperties(properties);
+      if (inferred) {
+        logger.debug('udev:media-profile', { devicePath: normalizedPath, inferred });
+      }
+      return inferred;
+    } catch (error) {
+      logger.debug('udev:media-profile:failed', {
+        devicePath: normalizedPath,
+        error: errorToMeta(error)
+      });
+      return null;
+    }
+  }
+
   async inferMediaProfile(devicePath, hints = {}) {
     const explicit = normalizeMediaProfile(hints?.mediaProfile);
     if (isSpecificMediaProfile(explicit)) {
       return explicit;
     }
 
+    // Only pass disc-specific fields – NOT hints?.model (drive model).
+    // Drive model (e.g. "BD-ROM") reflects drive capability, not disc type.
+    // A BD-ROM drive with a DVD would otherwise be detected as Blu-ray here.
     const hinted = inferMediaProfileFromTextParts([
       hints?.discLabel,
       hints?.label,
       hints?.fstype,
-      hints?.model
     ]);
     if (hinted) {
       return hinted;
-    }
-
-    const hintFstype = String(hints?.fstype || '').trim().toLowerCase();
-    const byFsTypeHint = inferMediaProfileFromFsTypeAndModel(hints?.fstype, hints?.model);
-    // UDF is used for both Blu-ray (UDF 2.x) and DVD (UDF 1.x). Without a clear model
-    // marker identifying it as Blu-ray, a 'dvd' result from UDF is ambiguous. Skip the
-    // early return and fall through to the blkid check which uses the UDF version number.
-    if (byFsTypeHint && !(hintFstype.includes('udf') && byFsTypeHint !== 'bluray')) {
-      return byFsTypeHint;
     }
 
     const mountpoint = String(hints?.mountpoint || '').trim();
@@ -539,8 +595,25 @@ class DiskDetectionService extends EventEmitter {
       }
     }
 
+    const byUdev = await this.inferMediaProfileFromUdev(devicePath);
+    if (byUdev) {
+      return byUdev;
+    }
+
+    const hintFstype = String(hints?.fstype || '').trim().toLowerCase();
+    const byFsTypeHint = inferMediaProfileFromFsTypeAndModel(hints?.fstype, hints?.model);
+    const udfHintFallback = hintFstype.includes('udf')
+      ? inferMediaProfileFromFsTypeAndModel(hints?.fstype, null)
+      : null;
+    // UDF is used for both Blu-ray (UDF 2.x) and DVD (UDF 1.x). Without a clear model
+    // marker identifying it as Blu-ray, a 'dvd' result from UDF is ambiguous. Skip the
+    // early return and fall through to the blkid check which uses the UDF version number.
+    if (byFsTypeHint && !(hintFstype.includes('udf') && byFsTypeHint !== 'bluray')) {
+      return byFsTypeHint;
+    }
+
     try {
-      const { stdout } = await execFileAsync('blkid', ['-o', 'export', devicePath]);
+      const { stdout } = await execFileAsync('blkid', ['-p', '-o', 'export', devicePath]);
       const payload = {};
       for (const line of String(stdout || '').split(/\r?\n/)) {
         const idx = line.indexOf('=');
@@ -555,27 +628,39 @@ class DiskDetectionService extends EventEmitter {
         payload[key] = value;
       }
 
+      // APPLICATION_ID contains disc-specific strings (e.g. "BDAV"/"BDMV" for Blu-ray,
+      // "DVD_VIDEO" for DVD). Drive model is excluded – see reasoning above.
       const byBlkidMarker = inferMediaProfileFromTextParts([
         payload.LABEL,
         payload.TYPE,
         payload.VERSION,
         payload.APPLICATION_ID,
-        hints?.model
       ]);
       if (byBlkidMarker) {
         return byBlkidMarker;
       }
 
       const type = String(payload.TYPE || '').trim().toLowerCase();
+      // For UDF, VERSION is the most reliable discriminator: 1.x → DVD, 2.x → Blu-ray.
+      // This check must run independently of inferMediaProfileFromFsTypeAndModel so it
+      // is not skipped when the drive model returns null (BD-ROM drive with DVD inside).
+      if (type.includes('udf')) {
+        const version = Number.parseFloat(String(payload.VERSION || '').replace(',', '.'));
+        if (Number.isFinite(version)) {
+          return version >= 2 ? 'bluray' : 'dvd';
+        }
+      }
+
       const byBlkidFsType = inferMediaProfileFromFsTypeAndModel(type, hints?.model);
       if (byBlkidFsType) {
-        if (type.includes('udf')) {
-          const version = Number.parseFloat(String(payload.VERSION || '').replace(',', '.'));
-          if (Number.isFinite(version)) {
-            return version >= 2 ? 'bluray' : 'dvd';
-          }
-        }
         return byBlkidFsType;
+      }
+
+      // Last resort for drives that only expose TYPE=udf without VERSION/APPLICATION_ID:
+      // prefer DVD over "other" so DVDs in BD-capable drives do not fall back to Misc.
+      const byBlkidFsTypeWithoutModel = inferMediaProfileFromFsTypeAndModel(type, null);
+      if (byBlkidFsTypeWithoutModel) {
+        return byBlkidFsTypeWithoutModel;
       }
     } catch (error) {
       logger.debug('infer-media-profile:blkid-failed', {
@@ -584,7 +669,11 @@ class DiskDetectionService extends EventEmitter {
       });
     }
 
-    return explicit === 'other' ? 'other' : null;
+    if (udfHintFallback) {
+      return udfHintFallback;
+    }
+
+    return 'other';
   }
 
   guessDiscIndex(name) {

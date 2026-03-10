@@ -128,8 +128,12 @@ function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
   }
 
   if (fstype.includes('udf')) {
+    // UDF is used by both DVDs (UDF 1.02) and Blu-rays (UDF 2.5/2.6).
+    // Drive model alone (hasBlurayModelMarker) is not reliable: a BD-ROM drive
+    // with a DVD inside would incorrectly be detected as Blu-ray.
+    // Return null so the mountpoint BDMV/VIDEO_TS check can decide.
     if (hasBlurayModelMarker) {
-      return 'bluray';
+      return null;
     }
     if (hasDvdModelMarker) {
       return 'dvd';
@@ -138,9 +142,8 @@ function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
   }
 
   if (fstype.includes('iso9660') || fstype.includes('cdfs')) {
-    if (hasBlurayModelMarker) {
-      return 'bluray';
-    }
+    // iso9660/cdfs is never used by Blu-ray discs (they use UDF 2.5/2.6).
+    // Ignore hasBlurayModelMarker here – it only reflects drive capability.
     if (hasCdOnlyModelMarker) {
       return 'other';
     }
@@ -266,20 +269,22 @@ function inferMediaProfileFromDeviceInfo(deviceInfo = null) {
     return explicit;
   }
 
-  const markerText = [
+  // Only use disc-specific fields for keyword detection, NOT device.model.
+  // The drive model describes drive capability (e.g. "BD-ROM"), not disc type.
+  // A BD-ROM drive with a DVD inserted would otherwise be misdetected as Blu-ray.
+  const discMarkerText = [
     device.discLabel,
     device.label,
     device.fstype,
-    device.model
   ]
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean)
     .join(' ');
 
-  if (/(^|[\s_-])bdmv($|[\s_-])|blu[\s-]?ray|bd-rom|bd-r|bd-re/.test(markerText)) {
+  if (/(^|[\s_-])bdmv($|[\s_-])|blu[\s-]?ray|bd-rom|bd-r|bd-re/.test(discMarkerText)) {
     return 'bluray';
   }
-  if (/(^|[\s_-])video_ts($|[\s_-])|dvd/.test(markerText)) {
+  if (/(^|[\s_-])video_ts($|[\s_-])|dvd/.test(discMarkerText)) {
     return 'dvd';
   }
 
@@ -1166,10 +1171,14 @@ function parseMakeMkvDurationSeconds(rawValue) {
 }
 
 function buildSyntheticMediaInfoFromMakeMkvTitle(titleInfo) {
+  const durationSeconds = Math.max(0, Math.trunc(Number(titleInfo?.durationSeconds || 0)));
   const tracks = [];
   tracks.push({
     '@type': 'General',
-    Duration: String(Number(titleInfo?.durationSeconds || 0))
+    // MediaInfo reports numeric Duration as milliseconds. Keep this format so
+    // parseDurationSeconds() does not misinterpret long titles.
+    Duration: String(durationSeconds * 1000),
+    Duration_String3: formatDurationClock(durationSeconds) || null
   });
 
   const audioTracks = Array.isArray(titleInfo?.audioTracks) ? titleInfo.audioTracks : [];
@@ -3903,10 +3912,17 @@ class PipelineService extends EventEmitter {
         eta: patch.eta ?? null,
         statusText: patch.statusText ?? null
       });
-    } else if (patch.activeJobId === null && previousActiveJobId != null) {
+    } else if (patch.activeJobId === null) {
       // Job slot cleared – remove the finished job's live entry so it falls
       // back to DB data in the frontend.
-      this.jobProgress.delete(Number(previousActiveJobId));
+      // Use patch.finishingJobId when provided (parallel-safe); fall back to
+      // previousActiveJobId only when no parallel job has overwritten the slot.
+      const finishingJobId = patch.finishingJobId != null
+        ? Number(patch.finishingJobId)
+        : (previousActiveJobId != null ? Number(previousActiveJobId) : null);
+      if (finishingJobId != null) {
+        this.jobProgress.delete(finishingJobId);
+      }
     }
     logger.info('state:changed', {
       from: previous,
@@ -4917,7 +4933,8 @@ class PipelineService extends EventEmitter {
           'MEDIAINFO_CHECK',
           25,
           null,
-          'HandBrake Trackdaten für Playlist-Auswahl werden vorbereitet'
+          'HandBrake Trackdaten für Playlist-Auswahl werden vorbereitet',
+          jobId
         );
         try {
           const resolveScanLines = [];
@@ -5169,16 +5186,15 @@ class PipelineService extends EventEmitter {
       );
     }
 
-    if (this.isPrimaryJob(jobId)) {
-      await this.updateProgress(
-        'MEDIAINFO_CHECK',
-        30,
-        null,
-        hasCachedHandBrakeEntry
-          ? `HandBrake Trackdaten aus Cache (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
-          : `HandBrake Titel-/Spurscan läuft (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
-      );
-    }
+    await this.updateProgress(
+      'MEDIAINFO_CHECK',
+      30,
+      null,
+      hasCachedHandBrakeEntry
+        ? `HandBrake Trackdaten aus Cache (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`
+        : `HandBrake Titel-/Spurscan läuft (${toPlaylistFile(resolvedPlaylistId) || resolvedPlaylistId})`,
+      jobId
+    );
 
     let handBrakeResolveRunInfo = null;
     let handBrakeTitleRunInfo = null;
@@ -5371,6 +5387,8 @@ class PipelineService extends EventEmitter {
     review = remapReviewTrackIdsToSourceIds(review);
 
     const resolvedPlaylistInfo = resolvePlaylistInfoFromAnalysis(playlistAnalysis, resolvedPlaylistId);
+    const minLengthMinutesForReview = Number(review?.minLengthMinutes ?? settings?.makemkv_min_length_minutes ?? 0);
+    const minLengthSecondsForReview = Math.max(0, Math.round(minLengthMinutesForReview * 60));
     const subtitleTrackMetaBySourceId = new Map(
       (Array.isArray(reviewTitleInfo?.subtitleTracks) ? reviewTitleInfo.subtitleTracks : [])
         .map((track) => {
@@ -5382,6 +5400,8 @@ class PipelineService extends EventEmitter {
     const normalizedTitles = (Array.isArray(review.titles) ? review.titles : [])
       .slice(0, 1)
       .map((title) => {
+        const durationSeconds = Number(reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0);
+        const eligibleForEncode = durationSeconds >= minLengthSecondsForReview;
         const subtitleTracks = (Array.isArray(title?.subtitleTracks) ? title.subtitleTracks : []).map((track) => {
           const sourceTrackId = normalizeTrackIdList([track?.sourceTrackId ?? track?.id])[0] || null;
           const sourceMeta = sourceTrackId ? (subtitleTrackMetaBySourceId.get(sourceTrackId) || null) : null;
@@ -5403,8 +5423,10 @@ class PipelineService extends EventEmitter {
           ...title,
           filePath: rawPath,
           fileName: reviewTitleInfo?.fileName || title?.fileName || `Title #${selectedTitleForReview}`,
-          durationSeconds: Number(reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0),
-          durationMinutes: Number((((reviewTitleInfo?.durationSeconds || title?.durationSeconds || 0) / 60)).toFixed(2)),
+          durationSeconds,
+          durationMinutes: Number(((durationSeconds / 60)).toFixed(2)),
+          selectedByMinLength: eligibleForEncode,
+          eligibleForEncode,
           sizeBytes: Number(reviewTitleInfo?.sizeBytes || title?.sizeBytes || 0),
           playlistId: resolvedPlaylistInfo.playlistId || title?.playlistId || null,
           playlistFile: resolvedPlaylistInfo.playlistFile || title?.playlistFile || null,
@@ -6559,7 +6581,7 @@ class PipelineService extends EventEmitter {
     for (let i = 0; i < mediaFiles.length; i += 1) {
       const file = mediaFiles[i];
       const percent = Number((((i + 1) / mediaFiles.length) * 100).toFixed(2));
-      await this.updateProgress('MEDIAINFO_CHECK', percent, null, `Mediainfo ${i + 1}/${mediaFiles.length}: ${path.basename(file.path)}`);
+      await this.updateProgress('MEDIAINFO_CHECK', percent, null, `Mediainfo ${i + 1}/${mediaFiles.length}: ${path.basename(file.path)}`, jobId);
 
       const result = await this.runMediainfoForFile(jobId, file.path, {
         mediaProfile,
@@ -7479,6 +7501,7 @@ class PipelineService extends EventEmitter {
       setTimeout(async () => {
         if (this.snapshot.state === 'FINISHED' && this.snapshot.activeJobId === jobId) {
           await this.setState('IDLE', {
+            finishingJobId: jobId,
             activeJobId: null,
             progress: 0,
             eta: null,

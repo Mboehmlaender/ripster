@@ -371,6 +371,18 @@ export default function DashboardPage({
   refreshPipeline
 }) {
   const [busy, setBusy] = useState(false);
+  const [busyJobIds, setBusyJobIds] = useState(() => new Set());
+  const setJobBusy = (jobId, isBusy) => {
+    setBusyJobIds((prev) => {
+      const next = new Set(prev);
+      if (isBusy) {
+        next.add(jobId);
+      } else {
+        next.delete(jobId);
+      }
+      return next;
+    });
+  };
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
   const [cancelCleanupDialog, setCancelCleanupDialog] = useState({
@@ -713,7 +725,7 @@ export default function DashboardPage({
       || 'IDLE'
     ).trim().toUpperCase();
 
-    setBusy(true);
+    if (cancelledJobId) setJobBusy(cancelledJobId, true);
     try {
       await api.cancelPipeline(cancelledJobId);
       await refreshPipeline();
@@ -736,7 +748,7 @@ export default function DashboardPage({
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      if (cancelledJobId) setJobBusy(cancelledJobId, false);
     }
   };
 
@@ -782,7 +794,7 @@ export default function DashboardPage({
     }
 
     const startOptions = options && typeof options === 'object' ? options : {};
-    setBusy(true);
+    setJobBusy(normalizedJobId, true);
     try {
       if (startOptions.ensureConfirmed) {
         await api.confirmEncodeReview(normalizedJobId, {
@@ -808,7 +820,7 @@ export default function DashboardPage({
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -818,7 +830,8 @@ export default function DashboardPage({
     selectedTrackSelection = null,
     selectedPostEncodeScriptIds = undefined
   ) => {
-    setBusy(true);
+    const normalizedJobId = normalizeJobId(jobId);
+    if (normalizedJobId) setJobBusy(normalizedJobId, true);
     try {
       await api.confirmEncodeReview(jobId, {
         selectedEncodeTitleId,
@@ -827,16 +840,17 @@ export default function DashboardPage({
       });
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizeJobId(jobId));
+      setExpandedJobId(normalizedJobId);
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      if (normalizedJobId) setJobBusy(normalizedJobId, false);
     }
   };
 
   const handleSelectPlaylist = async (jobId, selectedPlaylist = null) => {
-    setBusy(true);
+    const normalizedJobId = normalizeJobId(jobId);
+    if (normalizedJobId) setJobBusy(normalizedJobId, true);
     try {
       await api.selectMetadata({
         jobId,
@@ -844,16 +858,17 @@ export default function DashboardPage({
       });
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizeJobId(jobId));
+      setExpandedJobId(normalizedJobId);
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      if (normalizedJobId) setJobBusy(normalizedJobId, false);
     }
   };
 
   const handleRetry = async (jobId) => {
-    setBusy(true);
+    const normalizedJobId = normalizeJobId(jobId);
+    if (normalizedJobId) setJobBusy(normalizedJobId, true);
     try {
       const response = await api.retryJob(jobId);
       const result = getQueueActionResult(response);
@@ -862,12 +877,12 @@ export default function DashboardPage({
       if (result.queued) {
         showQueuedToast(toastRef, 'Retry', result);
       } else {
-        setExpandedJobId(normalizeJobId(jobId));
+        setExpandedJobId(normalizedJobId);
       }
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      if (normalizedJobId) setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -884,7 +899,8 @@ export default function DashboardPage({
       }
     }
 
-    setBusy(true);
+    const normalizedJobId = normalizeJobId(jobId);
+    if (normalizedJobId) setJobBusy(normalizedJobId, true);
     try {
       const response = await api.restartEncodeWithLastSettings(jobId);
       const result = getQueueActionResult(response);
@@ -893,12 +909,12 @@ export default function DashboardPage({
       if (result.queued) {
         showQueuedToast(toastRef, 'Encode-Neustart', result);
       } else {
-        setExpandedJobId(normalizeJobId(jobId));
+        setExpandedJobId(normalizedJobId);
       }
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      if (normalizedJobId) setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -908,7 +924,7 @@ export default function DashboardPage({
       return;
     }
 
-    setBusy(true);
+    setJobBusy(normalizedJobId, true);
     try {
       await api.restartReviewFromRaw(normalizedJobId);
       await refreshPipeline();
@@ -917,7 +933,7 @@ export default function DashboardPage({
     } catch (error) {
       showError(error);
     } finally {
-      setBusy(false);
+      setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -975,6 +991,7 @@ export default function DashboardPage({
     }
 
     setQueueReorderBusy(true);
+    setJobBusy(normalizedJobId, true);
     try {
       await api.cancelPipeline(normalizedJobId);
       const latest = await api.getPipelineQueue();
@@ -983,6 +1000,7 @@ export default function DashboardPage({
       showError(error);
     } finally {
       setQueueReorderBusy(false);
+      setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -1429,7 +1447,7 @@ export default function DashboardPage({
                         severity="secondary"
                         outlined
                         onClick={() => setExpandedJobId(null)}
-                        disabled={busy}
+                        disabled={busyJobIds.has(jobId)}
                       />
                     </div>
                     <PipelineStatusCard
@@ -1446,7 +1464,7 @@ export default function DashboardPage({
                       onRetry={handleRetry}
                       onRemoveFromQueue={handleRemoveQueuedJob}
                       isQueued={isQueued}
-                      busy={busy}
+                      busy={busyJobIds.has(jobId)}
                       liveJobLog={isCurrentSession ? liveJobLog : ''}
                     />
                   </div>
