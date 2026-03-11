@@ -3463,16 +3463,31 @@ class PipelineService extends EventEmitter {
         pushCandidate(path.join(baseDir, variantFolderName));
       }
     }
+    const existingDirectories = [];
     for (const candidate of candidates) {
       try {
         if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+          existingDirectories.push(candidate);
+        }
+      } catch (_error) {
+        // ignore fs errors
+      }
+    }
+    if (existingDirectories.length === 0) {
+      return null;
+    }
+
+    for (const candidate of existingDirectories) {
+      try {
+        if (hasBluRayBackupStructure(candidate) || findPreferredRawInput(candidate)) {
           return candidate;
         }
       } catch (_error) {
         // ignore fs errors
       }
     }
-    return null;
+
+    return existingDirectories[0];
   }
 
   async migrateRawFolderNamingOnStartup(db) {
@@ -9113,9 +9128,22 @@ class PipelineService extends EventEmitter {
       || findPreferredRawInput(resolvedReviewRawPath)
     );
     if (!hasRawInput) {
-      const error = new Error('Review-Neustart nicht möglich: keine Mediendateien im RAW-Pfad gefunden. Disc muss zuerst gerippt werden.');
-      error.statusCode = 400;
-      throw error;
+      let hasAnyRawEntries = false;
+      try {
+        hasAnyRawEntries = fs.readdirSync(resolvedReviewRawPath).length > 0;
+      } catch (_error) {
+        hasAnyRawEntries = false;
+      }
+      if (!hasAnyRawEntries) {
+        const error = new Error('Review-Neustart nicht möglich: keine Mediendateien im RAW-Pfad gefunden. Disc muss zuerst gerippt werden.');
+        error.statusCode = 400;
+        throw error;
+      }
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Review-Neustart: keine direkten Mediendateien erkannt, versuche Analyse trotzdem mit RAW-Pfad ${resolvedReviewRawPath}.`
+      );
     }
 
     const currentStatus = String(sourceJob.status || '').trim().toUpperCase();
