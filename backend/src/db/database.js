@@ -46,6 +46,23 @@ const LEGACY_PROFILE_SETTING_MIGRATIONS = [
     profileKeys: ['output_folder_template_bluray', 'output_folder_template_dvd']
   }
 ];
+const INSTALL_PATH_SETTING_DEFAULTS = [
+  {
+    key: 'raw_dir',
+    pathParts: ['output', 'raw'],
+    legacyDefaults: ['data/output/raw', './data/output/raw']
+  },
+  {
+    key: 'movie_dir',
+    pathParts: ['output', 'movies'],
+    legacyDefaults: ['data/output/movies', './data/output/movies']
+  },
+  {
+    key: 'log_dir',
+    pathParts: ['logs'],
+    legacyDefaults: ['data/logs', './data/logs']
+  }
+];
 
 let dbInstance;
 
@@ -521,6 +538,7 @@ async function openAndPrepareDatabase() {
   await applySchemaModel(dbInstance, schemaModel);
 
   await seedFromSchemaFile(dbInstance);
+  await syncInstallPathSettingDefaults(dbInstance);
   await migrateLegacyProfiledToolSettings(dbInstance);
   await removeDeprecatedSettings(dbInstance);
   await migrateSettingsSchemaMetadata(dbInstance);
@@ -578,6 +596,68 @@ async function seedFromSchemaFile(db) {
     await db.run(stmt);
   }
   logger.info('seed:settings', { count: statements.length });
+}
+
+async function syncInstallPathSettingDefaults(db) {
+  const dataDir = path.dirname(dbPath);
+  const updates = INSTALL_PATH_SETTING_DEFAULTS.map((item) => ({
+    key: item.key,
+    value: path.join(dataDir, ...item.pathParts),
+    legacyDefaults: Array.isArray(item.legacyDefaults) ? item.legacyDefaults : []
+  }));
+
+  await db.exec('BEGIN');
+  try {
+    for (const update of updates) {
+      const placeholders = update.legacyDefaults.map(() => '?').join(', ');
+
+      await db.run(
+        `
+          UPDATE settings_schema
+          SET default_value = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE key = ?
+            AND (
+              default_value IS NULL
+              OR TRIM(default_value) = ''
+              OR default_value IN (${placeholders})
+            )
+        `,
+        [update.value, update.key, ...update.legacyDefaults]
+      );
+
+      await db.run(
+        `
+          INSERT INTO settings_values (key, value, updated_at)
+          VALUES (?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO NOTHING
+        `,
+        [update.key, update.value]
+      );
+
+      await db.run(
+        `
+          UPDATE settings_values
+          SET value = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE key = ?
+            AND (
+              value IS NULL
+              OR TRIM(value) = ''
+              OR value IN (${placeholders})
+            )
+        `,
+        [update.value, update.key, ...update.legacyDefaults]
+      );
+    }
+    await db.exec('COMMIT');
+  } catch (error) {
+    await db.exec('ROLLBACK');
+    throw error;
+  }
+
+  logger.info('seed:path-defaults-synced', {
+    dataDir,
+    settings: updates.map((item) => ({ key: item.key, value: item.value }))
+  });
 }
 
 async function readCurrentOrDefaultSettingValue(db, key) {
