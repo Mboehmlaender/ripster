@@ -43,15 +43,15 @@ HandBrakeCLI -z
 
 ---
 
-## Relevante Settings
+## Relevante Felder in `Settings`
 
-| Key | Bedeutung |
+| Feldname in der GUI | Bedeutung |
 |-----|-----------|
-| `handbrake_command` | CLI-Binary |
-| `handbrake_preset_bluray` / `handbrake_preset_dvd` | profilspezifisches Preset |
-| `handbrake_extra_args_bluray` / `handbrake_extra_args_dvd` | profilspezifische Zusatzargumente |
-| `output_extension_bluray` / `output_extension_dvd` | Ausgabeformat |
-| `handbrake_restart_delete_incomplete_output` | unvollständige Ausgabe bei Neustart löschen |
+| `HandBrake Kommando` | CLI-Binary |
+| `HandBrake Preset` (Blu-ray/DVD) | profilspezifisches Preset |
+| `HandBrake Extra Args` (Blu-ray/DVD) | profilspezifische Zusatzargumente |
+| `Ausgabeformat` (Blu-ray/DVD) | Dateiendung der finalen Datei |
+| `Encode-Neustart: unvollständige Ausgabe löschen` | unvollständige Ausgabe bei Neustart löschen |
 
 ---
 

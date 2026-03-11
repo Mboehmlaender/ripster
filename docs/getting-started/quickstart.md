@@ -6,7 +6,7 @@ Dieser Ablauf zeigt einen vollständigen Job aus Anwendersicht: von Disc-Erkennu
 
 Erwartung:
 
-- Status wechselt auf `DISC_DETECTED` bzw. `Medium erkannt`
+- Status wechselt auf `Medium erkannt`
 - im Bereich `Disk-Information` sind Laufwerksdaten sichtbar
 
 Wenn nichts passiert: `Laufwerk neu lesen`.
@@ -19,7 +19,7 @@ Aktion im Dashboard:
 
 Erwartung:
 
-- Status `ANALYZING`
+- Status `Analyse`
 - danach Metadaten-Dialog
 
 ## 3. Metadaten auswählen
@@ -32,11 +32,11 @@ Im Dialog `Metadaten auswählen`:
 
 ## 4. Auf den nächsten Zustand reagieren
 
-- Normalfall ohne vorhandenes RAW: `RIPPING` -> `MEDIAINFO_CHECK` -> `READY_TO_ENCODE`
-- bei vorhandenem RAW: direkt `MEDIAINFO_CHECK` -> `READY_TO_ENCODE`
-- bei unklarer Blu-ray-Playlist: `WAITING_FOR_USER_DECISION` (Playlist auswählen und übernehmen)
+- Normalfall ohne vorhandenes RAW: `Rippen` -> `Mediainfo-Pruefung` -> `Bereit zum Encodieren`
+- bei vorhandenem RAW: direkt `Mediainfo-Pruefung` -> `Bereit zum Encodieren`
+- bei unklarer Blu-ray-Playlist: `Warte auf Auswahl` (Playlist auswählen und übernehmen)
 
-## 5. Review in `READY_TO_ENCODE`
+## 5. Review in `Bereit zum Encodieren`
 
 Im aufgeklappten Job (`Pipeline-Status`):
 
@@ -49,7 +49,7 @@ Dann `Encoding starten`.
 
 ## 6. Encoding überwachen
 
-Während `ENCODING`:
+Während `Encodieren`:
 
 - Fortschritt + ETA im Dashboard
 - Live-Log im `Pipeline-Status`
@@ -57,7 +57,7 @@ Während `ENCODING`:
 
 ## 7. Ergebnis prüfen
 
-Bei `FINISHED`:
+Bei `Fertig`:
 
 1. Seite `Historie` öffnen
 2. Job in Details öffnen

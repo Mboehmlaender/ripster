@@ -66,7 +66,7 @@ In `App.jsx` werden u. a. verarbeitet:
 - `PIPELINE_STATE_CHANGED`
 - `PIPELINE_PROGRESS`
 - `PIPELINE_QUEUE_CHANGED`
-- `DISC_DETECTED` / `DISC_REMOVED`
+- Disk erkannt / Disk entfernt
 - `HARDWARE_MONITOR_UPDATE`
 
 ---

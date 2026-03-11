@@ -14,9 +14,9 @@ Setze zuerst diese Pflichtwerte:
 
 | Bereich | Wichtige Felder |
 |---|---|
-| Pfade | `raw_dir`, `movie_dir`, `log_dir` |
-| Tools | `makemkv_command`, `handbrake_command`, `mediainfo_command` |
-| Metadaten | `omdb_api_key`, optional `omdb_default_type` |
+| Pfade | `Raw Ausgabeordner`, `Film Ausgabeordner`, `Log Ordner` |
+| Tools | `MakeMKV Kommando`, `HandBrake Kommando`, `Mediainfo Kommando` |
+| Metadaten | `OMDb API Key`, optional `OMDb Typ` |
 
 Danach `Änderungen speichern`.
 
@@ -30,22 +30,22 @@ Wenn du Blu-ray und DVD unterschiedlich behandeln willst, pflege die profilbezog
 
 Typische Beispiele:
 
-- `handbrake_preset_bluray` und `handbrake_preset_dvd`
-- `raw_dir_bluray` und `raw_dir_dvd`
-- `filename_template_bluray` und `filename_template_dvd`
+- `HandBrake Preset` (Blu-ray und DVD)
+- `Raw Ausgabeordner` (Blu-ray und DVD)
+- `Dateiname Template` (Blu-ray und DVD)
 
 ### 3. Queue und Monitoring festlegen
 
-- `pipeline_max_parallel_jobs` für parallele Jobs
-- `hardware_monitoring_enabled` und Intervall für Live-Metriken im Dashboard
+- `Parallele Jobs` für den gleichzeitigen Durchsatz
+- `Hardware Monitoring aktiviert` + `Hardware Monitoring Intervall (ms)` für Live-Metriken im Dashboard
 
 ### 4. Optional: Push-Benachrichtigungen
 
 In den Benachrichtigungsfeldern setzen:
 
-- `pushover_enabled`
-- `pushover_token`
-- `pushover_user`
+- `PushOver aktiviert`
+- `PushOver Token`
+- `PushOver User`
 
 Dann über `PushOver Test` direkt prüfen.
 
@@ -55,7 +55,7 @@ Dann über `PushOver Test` direkt prüfen.
 2. Disc einlegen
 3. `Analyse starten`
 4. Metadaten übernehmen
-5. Bis `READY_TO_ENCODE` laufen lassen
+5. Bis `Bereit zum Encodieren` laufen lassen
 
 Wenn diese Schritte funktionieren, ist die Grundkonfiguration korrekt.
 

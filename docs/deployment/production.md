@@ -4,9 +4,9 @@
 
 ## Automatische Installation (empfohlen)
 
-Das mitgelieferte `install.sh` richtet Ripster vollautomatisch auf Debian/Ubuntu ein – inklusive Node.js, MakeMKV, HandBrake, nginx und systemd-Dienst.
+Das mitgelieferte `install.sh` richtet Ripster vollautomatisch ein – inklusive Node.js, MakeMKV, HandBrake, nginx und systemd-Dienst.
 
-**Unterstützte Systeme:** Debian 11/12, Ubuntu 22.04/24.04
+**Unterstützte Systeme laut Script:** Debian, Ubuntu, Linux Mint, Pop!_OS
 **Voraussetzung:** root-Rechte, Internetzugang
 
 ### Schnellstart via curl
@@ -28,7 +28,7 @@ wget -qO- https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.s
 
 | Option | Standard | Beschreibung |
 |--------|----------|--------------|
-| `--branch <branch>` | `main` | Git-Branch für die Installation |
+| `--branch <branch>` | `dev` | Git-Branch für die Installation |
 | `--dir <pfad>` | `/opt/ripster` | Installationsverzeichnis |
 | `--user <benutzer>` | `ripster` | Systembenutzer für den Dienst |
 | `--port <port>` | `3001` | Backend-Port |
@@ -67,14 +67,16 @@ sudo bash install.sh --no-nginx --host mein-server.local
 5. **HandBrake** – interaktive Auswahl:
     - **Option 1**: Standard (`apt install handbrake-cli`)
     - **Option 2**: Gebündelte GPU-Version mit NVDEC aus `bin/HandBrakeCLI`
-6. **Systembenutzer** `ripster` – ohne Login-Shell, Gruppen: `cdrom`, `optical`, `disk`, `video`, `render`
-7. **Repository** – klont Branch nach `--dir` (bei `--reinstall`: sichert DB, pullt, stellt DB wieder her)
-8. **npm-Abhängigkeiten** – Root, Backend (nur production), Frontend
-9. **Frontend-Build** – `npm run build` mit relativen API-URLs (nginx-kompatibel)
-10. **Backend `.env`** – wird automatisch generiert (bei `--reinstall` bleibt bestehende erhalten)
-11. **Berechtigungen** – `ripster:ripster` auf Installationsverzeichnis, `600` auf `.env`
-12. **systemd-Dienst** – `ripster-backend.service` erstellt, aktiviert und gestartet
-13. **nginx** – konfiguriert als Reverse-Proxy für Frontend, `/api/` und `/ws` (kann mit `--no-nginx` übersprungen werden)
+6. **Systembenutzer** `ripster` – ohne Login-Shell und ohne Home-Verzeichnis; Gruppen werden (falls vorhanden) ergänzt: `cdrom`, `optical`, `disk`, `video`, `render`
+7. **Repository** – klont Branch nach `--dir` (bei `--reinstall`: sichert `backend/data`, aktualisiert Repo, stellt Daten wieder her)
+8. **Verzeichnisse** – stellt u. a. sicher: `backend/data`, `backend/logs`, `backend/data/output/raw`, `backend/data/output/movies`, `backend/data/logs`
+9. **npm-Abhängigkeiten** – Root, Backend (nur production), Frontend
+10. **Frontend-Build** – `npm run build` mit relativen API-URLs (nginx-kompatibel)
+11. **Backend `.env`** – wird automatisch generiert (bei `--reinstall` bleibt bestehende `.env` erhalten)
+12. **Berechtigungen** – zunächst `ripster:ripster` auf Installationsverzeichnis; bei sudo-Aufruf werden Output-/Log-Ordner auf `<aufrufender user>:ripster` mit `775` gesetzt; `.env` wird auf `600` gesetzt
+13. **MakeMKV User-Ordner** – erstellt bei sudo-Aufruf `~/.MakeMKV` für den aufrufenden Benutzer
+14. **systemd-Dienst** – `ripster-backend.service` erstellt, aktiviert und gestartet
+15. **nginx** – konfiguriert als Reverse-Proxy für Frontend, `/api/` und `/ws` (kann mit `--no-nginx` übersprungen werden)
 
 ### Nach der Installation
 

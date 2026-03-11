@@ -1,23 +1,18 @@
 # Einstellungsreferenz
 
-Alle Settings liegen in `settings_schema`/`settings_values` und werden über die UI verwaltet.
+Diese Seite listet die Felder so, wie sie in der GUI unter `Settings` angezeigt werden.
+
+Hinweis: Interne Schlüsselnamen werden hier bewusst nicht verwendet. Falls du sie für Integrationen brauchst, nutze die API-Dokumentation.
 
 ---
 
 ## Profil-System
 
-Ripster arbeitet mit Media-Profilen:
+Viele Felder sind pro Medientyp getrennt vorhanden:
 
-- `bluray`
-- `dvd`
-- `other`
-
-Viele Tool-/Pfad-Settings existieren als Profil-Varianten (`*_bluray`, `*_dvd`, `*_other`).
-
-Wichtig:
-
-- Für `raw_dir`, `movie_dir` und die zugehörigen `*_owner`-Keys gibt es **kein Cross-Profil-Fallback**.
-- Für viele Tool-Keys werden profilspezifische Varianten bevorzugt.
+- Blu-ray
+- DVD
+- Sonstiges
 
 ---
 
@@ -35,131 +30,113 @@ Nicht gesetzte Werte werden zu `unknown`.
 
 ## Kategorie: Pfade
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `raw_dir` | path | `data/output/raw` |
-| `raw_dir_bluray` | path | `null` |
-| `raw_dir_dvd` | path | `null` |
-| `raw_dir_other` | path | `null` |
-| `raw_dir_bluray_owner` | string | `null` |
-| `raw_dir_dvd_owner` | string | `null` |
-| `raw_dir_other_owner` | string | `null` |
-| `movie_dir` | path | `data/output/movies` |
-| `movie_dir_bluray` | path | `null` |
-| `movie_dir_dvd` | path | `null` |
-| `movie_dir_other` | path | `null` |
-| `movie_dir_bluray_owner` | string | `null` |
-| `movie_dir_dvd_owner` | string | `null` |
-| `movie_dir_other_owner` | string | `null` |
-| `log_dir` | path | `data/logs` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `Raw Ausgabeordner` | path | `data/output/raw` |
+| `Raw Ausgabeordner (Blu-ray)` | path | `null` |
+| `Raw Ausgabeordner (DVD)` | path | `null` |
+| `Raw Ausgabeordner (Sonstiges)` | path | `null` |
+| `Eigentümer Raw-Ordner (Blu-ray)` | string | `null` |
+| `Eigentümer Raw-Ordner (DVD)` | string | `null` |
+| `Eigentümer Raw-Ordner (Sonstiges)` | string | `null` |
+| `Film Ausgabeordner` | path | `data/output/movies` |
+| `Film Ausgabeordner (Blu-ray)` | path | `null` |
+| `Film Ausgabeordner (DVD)` | path | `null` |
+| `Film Ausgabeordner (Sonstiges)` | path | `null` |
+| `Eigentümer Film-Ordner (Blu-ray)` | string | `null` |
+| `Eigentümer Film-Ordner (DVD)` | string | `null` |
+| `Eigentümer Film-Ordner (Sonstiges)` | string | `null` |
+| `Log Ordner` | path | `data/logs` |
 
 ---
 
 ## Kategorie: Laufwerk
 
-| Key | Typ | Default | Hinweis |
-|-----|-----|---------|--------|
-| `drive_mode` | select | `auto` | `auto` oder `explicit` |
-| `drive_device` | path | `/dev/sr0` | bei `explicit` relevant |
-| `makemkv_source_index` | number | `0` | MakeMKV Source-Index |
-| `disc_poll_interval_ms` | number | `4000` | 1000..60000 |
+| Feldname in der GUI | Typ | Default | Hinweis |
+|---|---|---|---|
+| `Laufwerksmodus` | select | `auto` | `Auto Discovery` oder `Explizites Device` |
+| `Device Pfad` | path | `/dev/sr0` | relevant bei `Explizites Device` |
+| `MakeMKV Source Index` | number | `0` | Disc-Index im Auto-Modus |
+| `Polling Intervall (ms)` | number | `4000` | 1000..60000 |
 
 ---
 
 ## Kategorie: Monitoring
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `hardware_monitoring_enabled` | boolean | `true` |
-| `hardware_monitoring_interval_ms` | number | `5000` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `Hardware Monitoring aktiviert` | boolean | `true` |
+| `Hardware Monitoring Intervall (ms)` | number | `5000` |
 
 ---
 
 ## Kategorie: Tools (global)
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `makemkv_command` | string | `makemkvcon` |
-| `makemkv_registration_key` | string | `null` |
-| `mediainfo_command` | string | `mediainfo` |
-| `makemkv_min_length_minutes` | number | `60` |
-| `handbrake_command` | string | `HandBrakeCLI` |
-| `handbrake_restart_delete_incomplete_output` | boolean | `true` |
-| `pipeline_max_parallel_jobs` | number | `1` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `MakeMKV Kommando` | string | `makemkvcon` |
+| `MakeMKV Key` | string | `null` |
+| `Mediainfo Kommando` | string | `mediainfo` |
+| `Minimale Titellaenge (Minuten)` | number | `60` |
+| `HandBrake Kommando` | string | `HandBrakeCLI` |
+| `Encode-Neustart: unvollständige Ausgabe löschen` | boolean | `true` |
+| `Parallele Jobs` | number | `1` |
 
 ### Blu-ray-spezifisch
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `mediainfo_extra_args_bluray` | string | `null` |
-| `makemkv_rip_mode_bluray` | select | `backup` |
-| `makemkv_analyze_extra_args_bluray` | string | `null` |
-| `makemkv_rip_extra_args_bluray` | string | `null` |
-| `handbrake_preset_bluray` | string | `H.264 MKV 1080p30` |
-| `handbrake_extra_args_bluray` | string | `null` |
-| `output_extension_bluray` | select | `mkv` |
-| `filename_template_bluray` | string | `${title} (${year})` |
-| `output_folder_template_bluray` | string | `null` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `Mediainfo Extra Args` (Blu-ray) | string | `null` |
+| `MakeMKV Rip Modus` (Blu-ray) | select | `backup` |
+| `MakeMKV Analyze Extra Args` (Blu-ray) | string | `null` |
+| `MakeMKV Rip Extra Args` (Blu-ray) | string | `null` |
+| `HandBrake Preset` (Blu-ray) | string | `H.264 MKV 1080p30` |
+| `HandBrake Extra Args` (Blu-ray) | string | `null` |
+| `Ausgabeformat` (Blu-ray) | select | `mkv` |
+| `Dateiname Template` (Blu-ray) | string | `${title} (${year})` |
+| `Ordnername Template` (Blu-ray) | string | `null` |
 
 ### DVD-spezifisch
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `mediainfo_extra_args_dvd` | string | `null` |
-| `makemkv_rip_mode_dvd` | select | `mkv` |
-| `makemkv_analyze_extra_args_dvd` | string | `null` |
-| `makemkv_rip_extra_args_dvd` | string | `null` |
-| `handbrake_preset_dvd` | string | `H.264 MKV 480p30` |
-| `handbrake_extra_args_dvd` | string | `null` |
-| `output_extension_dvd` | select | `mkv` |
-| `filename_template_dvd` | string | `${title} (${year})` |
-| `output_folder_template_dvd` | string | `null` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `Mediainfo Extra Args` (DVD) | string | `null` |
+| `MakeMKV Rip Modus` (DVD) | select | `mkv` |
+| `MakeMKV Analyze Extra Args` (DVD) | string | `null` |
+| `MakeMKV Rip Extra Args` (DVD) | string | `null` |
+| `HandBrake Preset` (DVD) | string | `H.264 MKV 480p30` |
+| `HandBrake Extra Args` (DVD) | string | `null` |
+| `Ausgabeformat` (DVD) | select | `mkv` |
+| `Dateiname Template` (DVD) | string | `${title} (${year})` |
+| `Ordnername Template` (DVD) | string | `null` |
 
 ---
 
 ## Kategorie: Metadaten
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `omdb_api_key` | string | `null` |
-| `omdb_default_type` | select | `movie` |
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `OMDb API Key` | string | `null` |
+| `OMDb Typ` | select | `movie` |
 
 ---
 
 ## Kategorie: Benachrichtigungen (PushOver)
 
-| Key | Typ | Default |
-|-----|-----|---------|
-| `pushover_enabled` | boolean | `false` |
-| `pushover_token` | string | `null` |
-| `pushover_user` | string | `null` |
-| `pushover_device` | string | `null` |
-| `pushover_title_prefix` | string | `Ripster` |
-| `pushover_priority` | number | `0` |
-| `pushover_timeout_ms` | number | `7000` |
-| `pushover_notify_metadata_ready` | boolean | `true` |
-| `pushover_notify_rip_started` | boolean | `true` |
-| `pushover_notify_encoding_started` | boolean | `true` |
-| `pushover_notify_job_finished` | boolean | `true` |
-| `pushover_notify_job_error` | boolean | `true` |
-| `pushover_notify_job_cancelled` | boolean | `true` |
-| `pushover_notify_reencode_started` | boolean | `true` |
-| `pushover_notify_reencode_finished` | boolean | `true` |
-
----
-
-## Entfernte Legacy-Keys
-
-Diese Legacy-Keys werden bei Migration entfernt und sollten nicht mehr genutzt werden:
-
-- `makemkv_backup_mode`
-- `mediainfo_extra_args`
-- `makemkv_rip_mode`
-- `makemkv_analyze_extra_args`
-- `makemkv_rip_extra_args`
-- `handbrake_preset`
-- `handbrake_extra_args`
-- `output_extension`
-- `filename_template`
-- `output_folder_template`
-- `pushover_notify_disc_detected`
+| Feldname in der GUI | Typ | Default |
+|---|---|---|
+| `PushOver aktiviert` | boolean | `false` |
+| `PushOver Token` | string | `null` |
+| `PushOver User` | string | `null` |
+| `PushOver Device (optional)` | string | `null` |
+| `PushOver Titel-Präfix` | string | `Ripster` |
+| `PushOver Priority` | number | `0` |
+| `PushOver Timeout (ms)` | number | `7000` |
+| `Bei Metadaten-Auswahl senden` | boolean | `true` |
+| `Bei Rip-Start senden` | boolean | `true` |
+| `Bei Encode-Start senden` | boolean | `true` |
+| `Bei Erfolg senden` | boolean | `true` |
+| `Bei Fehler senden` | boolean | `true` |
+| `Bei Abbruch senden` | boolean | `true` |
+| `Bei Re-Encode Start senden` | boolean | `true` |
+| `Bei Re-Encode Erfolg senden` | boolean | `true` |

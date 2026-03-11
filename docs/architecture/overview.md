@@ -33,7 +33,7 @@ WebSocket läuft auf `/ws`.
 Wichtige Events:
 
 - `PIPELINE_STATE_CHANGED`, `PIPELINE_PROGRESS`, `PIPELINE_QUEUE_CHANGED`
-- `DISC_DETECTED`, `DISC_REMOVED`
+- Disk erkannt, Disk entfernt
 - `HARDWARE_MONITOR_UPDATE`
 - `SETTINGS_UPDATED`, `SETTINGS_BULK_UPDATED`
 - `SETTINGS_SCRIPTS_UPDATED`, `SETTINGS_SCRIPT_CHAINS_UPDATED`, `USER_PRESETS_UPDATED`
@@ -83,7 +83,7 @@ Zentrales Error-Handling liefert:
 }
 ```
 
-Fehlgeschlagene Jobs bleiben in der Historie (`ERROR` oder `CANCELLED`) und können erneut gestartet werden.
+Fehlgeschlagene Jobs bleiben in der Historie (`Fehler` oder `Abgebrochen`) und können erneut gestartet werden.
 
 ---
 

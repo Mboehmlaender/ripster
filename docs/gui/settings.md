@@ -65,7 +65,7 @@ Ein Preset bündelt:
 
 Verwendung:
 
-- Diese Presets erscheinen später im Dashboard im Review (`READY_TO_ENCODE`).
+- Diese Presets erscheinen später im Dashboard im Review (`Bereit zum Encodieren`).
 
 ## Tab `Cronjobs`
 

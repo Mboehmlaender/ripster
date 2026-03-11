@@ -26,7 +26,7 @@ Zeigt live:
 Wichtig für den Betrieb:
 
 - Hohe Speicherauslastung oder fast volle Zielpfade früh erkennen
-- über `Settings` aktivierbar/deaktivierbar (`hardware_monitoring_*`)
+- über `Settings` aktivierbar/deaktivierbar (`Hardware Monitoring aktiviert`)
 
 ## 2) Job Queue
 
@@ -46,7 +46,7 @@ Mögliche Aktionen:
 
 Hinweis:
 
-- `Parallel` zeigt das aktuell konfigurierte Parallel-Limit (`pipeline_max_parallel_jobs`).
+- `Parallel` zeigt den Wert aus `Settings` -> `Parallele Jobs`.
 
 ## 3) Skript- / Cron-Status
 
@@ -71,13 +71,13 @@ Im aufgeklappten Zustand erscheint die Karte `Pipeline-Status` mit allen zustand
 
 | Zustand | Typische Aktion |
 |---|---|
-| `DISC_DETECTED` / `IDLE` | `Analyse starten` |
-| `METADATA_SELECTION` | `Metadaten öffnen` |
-| `WAITING_FOR_USER_DECISION` | Playlist wählen und `Playlist übernehmen` |
-| `READY_TO_START` | `Job starten` |
-| `READY_TO_ENCODE` | Tracks/Skripte prüfen, dann `Encoding starten` |
-| laufend (`ANALYZING`/`RIPPING`/`ENCODING`) | `Abbrechen` |
-| `ERROR` / `CANCELLED` | `Retry Rippen`, `Disk-Analyse neu starten` |
+| `Medium erkannt` / `Bereit` | `Analyse starten` |
+| `Metadatenauswahl` | `Metadaten öffnen` |
+| `Warte auf Auswahl` | Playlist wählen und `Playlist übernehmen` |
+| `Startbereit` | `Job starten` |
+| `Bereit zum Encodieren` | Tracks/Skripte prüfen, dann `Encoding starten` |
+| laufend (`Analyse`/`Rippen`/`Encodieren`) | `Abbrechen` |
+| `Fehler` / `Abgebrochen` | `Retry Rippen`, `Disk-Analyse neu starten` |
 
 Zusätzlich je nach Job:
 
@@ -85,7 +85,7 @@ Zusätzlich je nach Job:
 - `Encode neu starten`
 - `Aus Queue löschen`
 
-### Titel-/Spurprüfung (`READY_TO_ENCODE`)
+### Titel-/Spurprüfung (`Bereit zum Encodieren`)
 
 Im selben Block siehst du:
 

@@ -6,21 +6,21 @@ Diese Seite beschreibt typische Abläufe mit den passenden UI-Aktionen.
 
 1. `Dashboard`: Disc einlegen, `Analyse starten`
 2. Metadaten im Dialog übernehmen
-3. bei `READY_TO_ENCODE` Titel/Tracks prüfen
+3. bei `Bereit zum Encodieren` Titel/Tracks prüfen
 4. `Encoding starten`
 5. Ergebnis in `Historie` kontrollieren
 
 ## Workflow 2: Playlist-Entscheidung bei Blu-ray
 
-1. Job landet in `WAITING_FOR_USER_DECISION`
+1. Job landet in `Warte auf Auswahl`
 2. im `Pipeline-Status` Playlist-Kandidaten vergleichen
 3. gewünschte Playlist auswählen
 4. `Playlist übernehmen`
-5. danach normal weiter bis `READY_TO_ENCODE`
+5. danach normal weiter bis `Bereit zum Encodieren`
 
 ## Workflow 3: Mehrere Jobs mit Queue
 
-1. Parallel-Limit in `Settings` setzen (`pipeline_max_parallel_jobs`)
+1. Parallel-Limit in `Settings` über `Parallele Jobs` setzen
 2. neue Jobs starten; überschüssige Starts gehen in `Job Queue`
 3. Reihenfolge per Drag-and-Drop anpassen
 4. bei Bedarf Skript/Kette/Warten als Queue-Eintrag ergänzen
@@ -49,7 +49,7 @@ In `Historie` -> Detaildialog:
 - im Dashboard optional erzeugte RAW/Movie-Datei bereinigen
 - anschließend je nach Ziel: `Retry Rippen` oder `Disk-Analyse neu starten`
 
-### Fall B: Job steht in `READY_TO_ENCODE`, ist aber nicht aktive Session
+### Fall B: Job steht in `Bereit zum Encodieren`, ist aber nicht aktive Session
 
 - in `Historie` oder `Database`: `Im Dashboard öffnen`
 - im Dashboard Review erneut prüfen und starten

@@ -7,7 +7,7 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 ## Was Ripster kann
 
 - Disc-Erkennung mit Pipeline-Status in Echtzeit (WebSocket)
-- Medienprofil-Erkennung (`bluray`/`dvd`/`other`) aus Device-/Filesystem-Heuristik
+- Medienprofil-Erkennung (Blu-ray/DVD/Sonstiges) aus Device-/Filesystem-Heuristik
 - Metadaten-Suche und Zuordnung über OMDb
 - MakeMKV-Analyse und Rip (`mkv` oder `backup`) mit profilspezifischen Settings
 - HandBrake-Review und Encoding mit Track-Auswahl, User-Presets, Extra-Args
@@ -114,10 +114,10 @@ npm run start
 
 Die meisten Einstellungen werden in der App unter `Settings` gepflegt und in SQLite gespeichert:
 
-- Pfade: `raw_dir[_bluray/_dvd/_other]`, `movie_dir[_bluray/_dvd/_other]`, `log_dir`
-- Tools: `makemkv_command`, `handbrake_command`, `mediainfo_command`
-- Profile: `*_bluray` / `*_dvd` Varianten für Rip-/Encode-Verhalten
-- Queue/Monitoring: `pipeline_max_parallel_jobs`, `hardware_monitoring_*`
+- Pfade: `Raw Ausgabeordner`, `Film Ausgabeordner`, `Log Ordner` (jeweils mit Blu-ray/DVD/Sonstiges-Varianten)
+- Tools: `MakeMKV Kommando`, `HandBrake Kommando`, `Mediainfo Kommando`
+- Profile: medientyp-spezifische Felder für Blu-ray/DVD/Sonstiges (z. B. Preset, Zusatzargumente, Ausgabeformat)
+- Queue/Monitoring: `Parallele Jobs`, `Hardware Monitoring aktiviert`, `Hardware Monitoring Intervall (ms)`
 - Benachrichtigungen: PushOver
 
 ### Umgebungsvariablen
@@ -231,7 +231,7 @@ ripster/
   - prüfen, ob Frontend über Vite-Proxy läuft (`/ws` -> Backend)
   - bei Reverse-Proxy Upgrade-Header für `/ws` setzen
 - Keine Disc erkannt:
-  - `drive_mode=explicit` testen und `drive_device` setzen (z. B. `/dev/sr0`)
+  - in den Settings `Laufwerksmodus` auf `Explizites Device` stellen und `Device Pfad` setzen (z. B. `/dev/sr0`)
 - HandBrake/MakeMKV Fehler:
   - CLI-Binaries im `PATH` prüfen
   - Preset-Name mit `HandBrakeCLI -z` prüfen

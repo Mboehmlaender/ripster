@@ -7,11 +7,11 @@ Ripster kann Skripte und Skript-Ketten vor und nach dem Encode ausführen.
 ## Ablauf
 
 ```text
-READY_TO_ENCODE
+Bereit zum Encodieren
   -> Pre-Encode Skripte/Ketten
   -> HandBrake Encoding
   -> Post-Encode Skripte/Ketten
-  -> FINISHED oder ERROR
+  -> Fertig oder Fehler
 ```
 
 ---
@@ -29,8 +29,8 @@ Im Review-Panel kannst du getrennt wählen:
 
 ## Fehlerverhalten
 
-- Pre-Encode-Fehler stoppen die Kette und führen zu `ERROR`.
-- Post-Encode-Fehler stoppen die restlichen Post-Schritte; Job kann dennoch `FINISHED` sein (mit Fehlerzusatz im Status/Log).
+- Pre-Encode-Fehler stoppen die Kette und führen zu `Fehler`.
+- Post-Encode-Fehler stoppen die restlichen Post-Schritte; Job kann dennoch `Fertig` sein (mit Fehlerzusatz im Status/Log).
 
 ---
 

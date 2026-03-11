@@ -1,6 +1,6 @@
 # Encode-Planung & Track-Auswahl
 
-Ripster erzeugt vor dem Encode einen `encodePlan` und lässt ihn im Review-Panel bestätigen.
+Vor dem eigentlichen Encoding erstellt Ripster einen Encode-Plan und zeigt ihn im Review an.
 
 ---
 
@@ -10,27 +10,27 @@ Ripster erzeugt vor dem Encode einen `encodePlan` und lässt ihn im Review-Panel
 Quelle bestimmen (Disc/RAW)
   -> HandBrake-Scan (--scan --json)
   -> Plan erstellen (Titel, Audio, Untertitel)
-  -> READY_TO_ENCODE
-  -> Benutzer bestätigt Auswahl
+  -> Status: Bereit zum Encodieren
+  -> Benutzer bestaetigt Auswahl
   -> finaler HandBrake-Aufruf
 ```
 
 ---
 
-## Review-Inhalt (`READY_TO_ENCODE`)
+## Review-Inhalt (Status: `Bereit zum Encodieren`)
 
 - auswählbarer Encode-Titel
-- Audio-Track-Selektion
-- Untertitel-Track-Selektion inkl. Flags
+- Audio-Track-Auswahl
+- Untertitel-Track-Auswahl inkl. Flags
   - `burnIn`
   - `forced`
   - `defaultTrack`
-- optionale User-Presets (HandBrake-Preset + Extra-Args)
+- optionale User-Presets (HandBrake Preset + Extra Args)
 - optionale Pre-/Post-Skripte und Ketten
 
 ---
 
-## Bestätigung (`confirm-encode`)
+## Bestaetigung (`confirm-encode`)
 
 Typischer Payload:
 
@@ -51,7 +51,7 @@ Typischer Payload:
 }
 ```
 
-Ripster speichert die bestätigte Auswahl in `jobs.encode_plan_json` und markiert `encode_review_confirmed = 1`.
+Die bestätigte Auswahl wird im Job gespeichert und für Neustarts wiederverwendet.
 
 ---
 
@@ -83,16 +83,16 @@ Untertitel-Flags werden bei Bedarf ergänzt:
 - Pre-Encode läuft vor HandBrake
 - Post-Encode läuft nach HandBrake
 
-Verhalten bei Fehlern:
+Fehlerverhalten:
 
-- Pre-Encode-Fehler: Job wird als `ERROR` beendet (Encode startet nicht)
-- Post-Encode-Fehler: Job kann `FINISHED` bleiben, enthält aber Fehlerhinweis/Script-Summary
+- Pre-Encode-Fehler: Job endet mit Status `Fehler` (Encode startet nicht)
+- Post-Encode-Fehler: Job kann `Fertig` bleiben, enthält aber Fehlerhinweis/Script-Summary
 
 ---
 
 ## Dateinamen/Ordner
 
-Der finale Outputpfad wird aus Settings-Templates aufgebaut.
+Der finale Outputpfad wird aus den Templates in den Settings aufgebaut.
 
 Platzhalter:
 
@@ -100,4 +100,4 @@ Platzhalter:
 - `${year}`
 - `${imdbId}`
 
-Ungültige Dateizeichen werden sanitisiert.
+Ungültige Dateizeichen werden bereinigt.

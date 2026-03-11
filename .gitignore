@@ -51,6 +51,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 debug/
+DATABASE_BLA
 # ----------------------------
 # Env / secrets (keep examples)
 # ----------------------------

@@ -34,7 +34,7 @@ makemkvcon backup <source> <rawDir> --decrypt
 
 ## Registrierungsschlüssel (optional)
 
-Wenn `makemkv_registration_key` gesetzt ist, führt Ripster vor Analyse/Rip aus:
+Wenn in `Settings` ein `MakeMKV Key` gesetzt ist, führt Ripster vor Analyse/Rip aus:
 
 ```bash
 makemkvcon reg <key>
@@ -42,16 +42,16 @@ makemkvcon reg <key>
 
 ---
 
-## Relevante Settings
+## Relevante Felder in `Settings`
 
-| Key | Bedeutung |
+| Feldname in der GUI | Bedeutung |
 |-----|-----------|
-| `makemkv_command` | CLI-Binary |
-| `makemkv_source_index` | Source-Index im Auto-Modus |
-| `makemkv_min_length_minutes` | Mindestlaufzeitfilter |
-| `makemkv_rip_mode_bluray` / `makemkv_rip_mode_dvd` | `mkv` oder `backup` |
-| `makemkv_analyze_extra_args_bluray` / `_dvd` | Zusatzargs Analyse |
-| `makemkv_rip_extra_args_bluray` / `_dvd` | Zusatzargs Rip |
+| `MakeMKV Kommando` | CLI-Binary |
+| `MakeMKV Source Index` | Source-Index im Auto-Modus |
+| `Minimale Titellaenge (Minuten)` | Mindestlaufzeitfilter |
+| `MakeMKV Rip Modus` (Blu-ray/DVD) | `mkv` oder `backup` |
+| `MakeMKV Analyze Extra Args` (Blu-ray/DVD) | Zusatzargumente für Analyse |
+| `MakeMKV Rip Extra Args` (Blu-ray/DVD) | Zusatzargumente für Rip |
 
 ---
 

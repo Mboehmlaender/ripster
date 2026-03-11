@@ -1,6 +1,6 @@
 # Workflow & Zustände
 
-Ripster steuert den Ablauf als State-Machine im `pipelineService`.
+Ripster steuert den Ablauf als Zustandsmaschine.
 
 ---
 
@@ -8,41 +8,41 @@ Ripster steuert den Ablauf als State-Machine im `pipelineService`.
 
 ```mermaid
 flowchart LR
-    IDLE --> DISC_DETECTED
-    DISC_DETECTED --> ANALYZING
-    ANALYZING --> METADATA_SELECTION
-    METADATA_SELECTION --> READY_TO_START
-    READY_TO_START --> RIPPING
-    READY_TO_START --> MEDIAINFO_CHECK
-    MEDIAINFO_CHECK --> WAITING_FOR_USER_DECISION
-    WAITING_FOR_USER_DECISION --> MEDIAINFO_CHECK
-    MEDIAINFO_CHECK --> READY_TO_ENCODE
-    READY_TO_ENCODE --> ENCODING
-    ENCODING --> FINISHED
-    ENCODING --> ERROR
-    RIPPING --> ERROR
-    RIPPING --> CANCELLED
+    A[Bereit] --> B[Medium erkannt]
+    B --> C[Analyse]
+    C --> D[Metadatenauswahl]
+    D --> E[Startbereit]
+    E --> F[Rippen]
+    E --> G[Mediainfo-Pruefung]
+    G --> H[Warte auf Auswahl]
+    H --> G
+    G --> I[Bereit zum Encodieren]
+    I --> J[Encodieren]
+    J --> K[Fertig]
+    J --> L[Fehler]
+    F --> L
+    F --> M[Abgebrochen]
 ```
 
 ---
 
-## State-Liste
+## Statusliste (GUI-Anzeige)
 
-| State | Bedeutung |
-|------|-----------|
-| `IDLE` | Wartet auf Disc |
-| `DISC_DETECTED` | Disc erkannt |
-| `ANALYZING` | MakeMKV-Analyse läuft |
-| `METADATA_SELECTION` | Benutzer wählt Metadaten |
-| `WAITING_FOR_USER_DECISION` | Playlist-Auswahl nötig |
-| `READY_TO_START` | Übergangszustand vor Start |
-| `RIPPING` | MakeMKV-Rip läuft |
-| `MEDIAINFO_CHECK` | Quelle/Tracks werden ausgewertet |
-| `READY_TO_ENCODE` | Review ist bereit |
-| `ENCODING` | HandBrake läuft |
-| `FINISHED` | erfolgreich abgeschlossen |
-| `CANCELLED` | abgebrochen |
-| `ERROR` | fehlgeschlagen |
+| Status in der GUI | Bedeutung |
+|---|---|
+| `Bereit` | Wartet auf Disc |
+| `Medium erkannt` | Disc wurde erkannt |
+| `Analyse` | MakeMKV-Analyse läuft |
+| `Metadatenauswahl` | Metadaten müssen bestätigt werden |
+| `Warte auf Auswahl` | Playlist-Auswahl ist erforderlich |
+| `Startbereit` | kurzer Übergang vor Start |
+| `Rippen` | MakeMKV-Rip läuft |
+| `Mediainfo-Pruefung` | Titel/Spuren werden ausgewertet |
+| `Bereit zum Encodieren` | Review ist bereit |
+| `Encodieren` | HandBrake läuft |
+| `Fertig` | erfolgreich abgeschlossen |
+| `Abgebrochen` | manuell oder technisch abgebrochen |
+| `Fehler` | fehlgeschlagen |
 
 ---
 
@@ -50,38 +50,38 @@ flowchart LR
 
 ### Standardfall (kein vorhandenes RAW)
 
-1. Disc erkannt
+1. Medium erkannt
 2. Analyse + Metadaten
-3. `RIPPING`
-4. `MEDIAINFO_CHECK`
-5. `READY_TO_ENCODE`
-6. `ENCODING`
-7. `FINISHED`
+3. Rippen
+4. Mediainfo-Pruefung
+5. Bereit zum Encodieren
+6. Encodieren
+7. Fertig
 
 ### Vorhandenes RAW
 
-`READY_TO_START` springt direkt zu `MEDIAINFO_CHECK` (kein neuer Rip).
+`Startbereit` springt direkt zu `Mediainfo-Pruefung` (kein neuer Rip).
 
 ### Mehrdeutige Blu-ray-Playlist
 
-`MEDIAINFO_CHECK` -> `WAITING_FOR_USER_DECISION` bis Benutzer Playlist bestätigt.
+`Mediainfo-Pruefung` -> `Warte auf Auswahl` bis Playlist bestätigt wurde.
 
 ---
 
 ## Queue-Verhalten
 
-Wenn `pipeline_max_parallel_jobs` erreicht ist:
+Wenn der Wert `Parallele Jobs` erreicht ist:
 
-- Job-Aktionen werden als Queue-Einträge abgelegt
-- Queue kann zusätzlich Nicht-Job-Einträge enthalten (`script`, `chain`, `wait`)
-- Reihenfolge ist per API/UI änderbar
+- neue Starts werden als Queue-Einträge abgelegt
+- die Queue kann zusätzlich Nicht-Job-Einträge enthalten (`Skript`, `Kette`, `Warten`)
+- Reihenfolge ist per UI/API änderbar
 
 ---
 
-## Abbruch, Retry, Restart
+## Abbruch, Wiederaufnahme, Neustart
 
-- `cancel`: laufenden Job abbrechen oder Queue-Eintrag entfernen
-- `retry`: Fehler-/Abbruch-Job neu starten
-- `reencode`: aus vorhandenem RAW neu encodieren
-- `restart-review`: Review aus RAW neu aufbauen
-- `restart-encode`: Encoding mit letzter bestätigter Auswahl neu starten
+- `Abbrechen`: laufenden Job stoppen oder Queue-Eintrag entfernen
+- `Retry Rippen`: Fehler-/Abbruch-Job erneut starten
+- `RAW neu encodieren`: aus vorhandenem RAW neu encodieren
+- `Review neu starten`: Review aus RAW neu aufbauen
+- `Encode neu starten`: Encoding mit letzter bestätigter Auswahl neu starten

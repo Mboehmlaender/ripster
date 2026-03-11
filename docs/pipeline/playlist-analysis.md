@@ -6,7 +6,7 @@ Ripster analysiert bei Blu-ray-ähnlichen Quellen Playlists und fordert bei Mehr
 
 ## Ziel
 
-Erkennen, welche Playlist wahrscheinlich der Hauptfilm ist, statt versehentlich eine Fake-/Dummy-Playlist zu verwenden.
+Erkennen, welche Playlist sehr wahrscheinlich der Hauptfilm ist, statt versehentlich eine Fake-/Dummy-Playlist zu verwenden.
 
 ---
 
@@ -26,20 +26,15 @@ Für Kandidaten werden u. a. berücksichtigt:
 - Kohärenz linearer Segmentfolgen
 - Duplikatgruppen mit ähnlicher Laufzeit
 
-Daraus entstehen:
-
-- `candidates`
-- `evaluatedCandidates` (inkl. Score/Label)
-- `recommendation`
-- `manualDecisionRequired`
+Daraus entstehen intern Kandidatenlisten, Bewertungen und eine Empfehlung.
 
 ---
 
 ## Wann muss der Benutzer entscheiden?
 
-Wenn nach Filterung mehr als ein relevanter Kandidat übrig bleibt, setzt Ripster `manualDecisionRequired = true` und wechselt auf:
+Wenn nach Filterung mehr als ein relevanter Kandidat übrig bleibt, wechselt der Job in der GUI auf:
 
-- `WAITING_FOR_USER_DECISION`
+- `Warte auf Auswahl`
 
 Dann muss eine Playlist bestätigt werden, bevor der Workflow weiterläuft.
 
@@ -47,9 +42,9 @@ Dann muss eine Playlist bestätigt werden, bevor der Workflow weiterläuft.
 
 ## Konfigurationseinfluss
 
-| Key | Wirkung |
-|-----|---------|
-| `makemkv_min_length_minutes` | Mindestlaufzeit für Kandidaten |
+| Feld in `Settings` | Wirkung |
+|---|---|
+| `Minimale Titellaenge (Minuten)` | Mindestlaufzeit für Kandidaten |
 
 Default ist aktuell `60` Minuten.
 
@@ -61,5 +56,5 @@ Bei manueller Entscheidung zeigt das Dashboard Kandidaten inkl. Score/Bewertung 
 
 Nach Bestätigung:
 
-- mit vorhandenem RAW -> zurück zu `MEDIAINFO_CHECK`
-- ohne RAW -> Startpfad über `READY_TO_START`/`RIPPING`
+- mit vorhandenem RAW -> zurück zu `Mediainfo-Pruefung`
+- ohne RAW -> Startpfad über `Startbereit` / `Rippen`

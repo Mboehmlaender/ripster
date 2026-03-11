@@ -8,7 +8,7 @@ Für den normalen Betrieb sind nur wenige Punkte vorab nötig.
 
 ### Pflicht
 
-- unterstütztes Linux-System (Debian/Ubuntu)
+- unterstütztes Linux-System (laut Script: Debian, Ubuntu, Linux Mint, Pop!_OS)
 - `root`-Rechte
 - Internetzugang während der Installation
 - optisches Laufwerk für Disc-Betrieb
