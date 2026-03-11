@@ -684,6 +684,14 @@ function normalizeScriptId(value) {
   return Math.trunc(parsed);
 }
 
+function normalizeChainId(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
 function normalizeScriptIdList(values) {
   const list = Array.isArray(values) ? values : [];
   const seen = new Set();
@@ -762,8 +770,8 @@ export default function MediaInfoReviewPanel({
     .filter((item) => item.id !== null && item.name.length > 0);
   const scriptById = new Map(scriptCatalog.map((item) => [item.id, item]));
   const chainCatalog = (Array.isArray(availableChains) ? availableChains : [])
-    .map((item) => ({ id: Number(item?.id), name: String(item?.name || '').trim() }))
-    .filter((item) => Number.isFinite(item.id) && item.id > 0 && item.name.length > 0);
+    .map((item) => ({ id: normalizeChainId(item?.id), name: String(item?.name || '').trim() }))
+    .filter((item) => item.id !== null && item.name.length > 0);
   const chainById = new Map(chainCatalog.map((item) => [item.id, item]));
 
   const makeHandleDrop = (items, onReorder) => (event, targetIndex) => {
@@ -884,12 +892,28 @@ export default function MediaInfoReviewPanel({
               ? (scriptObj?.name || `Skript #${item.id}`)
               : (chainObj?.name || `Kette #${item.id}`);
             const usedScriptIds = new Set(
-              preEncodeItems.filter((it, i) => it.type === 'script' && i !== rowIndex).map((it) => String(normalizeScriptId(it.id)))
+              preEncodeItems
+                .filter((it, i) => it.type === 'script' && i !== rowIndex)
+                .map((it) => normalizeScriptId(it.id))
+                .filter((id) => id !== null)
+                .map((id) => String(id))
+            );
+            const usedChainIds = new Set(
+              preEncodeItems
+                .filter((it, i) => it.type === 'chain' && i !== rowIndex)
+                .map((it) => normalizeChainId(it.id))
+                .filter((id) => id !== null)
+                .map((id) => String(id))
             );
             const scriptOptions = scriptCatalog.map((s) => ({
               label: s.name,
               value: s.id,
               disabled: usedScriptIds.has(String(s.id))
+            }));
+            const chainOptions = chainCatalog.map((c) => ({
+              label: c.name,
+              value: c.id,
+              disabled: usedChainIds.has(String(c.id))
             }));
             return (
               <div
@@ -926,7 +950,15 @@ export default function MediaInfoReviewPanel({
                         className="full-width"
                       />
                     ) : (
-                      <span className="post-script-chain-name">{name}</span>
+                      <Dropdown
+                        value={normalizeChainId(item.id)}
+                        options={chainOptions}
+                        optionLabel="label"
+                        optionValue="value"
+                        optionDisabled="disabled"
+                        onChange={(event) => onChangePreEncodeItem?.(rowIndex, 'chain', event.value)}
+                        className="full-width"
+                      />
                     )}
                     <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePreEncodeItem?.(rowIndex)} />
                   </>
@@ -980,12 +1012,28 @@ export default function MediaInfoReviewPanel({
             ? (scriptObj?.name || `Skript #${item.id}`)
             : (chainObj?.name || `Kette #${item.id}`);
           const usedScriptIds = new Set(
-            postEncodeItems.filter((it, i) => it.type === 'script' && i !== rowIndex).map((it) => String(normalizeScriptId(it.id)))
+            postEncodeItems
+              .filter((it, i) => it.type === 'script' && i !== rowIndex)
+              .map((it) => normalizeScriptId(it.id))
+              .filter((id) => id !== null)
+              .map((id) => String(id))
+          );
+          const usedChainIds = new Set(
+            postEncodeItems
+              .filter((it, i) => it.type === 'chain' && i !== rowIndex)
+              .map((it) => normalizeChainId(it.id))
+              .filter((id) => id !== null)
+              .map((id) => String(id))
           );
           const scriptOptions = scriptCatalog.map((s) => ({
             label: s.name,
             value: s.id,
             disabled: usedScriptIds.has(String(s.id))
+          }));
+          const chainOptions = chainCatalog.map((c) => ({
+            label: c.name,
+            value: c.id,
+            disabled: usedChainIds.has(String(c.id))
           }));
           return (
             <div
@@ -1022,7 +1070,15 @@ export default function MediaInfoReviewPanel({
                       className="full-width"
                     />
                   ) : (
-                    <span className="post-script-chain-name">{name}</span>
+                    <Dropdown
+                      value={normalizeChainId(item.id)}
+                      options={chainOptions}
+                      optionLabel="label"
+                      optionValue="value"
+                      optionDisabled="disabled"
+                      onChange={(event) => onChangePostEncodeItem?.(rowIndex, 'chain', event.value)}
+                      className="full-width"
+                    />
                   )}
                   <Button icon="pi pi-times" severity="danger" outlined onClick={() => onRemovePostEncodeItem?.(rowIndex)} />
                 </>

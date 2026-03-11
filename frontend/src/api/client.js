@@ -1,4 +1,81 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+const GET_RESPONSE_CACHE = new Map();
+
+function invalidateCachedGet(prefixes = []) {
+  const list = Array.isArray(prefixes) ? prefixes.filter(Boolean) : [];
+  if (list.length === 0) {
+    GET_RESPONSE_CACHE.clear();
+    return;
+  }
+  for (const key of GET_RESPONSE_CACHE.keys()) {
+    if (list.some((prefix) => key.startsWith(prefix))) {
+      GET_RESPONSE_CACHE.delete(key);
+    }
+  }
+}
+
+function refreshCachedGet(path, ttlMs) {
+  const cacheKey = String(path || '');
+  const nextEntry = GET_RESPONSE_CACHE.get(cacheKey) || {
+    value: undefined,
+    expiresAt: 0,
+    promise: null
+  };
+  const nextPromise = request(path)
+    .then((payload) => {
+      GET_RESPONSE_CACHE.set(cacheKey, {
+        value: payload,
+        expiresAt: Date.now() + Math.max(1000, Number(ttlMs || 0)),
+        promise: null
+      });
+      return payload;
+    })
+    .catch((error) => {
+      const current = GET_RESPONSE_CACHE.get(cacheKey);
+      if (current && current.promise === nextPromise) {
+        GET_RESPONSE_CACHE.set(cacheKey, {
+          value: current.value,
+          expiresAt: current.expiresAt || 0,
+          promise: null
+        });
+      }
+      throw error;
+    });
+  GET_RESPONSE_CACHE.set(cacheKey, {
+    value: nextEntry.value,
+    expiresAt: nextEntry.expiresAt || 0,
+    promise: nextPromise
+  });
+  return nextPromise;
+}
+
+async function requestCachedGet(path, options = {}) {
+  const ttlMs = Math.max(1000, Number(options?.ttlMs || 0));
+  const forceRefresh = Boolean(options?.forceRefresh);
+  const cacheKey = String(path || '');
+  const current = GET_RESPONSE_CACHE.get(cacheKey);
+  const now = Date.now();
+
+  if (!forceRefresh && current && current.value !== undefined) {
+    if (current.expiresAt > now) {
+      return current.value;
+    }
+    if (!current.promise) {
+      void refreshCachedGet(path, ttlMs);
+    }
+    return current.value;
+  }
+
+  if (!forceRefresh && current?.promise) {
+    return current.promise;
+  }
+
+  return refreshCachedGet(path, ttlMs);
+}
+
+function afterMutationInvalidate(prefixes = []) {
+  invalidateCachedGet(prefixes);
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -33,89 +110,121 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  getSettings() {
-    return request('/settings');
+  getSettings(options = {}) {
+    return requestCachedGet('/settings', {
+      ttlMs: 5 * 60 * 1000,
+      forceRefresh: options.forceRefresh
+    });
   },
-  getHandBrakePresets() {
-    return request('/settings/handbrake-presets');
+  getHandBrakePresets(options = {}) {
+    return requestCachedGet('/settings/handbrake-presets', {
+      ttlMs: 10 * 60 * 1000,
+      forceRefresh: options.forceRefresh
+    });
   },
-  getScripts() {
-    return request('/settings/scripts');
+  getScripts(options = {}) {
+    return requestCachedGet('/settings/scripts', {
+      ttlMs: 2 * 60 * 1000,
+      forceRefresh: options.forceRefresh
+    });
   },
-  createScript(payload = {}) {
-    return request('/settings/scripts', {
+  async createScript(payload = {}) {
+    const result = await request('/settings/scripts', {
       method: 'POST',
       body: JSON.stringify(payload || {})
     });
+    afterMutationInvalidate(['/settings/scripts']);
+    return result;
   },
-  reorderScripts(orderedScriptIds = []) {
-    return request('/settings/scripts/reorder', {
+  async reorderScripts(orderedScriptIds = []) {
+    const result = await request('/settings/scripts/reorder', {
       method: 'POST',
       body: JSON.stringify({
         orderedScriptIds: Array.isArray(orderedScriptIds) ? orderedScriptIds : []
       })
     });
+    afterMutationInvalidate(['/settings/scripts']);
+    return result;
   },
-  updateScript(scriptId, payload = {}) {
-    return request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
+  async updateScript(scriptId, payload = {}) {
+    const result = await request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
       method: 'PUT',
       body: JSON.stringify(payload || {})
     });
+    afterMutationInvalidate(['/settings/scripts']);
+    return result;
   },
-  deleteScript(scriptId) {
-    return request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
+  async deleteScript(scriptId) {
+    const result = await request(`/settings/scripts/${encodeURIComponent(scriptId)}`, {
       method: 'DELETE'
     });
+    afterMutationInvalidate(['/settings/scripts']);
+    return result;
   },
   testScript(scriptId) {
     return request(`/settings/scripts/${encodeURIComponent(scriptId)}/test`, {
       method: 'POST'
     });
   },
-  getScriptChains() {
-    return request('/settings/script-chains');
+  getScriptChains(options = {}) {
+    return requestCachedGet('/settings/script-chains', {
+      ttlMs: 2 * 60 * 1000,
+      forceRefresh: options.forceRefresh
+    });
   },
-  createScriptChain(payload = {}) {
-    return request('/settings/script-chains', {
+  async createScriptChain(payload = {}) {
+    const result = await request('/settings/script-chains', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+    afterMutationInvalidate(['/settings/script-chains']);
+    return result;
   },
-  reorderScriptChains(orderedChainIds = []) {
-    return request('/settings/script-chains/reorder', {
+  async reorderScriptChains(orderedChainIds = []) {
+    const result = await request('/settings/script-chains/reorder', {
       method: 'POST',
       body: JSON.stringify({
         orderedChainIds: Array.isArray(orderedChainIds) ? orderedChainIds : []
       })
     });
+    afterMutationInvalidate(['/settings/script-chains']);
+    return result;
   },
-  updateScriptChain(chainId, payload = {}) {
-    return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
+  async updateScriptChain(chainId, payload = {}) {
+    const result = await request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
     });
+    afterMutationInvalidate(['/settings/script-chains']);
+    return result;
   },
-  deleteScriptChain(chainId) {
-    return request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
+  async deleteScriptChain(chainId) {
+    const result = await request(`/settings/script-chains/${encodeURIComponent(chainId)}`, {
       method: 'DELETE'
     });
+    afterMutationInvalidate(['/settings/script-chains']);
+    return result;
   },
   testScriptChain(chainId) {
     return request(`/settings/script-chains/${encodeURIComponent(chainId)}/test`, {
       method: 'POST'
     });
   },
-  updateSetting(key, value) {
-    return request(`/settings/${encodeURIComponent(key)}`, {
+  async updateSetting(key, value) {
+    const result = await request(`/settings/${encodeURIComponent(key)}`, {
       method: 'PUT',
       body: JSON.stringify({ value })
     });
+    afterMutationInvalidate(['/settings', '/settings/handbrake-presets']);
+    return result;
   },
-  updateSettingsBulk(settings) {
-    return request('/settings', {
+  async updateSettingsBulk(settings) {
+    const result = await request('/settings', {
       method: 'PUT',
       body: JSON.stringify({ settings })
     });
+    afterMutationInvalidate(['/settings', '/settings/handbrake-presets']);
+    return result;
   },
   testPushover(payload = {}) {
     return request('/settings/pushover/test', {
@@ -126,91 +235,143 @@ export const api = {
   getPipelineState() {
     return request('/pipeline/state');
   },
-  analyzeDisc() {
-    return request('/pipeline/analyze', {
-      method: 'POST'
-    });
+  getRuntimeActivities() {
+    return request('/runtime/activities');
   },
-  rescanDisc() {
-    return request('/pipeline/rescan-disc', {
-      method: 'POST'
-    });
-  },
-  searchOmdb(q) {
-    return request(`/pipeline/omdb/search?q=${encodeURIComponent(q)}`);
-  },
-  selectMetadata(payload) {
-    return request('/pipeline/select-metadata', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  },
-  startJob(jobId) {
-    return request(`/pipeline/start/${jobId}`, {
-      method: 'POST'
-    });
-  },
-  confirmEncodeReview(jobId, payload = {}) {
-    return request(`/pipeline/confirm-encode/${jobId}`, {
+  cancelRuntimeActivity(activityId, payload = {}) {
+    return request(`/runtime/activities/${encodeURIComponent(activityId)}/cancel`, {
       method: 'POST',
       body: JSON.stringify(payload || {})
     });
   },
-  cancelPipeline(jobId = null) {
-    return request('/pipeline/cancel', {
+  requestRuntimeNextStep(activityId, payload = {}) {
+    return request(`/runtime/activities/${encodeURIComponent(activityId)}/next-step`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
+  },
+  async analyzeDisc() {
+    const result = await request('/pipeline/analyze', {
+      method: 'POST'
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async rescanDisc() {
+    const result = await request('/pipeline/rescan-disc', {
+      method: 'POST'
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  searchOmdb(q) {
+    return request(`/pipeline/omdb/search?q=${encodeURIComponent(q)}`);
+  },
+  async selectMetadata(payload) {
+    const result = await request('/pipeline/select-metadata', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async startJob(jobId) {
+    const result = await request(`/pipeline/start/${jobId}`, {
+      method: 'POST'
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async confirmEncodeReview(jobId, payload = {}) {
+    const result = await request(`/pipeline/confirm-encode/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async cancelPipeline(jobId = null) {
+    const result = await request('/pipeline/cancel', {
       method: 'POST',
       body: JSON.stringify({ jobId })
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  retryJob(jobId) {
-    return request(`/pipeline/retry/${jobId}`, {
+  async retryJob(jobId) {
+    const result = await request(`/pipeline/retry/${jobId}`, {
       method: 'POST'
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  resumeReadyJob(jobId) {
-    return request(`/pipeline/resume-ready/${jobId}`, {
+  async resumeReadyJob(jobId) {
+    const result = await request(`/pipeline/resume-ready/${jobId}`, {
       method: 'POST'
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  reencodeJob(jobId) {
-    return request(`/pipeline/reencode/${jobId}`, {
+  async reencodeJob(jobId) {
+    const result = await request(`/pipeline/reencode/${jobId}`, {
       method: 'POST'
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  restartReviewFromRaw(jobId) {
-    return request(`/pipeline/restart-review/${jobId}`, {
+  async restartReviewFromRaw(jobId) {
+    const result = await request(`/pipeline/restart-review/${jobId}`, {
       method: 'POST'
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  restartEncodeWithLastSettings(jobId) {
-    return request(`/pipeline/restart-encode/${jobId}`, {
+  async restartEncodeWithLastSettings(jobId) {
+    const result = await request(`/pipeline/restart-encode/${jobId}`, {
       method: 'POST'
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
   getPipelineQueue() {
     return request('/pipeline/queue');
   },
-  reorderPipelineQueue(orderedEntryIds = []) {
-    return request('/pipeline/queue/reorder', {
+  async reorderPipelineQueue(orderedEntryIds = []) {
+    const result = await request('/pipeline/queue/reorder', {
       method: 'POST',
       body: JSON.stringify({ orderedEntryIds: Array.isArray(orderedEntryIds) ? orderedEntryIds : [] })
     });
+    afterMutationInvalidate(['/pipeline/queue']);
+    return result;
   },
-  addQueueEntry(payload = {}) {
-    return request('/pipeline/queue/entry', {
+  async addQueueEntry(payload = {}) {
+    const result = await request('/pipeline/queue/entry', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+    afterMutationInvalidate(['/pipeline/queue']);
+    return result;
   },
-  removeQueueEntry(entryId) {
-    return request(`/pipeline/queue/entry/${encodeURIComponent(entryId)}`, {
+  async removeQueueEntry(entryId) {
+    const result = await request(`/pipeline/queue/entry/${encodeURIComponent(entryId)}`, {
       method: 'DELETE'
     });
+    afterMutationInvalidate(['/pipeline/queue']);
+    return result;
   },
   getJobs(params = {}) {
     const query = new URLSearchParams();
     if (params.status) query.set('status', params.status);
+    if (Array.isArray(params.statuses) && params.statuses.length > 0) {
+      query.set('statuses', params.statuses.join(','));
+    }
     if (params.search) query.set('search', params.search);
+    if (Number.isFinite(Number(params.limit)) && Number(params.limit) > 0) {
+      query.set('limit', String(Math.trunc(Number(params.limit))));
+    }
+    if (params.lite) {
+      query.set('lite', '1');
+    }
     const suffix = query.toString() ? `?${query.toString()}` : '';
     return request(`/history${suffix}`);
   },
@@ -224,32 +385,43 @@ export const api = {
   getOrphanRawFolders() {
     return request('/history/orphan-raw');
   },
-  importOrphanRawFolder(rawPath) {
-    return request('/history/orphan-raw/import', {
+  async importOrphanRawFolder(rawPath) {
+    const result = await request('/history/orphan-raw/import', {
       method: 'POST',
       body: JSON.stringify({ rawPath })
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
-  assignJobOmdb(jobId, payload = {}) {
-    return request(`/history/${jobId}/omdb/assign`, {
+  async assignJobOmdb(jobId, payload = {}) {
+    const result = await request(`/history/${jobId}/omdb/assign`, {
       method: 'POST',
       body: JSON.stringify(payload || {})
     });
+    afterMutationInvalidate(['/history']);
+    return result;
   },
-  deleteJobFiles(jobId, target = 'both') {
-    return request(`/history/${jobId}/delete-files`, {
+  async deleteJobFiles(jobId, target = 'both') {
+    const result = await request(`/history/${jobId}/delete-files`, {
       method: 'POST',
       body: JSON.stringify({ target })
     });
+    afterMutationInvalidate(['/history']);
+    return result;
   },
-  deleteJobEntry(jobId, target = 'none') {
-    return request(`/history/${jobId}/delete`, {
+  async deleteJobEntry(jobId, target = 'none') {
+    const result = await request(`/history/${jobId}/delete`, {
       method: 'POST',
       body: JSON.stringify({ target })
     });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
   },
   getJob(jobId, options = {}) {
     const query = new URLSearchParams();
+    const includeLiveLog = Boolean(options.includeLiveLog);
+    const includeLogs = Boolean(options.includeLogs);
+    const includeAllLogs = Boolean(options.includeAllLogs);
     if (options.includeLiveLog) {
       query.set('includeLiveLog', '1');
     }
@@ -262,31 +434,51 @@ export const api = {
     if (Number.isFinite(Number(options.logTailLines)) && Number(options.logTailLines) > 0) {
       query.set('logTailLines', String(Math.trunc(Number(options.logTailLines))));
     }
+    if (options.lite) {
+      query.set('lite', '1');
+    }
     const suffix = query.toString() ? `?${query.toString()}` : '';
-    return request(`/history/${jobId}${suffix}`);
+    const path = `/history/${jobId}${suffix}`;
+    const canUseCache = !includeLiveLog && !includeLogs && !includeAllLogs;
+    if (!canUseCache) {
+      return request(path);
+    }
+    return requestCachedGet(path, {
+      ttlMs: 8000,
+      forceRefresh: options.forceRefresh
+    });
   },
 
   // ── User Presets ───────────────────────────────────────────────────────────
-  getUserPresets(mediaType = null) {
+  getUserPresets(mediaType = null, options = {}) {
     const suffix = mediaType ? `?media_type=${encodeURIComponent(mediaType)}` : '';
-    return request(`/settings/user-presets${suffix}`);
+    return requestCachedGet(`/settings/user-presets${suffix}`, {
+      ttlMs: 2 * 60 * 1000,
+      forceRefresh: options.forceRefresh
+    });
   },
-  createUserPreset(payload = {}) {
-    return request('/settings/user-presets', {
+  async createUserPreset(payload = {}) {
+    const result = await request('/settings/user-presets', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+    afterMutationInvalidate(['/settings/user-presets']);
+    return result;
   },
-  updateUserPreset(id, payload = {}) {
-    return request(`/settings/user-presets/${encodeURIComponent(id)}`, {
+  async updateUserPreset(id, payload = {}) {
+    const result = await request(`/settings/user-presets/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
     });
+    afterMutationInvalidate(['/settings/user-presets']);
+    return result;
   },
-  deleteUserPreset(id) {
-    return request(`/settings/user-presets/${encodeURIComponent(id)}`, {
+  async deleteUserPreset(id) {
+    const result = await request(`/settings/user-presets/${encodeURIComponent(id)}`, {
       method: 'DELETE'
     });
+    afterMutationInvalidate(['/settings/user-presets']);
+    return result;
   },
 
   // ── Cron Jobs ──────────────────────────────────────────────────────────────

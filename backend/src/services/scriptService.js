@@ -4,6 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('SCRIPTS');
+const runtimeActivityService = require('./runtimeActivityService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const SCRIPT_NAME_MAX_LENGTH = 120;
@@ -159,7 +160,7 @@ function appendWithCap(current, chunk, maxChars) {
   };
 }
 
-function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd = process.cwd() }) {
+function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd = process.cwd(), onChild = null }) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn(cmd, args, {
@@ -167,6 +168,13 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    if (typeof onChild === 'function') {
+      try {
+        onChild(child);
+      } catch (_error) {
+        // ignore observer errors
+      }
+    }
 
     let stdout = '';
     let stderr = '';
@@ -473,18 +481,89 @@ class ScriptService {
   async testScript(scriptId, options = {}) {
     const script = await this.getScriptById(scriptId);
     const timeoutMs = Number(options?.timeoutMs);
+    const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SCRIPT_TEST_TIMEOUT_MS;
     const prepared = await this.createExecutableScriptFile(script, {
       source: 'settings_test',
       mode: 'test'
+    });
+    const activityId = runtimeActivityService.startActivity('script', {
+      name: script.name,
+      source: 'settings_test',
+      scriptId: script.id,
+      currentStep: 'Skript-Test läuft'
+    });
+    const controlState = {
+      cancelRequested: false,
+      cancelReason: null,
+      child: null
+    };
+    runtimeActivityService.setControls(activityId, {
+      cancel: async (payload = {}) => {
+        if (controlState.cancelRequested) {
+          return { accepted: true, alreadyRequested: true, message: 'Abbruch bereits angefordert.' };
+        }
+        controlState.cancelRequested = true;
+        controlState.cancelReason = String(payload?.reason || '').trim() || 'Von Benutzer abgebrochen';
+        runtimeActivityService.updateActivity(activityId, {
+          message: 'Abbruch angefordert'
+        });
+        if (controlState.child) {
+          try {
+            controlState.child.kill('SIGTERM');
+          } catch (_error) {
+            // ignore
+          }
+          const forceKillTimer = setTimeout(() => {
+            try {
+              if (controlState.child && !controlState.child.killed) {
+                controlState.child.kill('SIGKILL');
+              }
+            } catch (_error) {
+              // ignore
+            }
+          }, 2000);
+          if (typeof forceKillTimer.unref === 'function') {
+            forceKillTimer.unref();
+          }
+        }
+        return { accepted: true, message: 'Abbruch angefordert.' };
+      }
     });
 
     try {
       const run = await runProcessCapture({
         cmd: prepared.cmd,
         args: prepared.args,
-        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SCRIPT_TEST_TIMEOUT_MS
+        timeoutMs: effectiveTimeoutMs,
+        onChild: (child) => {
+          controlState.child = child;
+        }
       });
-      const success = run.code === 0 && !run.timedOut;
+      const cancelledByUser = controlState.cancelRequested;
+      const success = !cancelledByUser && run.code === 0 && !run.timedOut;
+      runtimeActivityService.completeActivity(activityId, {
+        status: success ? 'success' : 'error',
+        success,
+        outcome: cancelledByUser ? 'cancelled' : (success ? 'success' : 'error'),
+        cancelled: cancelledByUser,
+        exitCode: Number.isFinite(Number(run.code)) ? Number(run.code) : null,
+        stdout: run.stdout || null,
+        stderr: run.stderr || null,
+        stdoutTruncated: Boolean(run.stdoutTruncated),
+        stderrTruncated: Boolean(run.stderrTruncated),
+        errorMessage: !success
+          ? (cancelledByUser
+            ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+            : (run.timedOut
+              ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
+              : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`))
+          : null,
+        message: cancelledByUser
+          ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+          : (run.timedOut
+            ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
+            : (success ? 'Skript-Test abgeschlossen' : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`))
+      });
       return {
         scriptId: script.id,
         scriptName: script.name,
@@ -498,7 +577,22 @@ class ScriptService {
         stdoutTruncated: run.stdoutTruncated,
         stderrTruncated: run.stderrTruncated
       };
+    } catch (error) {
+      runtimeActivityService.completeActivity(activityId, {
+        status: 'error',
+        success: false,
+        outcome: controlState.cancelRequested ? 'cancelled' : 'error',
+        cancelled: Boolean(controlState.cancelRequested),
+        errorMessage: controlState.cancelRequested
+          ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+          : (error?.message || 'Skript-Test Fehler'),
+        message: controlState.cancelRequested
+          ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+          : (error?.message || 'Skript-Test Fehler')
+      });
+      throw error;
     } finally {
+      controlState.child = null;
       await prepared.cleanup();
     }
   }

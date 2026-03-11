@@ -9,6 +9,7 @@ const logger = require('./logger').child('CRON');
 const notificationService = require('./notificationService');
 const settingsService = require('./settingsService');
 const wsService = require('./websocketService');
+const runtimeActivityService = require('./runtimeActivityService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 // Maximale Zeilen pro Log-Eintrag (Output-Truncation)
@@ -203,6 +204,12 @@ async function fetchAllJobsWithSource(db) {
 async function runCronJob(job) {
   const db = await getDb();
   const startedAt = new Date().toISOString();
+  const cronActivityId = runtimeActivityService.startActivity('cron', {
+    name: job?.name || `Cron #${job?.id || '?'}`,
+    source: 'cron',
+    cronJobId: job?.id || null,
+    currentStep: 'Starte Cronjob'
+  });
 
   logger.info('cron:run:start', { cronJobId: job.id, name: job.name, sourceType: job.sourceType, sourceId: job.sourceId });
 
@@ -228,9 +235,23 @@ async function runCronJob(job) {
     if (job.sourceType === 'script') {
       const scriptService = require('./scriptService');
       const script = await scriptService.getScriptById(job.sourceId);
-      const prepared = await scriptService.createExecutableScriptFile(script, { source: 'cron', cronJobId: job.id });
-
+      runtimeActivityService.updateActivity(cronActivityId, {
+        currentStepType: 'script',
+        currentStep: `Skript: ${script.name}`,
+        currentScriptName: script.name,
+        scriptId: script.id
+      });
+      const scriptActivityId = runtimeActivityService.startActivity('script', {
+        name: script.name,
+        source: 'cron',
+        scriptId: script.id,
+        cronJobId: job.id,
+        parentActivityId: cronActivityId,
+        currentStep: `Cronjob: ${job.name}`
+      });
+      let prepared = null;
       try {
+        prepared = await scriptService.createExecutableScriptFile(script, { source: 'cron', cronJobId: job.id });
         const result = await new Promise((resolve, reject) => {
           const { spawn } = require('child_process');
           const child = spawn(prepared.cmd, prepared.args, {
@@ -249,15 +270,58 @@ async function runCronJob(job) {
         if (output.length > MAX_OUTPUT_CHARS) output = output.slice(0, MAX_OUTPUT_CHARS) + '\n...[truncated]';
         success = result.code === 0;
         if (!success) errorMessage = `Exit-Code ${result.code}`;
+        runtimeActivityService.completeActivity(scriptActivityId, {
+          status: success ? 'success' : 'error',
+          success,
+          outcome: success ? 'success' : 'error',
+          exitCode: result.code,
+          message: success ? null : errorMessage,
+          output: output || null,
+          stdout: result.stdout || null,
+          stderr: result.stderr || null,
+          errorMessage: success ? null : (errorMessage || null)
+        });
+      } catch (error) {
+        runtimeActivityService.completeActivity(scriptActivityId, {
+          status: 'error',
+          success: false,
+          outcome: 'error',
+          message: error?.message || 'Skriptfehler',
+          errorMessage: error?.message || 'Skriptfehler'
+        });
+        throw error;
       } finally {
-        await prepared.cleanup();
+        if (prepared?.cleanup) {
+          await prepared.cleanup();
+        }
       }
     } else if (job.sourceType === 'chain') {
       const scriptChainService = require('./scriptChainService');
       const logLines = [];
+      runtimeActivityService.updateActivity(cronActivityId, {
+        currentStepType: 'chain',
+        currentStep: `Kette: ${job.sourceName || `#${job.sourceId}`}`,
+        currentScriptName: null,
+        chainId: job.sourceId
+      });
       const result = await scriptChainService.executeChain(
         job.sourceId,
-        { source: 'cron', cronJobId: job.id },
+        {
+          source: 'cron',
+          cronJobId: job.id,
+          runtimeParentActivityId: cronActivityId,
+          onRuntimeStep: (payload = {}) => {
+            const currentScriptName = payload?.stepType === 'script'
+              ? (payload?.scriptName || payload?.currentScriptName || null)
+              : null;
+            runtimeActivityService.updateActivity(cronActivityId, {
+              currentStepType: payload?.stepType || 'chain',
+              currentStep: payload?.currentStep || null,
+              currentScriptName,
+              scriptId: payload?.scriptId || null
+            });
+          }
+        },
         {
           appendLog: async (_source, line) => {
             logLines.push(line);
@@ -267,7 +331,9 @@ async function runCronJob(job) {
 
       output = logLines.join('\n');
       if (output.length > MAX_OUTPUT_CHARS) output = output.slice(0, MAX_OUTPUT_CHARS) + '\n...[truncated]';
-      success = Array.isArray(result) ? result.every((r) => r.success !== false) : Boolean(result);
+      success = result && typeof result === 'object'
+        ? !(Boolean(result.aborted) || Number(result.failed || 0) > 0)
+        : Boolean(result);
       if (!success) errorMessage = 'Kette enthielt fehlgeschlagene Schritte.';
     } else {
       throw new Error(`Unbekannter source_type: ${job.sourceType}`);
@@ -307,6 +373,17 @@ async function runCronJob(job) {
   );
 
   logger.info('cron:run:done', { cronJobId: job.id, status, durationMs: new Date(finishedAt) - new Date(startedAt) });
+  runtimeActivityService.completeActivity(cronActivityId, {
+    status,
+    success,
+    outcome: success ? 'success' : 'error',
+    finishedAt,
+    currentStep: null,
+    currentScriptName: null,
+    message: success ? 'Cronjob abgeschlossen' : (errorMessage || 'Cronjob fehlgeschlagen'),
+    output: output || null,
+    errorMessage: success ? null : (errorMessage || null)
+  });
 
   wsService.broadcast('CRON_JOB_UPDATED', { id: job.id, lastRunStatus: status, lastRunAt: finishedAt, nextRunAt });
 

@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('SCRIPT_CHAINS');
+const runtimeActivityService = require('./runtimeActivityService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const CHAIN_NAME_MAX_LENGTH = 120;
@@ -51,6 +52,29 @@ function mapStepRow(row) {
     scriptName: row.script_name != null ? String(row.script_name) : null,
     waitSeconds: row.wait_seconds != null ? Number(row.wait_seconds) : null
   };
+}
+
+function terminateChildProcess(child) {
+  if (!child) {
+    return;
+  }
+  try {
+    child.kill('SIGTERM');
+  } catch (_error) {
+    return;
+  }
+  const forceKillTimer = setTimeout(() => {
+    try {
+      if (!child.killed) {
+        child.kill('SIGKILL');
+      }
+    } catch (_error) {
+      // ignore
+    }
+  }, 2000);
+  if (typeof forceKillTimer.unref === 'function') {
+    forceKillTimer.unref();
+  }
 }
 
 function validateSteps(rawSteps) {
@@ -382,102 +406,460 @@ class ScriptChainService {
   async executeChain(chainId, context = {}, { appendLog = null } = {}) {
     const chain = await this.getChainById(chainId);
     logger.info('chain:execute:start', { chainId, chainName: chain.name, steps: chain.steps.length });
+    const totalSteps = chain.steps.length;
+    const activityId = runtimeActivityService.startActivity('chain', {
+      name: chain.name,
+      source: context?.source || 'chain',
+      chainId: chain.id,
+      jobId: context?.jobId || null,
+      cronJobId: context?.cronJobId || null,
+      parentActivityId: context?.runtimeParentActivityId || null,
+      currentStep: totalSteps > 0 ? `Schritt 1/${totalSteps}` : 'Keine Schritte'
+    });
+    const controlState = {
+      cancelRequested: false,
+      cancelReason: null,
+      currentStepType: null,
+      activeWaitResolve: null,
+      activeChild: null,
+      activeChildTermination: null
+    };
+    const emitRuntimeStep = (payload = {}) => {
+      if (typeof context?.onRuntimeStep !== 'function') {
+        return;
+      }
+      try {
+        context.onRuntimeStep({
+          chainId: chain.id,
+          chainName: chain.name,
+          ...payload
+        });
+      } catch (_error) {
+        // ignore runtime callback errors
+      }
+    };
+    const requestCancel = async (payload = {}) => {
+      if (controlState.cancelRequested) {
+        return { accepted: true, alreadyRequested: true, message: 'Abbruch bereits angefordert.' };
+      }
+      controlState.cancelRequested = true;
+      controlState.cancelReason = String(payload?.reason || '').trim() || 'Von Benutzer abgebrochen';
+      runtimeActivityService.updateActivity(activityId, {
+        message: 'Abbruch angefordert',
+        currentStep: controlState.currentStepType ? `Abbruch läuft (${controlState.currentStepType})` : 'Abbruch angefordert'
+      });
+      if (typeof appendLog === 'function') {
+        try {
+          await appendLog('SYSTEM', `Kette "${chain.name}" - Abbruch angefordert.`);
+        } catch (_error) {
+          // ignore appendLog failures for control actions
+        }
+      }
+      if (controlState.currentStepType === STEP_TYPE_WAIT && typeof controlState.activeWaitResolve === 'function') {
+        controlState.activeWaitResolve('cancel');
+      } else if (controlState.currentStepType === STEP_TYPE_SCRIPT && controlState.activeChild) {
+        controlState.activeChildTermination = 'cancel';
+        terminateChildProcess(controlState.activeChild);
+      }
+      return { accepted: true, message: 'Abbruch angefordert.' };
+    };
+    const requestNextStep = async () => {
+      if (controlState.cancelRequested) {
+        return { accepted: false, message: 'Kette wird bereits abgebrochen.' };
+      }
+      if (controlState.currentStepType === STEP_TYPE_WAIT && typeof controlState.activeWaitResolve === 'function') {
+        controlState.activeWaitResolve('skip');
+        runtimeActivityService.updateActivity(activityId, {
+          message: 'Nächster Schritt angefordert (Wait übersprungen)'
+        });
+        if (typeof appendLog === 'function') {
+          try {
+            await appendLog('SYSTEM', `Kette "${chain.name}" - Wait-Schritt manuell übersprungen.`);
+          } catch (_error) {
+            // ignore appendLog failures for control actions
+          }
+        }
+        return { accepted: true, message: 'Wait-Schritt übersprungen.' };
+      }
+      if (controlState.currentStepType === STEP_TYPE_SCRIPT && controlState.activeChild) {
+        controlState.activeChildTermination = 'skip';
+        terminateChildProcess(controlState.activeChild);
+        runtimeActivityService.updateActivity(activityId, {
+          message: 'Nächster Schritt angefordert (aktuelles Skript wird übersprungen)'
+        });
+        if (typeof appendLog === 'function') {
+          try {
+            await appendLog('SYSTEM', `Kette "${chain.name}" - Skript-Schritt manuell übersprungen.`);
+          } catch (_error) {
+            // ignore appendLog failures for control actions
+          }
+        }
+        return { accepted: true, message: 'Skript-Schritt wird übersprungen.' };
+      }
+      return { accepted: false, message: 'Kein aktiver Schritt zum Überspringen.' };
+    };
+    runtimeActivityService.setControls(activityId, {
+      cancel: requestCancel,
+      nextStep: requestNextStep
+    });
 
     const results = [];
-
-    for (const step of chain.steps) {
-      if (step.stepType === STEP_TYPE_WAIT) {
-        const seconds = Math.max(1, Number(step.waitSeconds || 1));
-        logger.info('chain:step:wait', { chainId, seconds });
-        if (typeof appendLog === 'function') {
-          await appendLog('SYSTEM', `Kette "${chain.name}" - Warte ${seconds} Sekunde(n)...`);
+    let completionPayload = null;
+    let abortedByUser = false;
+    try {
+      for (let index = 0; index < chain.steps.length; index += 1) {
+        if (controlState.cancelRequested) {
+          abortedByUser = true;
+          break;
         }
-        await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-        results.push({ stepType: 'wait', waitSeconds: seconds, success: true });
-      } else if (step.stepType === STEP_TYPE_SCRIPT) {
-        if (!step.scriptId) {
-          logger.warn('chain:step:script-missing', { chainId, stepId: step.id });
-          results.push({ stepType: 'script', scriptId: null, success: false, skipped: true, reason: 'scriptId fehlt' });
-          continue;
-        }
-
-        const scriptService = require('./scriptService');
-        let script;
-        try {
-          script = await scriptService.getScriptById(step.scriptId);
-        } catch (error) {
-          logger.warn('chain:step:script-not-found', { chainId, scriptId: step.scriptId, error: errorToMeta(error) });
-          results.push({ stepType: 'script', scriptId: step.scriptId, success: false, skipped: true, reason: 'Skript nicht gefunden' });
-          continue;
-        }
-
-        if (typeof appendLog === 'function') {
-          await appendLog('SYSTEM', `Kette "${chain.name}" - Skript: ${script.name}`);
-        }
-
-        let prepared = null;
-        try {
-          prepared = await scriptService.createExecutableScriptFile(script, {
-            ...context,
-            scriptId: script.id,
-            scriptName: script.name,
-            source: context?.source || 'chain'
+        const step = chain.steps[index];
+        const stepIndex = index + 1;
+        if (step.stepType === STEP_TYPE_WAIT) {
+          const seconds = Math.max(1, Number(step.waitSeconds || 1));
+          const waitLabel = `Warte ${seconds} Sekunde(n)`;
+          controlState.currentStepType = STEP_TYPE_WAIT;
+          runtimeActivityService.updateActivity(activityId, {
+            currentStepType: 'wait',
+            currentStep: waitLabel,
+            currentScriptName: null,
+            stepIndex,
+            stepTotal: totalSteps
           });
-          const run = await new Promise((resolve, reject) => {
-            const child = spawn(prepared.cmd, prepared.args, {
-              env: process.env,
-              stdio: ['ignore', 'pipe', 'pipe']
-            });
-            let stdout = '';
-            let stderr = '';
-            child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-            child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-            child.on('error', reject);
-            child.on('close', (code) => resolve({ code, stdout, stderr }));
+          emitRuntimeStep({
+            stepType: 'wait',
+            stepIndex,
+            stepTotal: totalSteps,
+            currentStep: waitLabel
           });
-
-          const success = run.code === 0;
-          logger.info('chain:step:script-done', { chainId, scriptId: script.id, exitCode: run.code, success });
+          logger.info('chain:step:wait', { chainId, seconds });
           if (typeof appendLog === 'function') {
-            await appendLog(
-              success ? 'SYSTEM' : 'ERROR',
-              `Kette "${chain.name}" - Skript "${script.name}": ${success ? 'OK' : `Fehler (Exit ${run.code})`}`
-            );
+            await appendLog('SYSTEM', `Kette "${chain.name}" - Warte ${seconds} Sekunde(n)...`);
           }
-          results.push({ stepType: 'script', scriptId: script.id, scriptName: script.name, success, exitCode: run.code, stdout: run.stdout || '', stderr: run.stderr || '' });
-
-          if (!success) {
-            logger.warn('chain:step:script-failed', { chainId, scriptId: script.id, exitCode: run.code });
+          const waitOutcome = await new Promise((resolve) => {
+            const timer = setTimeout(() => {
+              controlState.activeWaitResolve = null;
+              resolve('done');
+            }, seconds * 1000);
+            controlState.activeWaitResolve = (mode = 'done') => {
+              clearTimeout(timer);
+              controlState.activeWaitResolve = null;
+              resolve(mode);
+            };
+          });
+          controlState.currentStepType = null;
+          if (waitOutcome === 'skip') {
+            results.push({ stepType: 'wait', waitSeconds: seconds, success: true, skipped: true, reason: 'skipped_by_user' });
+            continue;
+          }
+          if (waitOutcome === 'cancel' || controlState.cancelRequested) {
+            abortedByUser = true;
+            results.push({ stepType: 'wait', waitSeconds: seconds, success: false, aborted: true, reason: 'cancelled_by_user' });
             break;
           }
-        } catch (error) {
-          logger.error('chain:step:script-error', { chainId, scriptId: step.scriptId, error: errorToMeta(error) });
-          if (typeof appendLog === 'function') {
-            await appendLog('ERROR', `Kette "${chain.name}" - Skript-Fehler: ${error.message}`);
+          results.push({ stepType: 'wait', waitSeconds: seconds, success: true });
+        } else if (step.stepType === STEP_TYPE_SCRIPT) {
+          if (!step.scriptId) {
+            logger.warn('chain:step:script-missing', { chainId, stepId: step.id });
+            results.push({ stepType: 'script', scriptId: null, success: false, skipped: true, reason: 'scriptId fehlt' });
+            continue;
           }
-          results.push({ stepType: 'script', scriptId: step.scriptId, success: false, error: error.message });
-          break;
-        } finally {
-          if (prepared?.cleanup) {
-            await prepared.cleanup();
+
+          const scriptService = require('./scriptService');
+          let script;
+          try {
+            script = await scriptService.getScriptById(step.scriptId);
+          } catch (error) {
+            logger.warn('chain:step:script-not-found', { chainId, scriptId: step.scriptId, error: errorToMeta(error) });
+            results.push({ stepType: 'script', scriptId: step.scriptId, success: false, skipped: true, reason: 'Skript nicht gefunden' });
+            continue;
+          }
+
+          controlState.currentStepType = STEP_TYPE_SCRIPT;
+          runtimeActivityService.updateActivity(activityId, {
+            currentStepType: 'script',
+            currentStep: `Skript: ${script.name}`,
+            currentScriptName: script.name,
+            stepIndex,
+            stepTotal: totalSteps,
+            scriptId: script.id
+          });
+          emitRuntimeStep({
+            stepType: 'script',
+            stepIndex,
+            stepTotal: totalSteps,
+            scriptId: script.id,
+            scriptName: script.name,
+            currentScriptName: script.name,
+            currentStep: `Skript: ${script.name}`
+          });
+
+          if (typeof appendLog === 'function') {
+            await appendLog('SYSTEM', `Kette "${chain.name}" - Skript: ${script.name}`);
+          }
+
+          const scriptActivityId = runtimeActivityService.startActivity('script', {
+            name: script.name,
+            source: context?.source || 'chain',
+            scriptId: script.id,
+            chainId: chain.id,
+            jobId: context?.jobId || null,
+            cronJobId: context?.cronJobId || null,
+            parentActivityId: activityId,
+            currentStep: `Kette: ${chain.name}`
+          });
+
+          let prepared = null;
+          try {
+            prepared = await scriptService.createExecutableScriptFile(script, {
+              ...context,
+              scriptId: script.id,
+              scriptName: script.name,
+              source: context?.source || 'chain'
+            });
+            const run = await new Promise((resolve, reject) => {
+              const child = spawn(prepared.cmd, prepared.args, {
+                env: process.env,
+                stdio: ['ignore', 'pipe', 'pipe']
+              });
+              controlState.activeChild = child;
+              controlState.activeChildTermination = null;
+              let stdout = '';
+              let stderr = '';
+              child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+              child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+              child.on('error', (error) => {
+                controlState.activeChild = null;
+                reject(error);
+              });
+              child.on('close', (code, signal) => {
+                const termination = controlState.activeChildTermination;
+                controlState.activeChild = null;
+                controlState.activeChildTermination = null;
+                resolve({ code, signal, stdout, stderr, termination });
+              });
+            });
+            controlState.currentStepType = null;
+
+            if (run.termination === 'skip') {
+              runtimeActivityService.completeActivity(scriptActivityId, {
+                status: 'success',
+                success: true,
+                outcome: 'skipped',
+                skipped: true,
+                currentStep: null,
+                message: 'Schritt übersprungen',
+                output: [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null
+              });
+              if (typeof appendLog === 'function') {
+                try {
+                  await appendLog('SYSTEM', `Kette "${chain.name}" - Skript "${script.name}" übersprungen.`);
+                } catch (_error) {
+                  // ignore appendLog failures on skip path
+                }
+              }
+              results.push({
+                stepType: 'script',
+                scriptId: script.id,
+                scriptName: script.name,
+                success: true,
+                skipped: true,
+                reason: 'skipped_by_user'
+              });
+              continue;
+            }
+
+            if (run.termination === 'cancel' || controlState.cancelRequested) {
+              abortedByUser = true;
+              runtimeActivityService.completeActivity(scriptActivityId, {
+                status: 'error',
+                success: false,
+                outcome: 'cancelled',
+                cancelled: true,
+                currentStep: null,
+                message: controlState.cancelReason || 'Von Benutzer abgebrochen',
+                output: [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null,
+                errorMessage: controlState.cancelReason || 'Von Benutzer abgebrochen'
+              });
+              if (typeof appendLog === 'function') {
+                try {
+                  await appendLog('SYSTEM', `Kette "${chain.name}" - Skript "${script.name}" abgebrochen.`);
+                } catch (_error) {
+                  // ignore appendLog failures on cancel path
+                }
+              }
+              results.push({
+                stepType: 'script',
+                scriptId: script.id,
+                scriptName: script.name,
+                success: false,
+                aborted: true,
+                reason: 'cancelled_by_user'
+              });
+              break;
+            }
+
+            const success = run.code === 0;
+            runtimeActivityService.completeActivity(scriptActivityId, {
+              status: success ? 'success' : 'error',
+              success,
+              outcome: success ? 'success' : 'error',
+              exitCode: run.code,
+              currentStep: null,
+              message: success ? null : `Fehler (Exit ${run.code})`,
+              output: success ? null : [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null,
+              stderr: success ? null : (run.stderr || null),
+              stdout: success ? null : (run.stdout || null),
+              errorMessage: success ? null : `Fehler (Exit ${run.code})`
+            });
+            logger.info('chain:step:script-done', { chainId, scriptId: script.id, exitCode: run.code, success });
+            if (typeof appendLog === 'function') {
+              await appendLog(
+                success ? 'SYSTEM' : 'ERROR',
+                `Kette "${chain.name}" - Skript "${script.name}": ${success ? 'OK' : `Fehler (Exit ${run.code})`}`
+              );
+            }
+            results.push({ stepType: 'script', scriptId: script.id, scriptName: script.name, success, exitCode: run.code, stdout: run.stdout || '', stderr: run.stderr || '' });
+
+            if (!success) {
+              logger.warn('chain:step:script-failed', { chainId, scriptId: script.id, exitCode: run.code });
+              break;
+            }
+          } catch (error) {
+            controlState.currentStepType = null;
+            if (controlState.cancelRequested) {
+              abortedByUser = true;
+              runtimeActivityService.completeActivity(scriptActivityId, {
+                status: 'error',
+                success: false,
+                outcome: 'cancelled',
+                cancelled: true,
+                message: controlState.cancelReason || 'Von Benutzer abgebrochen',
+                errorMessage: controlState.cancelReason || 'Von Benutzer abgebrochen'
+              });
+              if (typeof appendLog === 'function') {
+                try {
+                  await appendLog('SYSTEM', `Kette "${chain.name}" - Skript "${script.name}" abgebrochen.`);
+                } catch (_error) {
+                  // ignore appendLog failures on cancel path
+                }
+              }
+              results.push({
+                stepType: 'script',
+                scriptId: script.id,
+                scriptName: script.name,
+                success: false,
+                aborted: true,
+                reason: 'cancelled_by_user'
+              });
+              break;
+            }
+            runtimeActivityService.completeActivity(scriptActivityId, {
+              status: 'error',
+              success: false,
+              outcome: 'error',
+              message: error?.message || 'unknown',
+              errorMessage: error?.message || 'unknown'
+            });
+            logger.error('chain:step:script-error', { chainId, scriptId: step.scriptId, error: errorToMeta(error) });
+            if (typeof appendLog === 'function') {
+              await appendLog('ERROR', `Kette "${chain.name}" - Skript-Fehler: ${error.message}`);
+            }
+            results.push({ stepType: 'script', scriptId: step.scriptId, success: false, error: error.message });
+            break;
+          } finally {
+            controlState.activeChild = null;
+            controlState.activeChildTermination = null;
+            if (prepared?.cleanup) {
+              await prepared.cleanup();
+            }
           }
         }
       }
+
+      const succeeded = results.filter((r) => r.success).length;
+      const skipped = results.filter((r) => r.skipped).length;
+      const failed = results.filter((r) => !r.success && !r.skipped && !r.aborted).length;
+      logger.info('chain:execute:done', { chainId, steps: results.length, succeeded, failed, skipped, abortedByUser });
+      if (abortedByUser) {
+        completionPayload = {
+          status: 'error',
+          success: false,
+          outcome: 'cancelled',
+          cancelled: true,
+          currentStep: null,
+          currentScriptName: null,
+          message: controlState.cancelReason || 'Von Benutzer abgebrochen',
+          errorMessage: controlState.cancelReason || 'Von Benutzer abgebrochen'
+        };
+        emitRuntimeStep({
+          finished: true,
+          success: false,
+          aborted: true,
+          failed,
+          succeeded
+        });
+        return {
+          chainId,
+          chainName: chain.name,
+          steps: results.length,
+          succeeded,
+          failed,
+          skipped,
+          aborted: true,
+          abortedByUser: true,
+          results
+        };
+      }
+      completionPayload = {
+        status: failed > 0 ? 'error' : 'success',
+        success: failed === 0,
+        outcome: failed > 0 ? 'error' : (skipped > 0 ? 'skipped' : 'success'),
+        skipped: skipped > 0,
+        currentStep: null,
+        currentScriptName: null,
+        message: failed > 0
+          ? `${failed} Schritt(e) fehlgeschlagen`
+          : (skipped > 0
+            ? `${succeeded} Schritt(e) erfolgreich, ${skipped} übersprungen`
+            : `${succeeded} Schritt(e) erfolgreich`)
+      };
+      emitRuntimeStep({
+        finished: true,
+        success: failed === 0,
+        failed,
+        succeeded
+      });
+
+      return {
+        chainId,
+        chainName: chain.name,
+        steps: results.length,
+        succeeded,
+        failed,
+        skipped,
+        aborted: failed > 0,
+        results
+      };
+    } catch (error) {
+      completionPayload = {
+        status: 'error',
+        success: false,
+        outcome: 'error',
+        message: error?.message || 'unknown',
+        errorMessage: error?.message || 'unknown',
+        currentStep: null
+      };
+      throw error;
+    } finally {
+      runtimeActivityService.completeActivity(activityId, completionPayload || {
+        status: 'error',
+        success: false,
+        outcome: 'error',
+        message: 'Kette unerwartet beendet',
+        errorMessage: 'Kette unerwartet beendet',
+        currentStep: null
+      });
     }
-
-    const succeeded = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success && !r.skipped).length;
-    logger.info('chain:execute:done', { chainId, steps: results.length, succeeded, failed });
-
-    return {
-      chainId,
-      chainName: chain.name,
-      steps: results.length,
-      succeeded,
-      failed,
-      aborted: failed > 0,
-      results
-    };
   }
 }
 

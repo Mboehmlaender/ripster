@@ -9,15 +9,30 @@ const router = express.Router();
 router.get(
   '/',
   asyncHandler(async (req, res) => {
+    const parsedLimit = Number(req.query.limit);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.trunc(parsedLimit)
+      : null;
+    const statuses = String(req.query.statuses || '')
+      .split(',')
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    const lite = ['1', 'true', 'yes'].includes(String(req.query.lite || '').toLowerCase());
     logger.info('get:jobs', {
       reqId: req.reqId,
       status: req.query.status,
-      search: req.query.search
+      statuses: statuses.length > 0 ? statuses : null,
+      search: req.query.search,
+      limit,
+      lite
     });
 
     const jobs = await historyService.getJobs({
       status: req.query.status,
-      search: req.query.search
+      statuses,
+      search: req.query.search,
+      limit,
+      includeFsChecks: !lite
     });
 
     res.json({ jobs });
@@ -122,10 +137,12 @@ router.get(
     const includeLiveLog = ['1', 'true', 'yes'].includes(String(req.query.includeLiveLog || '').toLowerCase());
     const includeLogs = ['1', 'true', 'yes'].includes(String(req.query.includeLogs || '').toLowerCase());
     const includeAllLogs = ['1', 'true', 'yes'].includes(String(req.query.includeAllLogs || '').toLowerCase());
+    const lite = ['1', 'true', 'yes'].includes(String(req.query.lite || '').toLowerCase());
     const parsedTail = Number(req.query.logTailLines);
     const logTailLines = Number.isFinite(parsedTail) && parsedTail > 0
       ? Math.trunc(parsedTail)
       : null;
+    const includeFsChecks = !(lite || includeLiveLog);
 
     logger.info('get:job-detail', {
       reqId: req.reqId,
@@ -133,13 +150,16 @@ router.get(
       includeLiveLog,
       includeLogs,
       includeAllLogs,
-      logTailLines
+      logTailLines,
+      lite,
+      includeFsChecks
     });
     const job = await historyService.getJobWithLogs(id, {
       includeLiveLog,
       includeLogs,
       includeAllLogs,
-      logTailLines
+      logTailLines,
+      includeFsChecks
     });
     if (!job) {
       const error = new Error('Job nicht gefunden.');

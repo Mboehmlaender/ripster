@@ -6,6 +6,7 @@ import { Dialog } from 'primereact/dialog';
 import { TabView, TabPanel } from 'primereact/tabview';
 import { InputText } from 'primereact/inputtext';
 import { InputTextarea } from 'primereact/inputtextarea';
+import { Dropdown } from 'primereact/dropdown';
 import { api } from '../api/client';
 import DynamicSettingsForm from '../components/DynamicSettingsForm';
 import CronJobsTab from '../components/CronJobsTab';
@@ -51,6 +52,58 @@ function reorderListById(items, sourceId, targetIndex) {
   return { changed: true, next };
 }
 
+function buildHandBrakePresetSelectOptions(sourceOptions, extraValues = []) {
+  const rawOptions = Array.isArray(sourceOptions) ? sourceOptions : [];
+  const rawExtraValues = Array.isArray(extraValues) ? extraValues : [];
+  const normalizedOptions = [];
+  const seenValues = new Set();
+  const seenGroupLabels = new Set();
+
+  const addGroupOption = (option) => {
+    const rawLabel = String(option?.label || '').trim();
+    if (!rawLabel || seenGroupLabels.has(rawLabel)) {
+      return;
+    }
+    seenGroupLabels.add(rawLabel);
+    normalizedOptions.push({
+      ...option,
+      label: rawLabel,
+      value: String(option?.value || `__group__${rawLabel.toLowerCase().replace(/\s+/g, '_')}`),
+      disabled: true
+    });
+  };
+
+  const addSelectableOption = (optionValue, optionLabel = optionValue, option = null) => {
+    const value = String(optionValue || '').trim();
+    if (seenValues.has(value)) {
+      return;
+    }
+    seenValues.add(value);
+    normalizedOptions.push({
+      ...(option && typeof option === 'object' ? option : {}),
+      label: String(optionLabel ?? value),
+      value,
+      disabled: false
+    });
+  };
+
+  normalizedOptions.push({ label: '(kein Preset – nur CLI-Parameter)', value: '', disabled: false });
+  seenValues.add('');
+
+  for (const option of rawOptions) {
+    if (option?.disabled) {
+      addGroupOption(option);
+      continue;
+    }
+    addSelectableOption(option?.value, option?.label, option);
+  }
+  for (const value of rawExtraValues) {
+    addSelectableOption(value);
+  }
+
+  return normalizedOptions;
+}
+
 function injectHandBrakePresetOptions(categories, presetPayload) {
   const list = Array.isArray(categories) ? categories : [];
   const sourceOptions = Array.isArray(presetPayload?.options) ? presetPayload.options : [];
@@ -62,50 +115,10 @@ function injectHandBrakePresetOptions(categories, presetPayload) {
       if (!presetSettingKeys.has(String(setting?.key || '').trim().toLowerCase())) {
         return setting;
       }
-
-      const normalizedOptions = [];
-      const seenValues = new Set();
-      const seenGroupLabels = new Set();
-      const addGroupOption = (option) => {
-        const rawLabel = String(option?.label || '').trim();
-        if (!rawLabel || seenGroupLabels.has(rawLabel)) {
-          return;
-        }
-        seenGroupLabels.add(rawLabel);
-        normalizedOptions.push({
-          ...option,
-          label: rawLabel,
-          value: String(option?.value || `__group__${rawLabel.toLowerCase().replace(/\s+/g, '_')}`),
-          disabled: true
-        });
-      };
-      const addSelectableOption = (optionValue, optionLabel = optionValue, option = null) => {
-        const value = String(optionValue || '').trim();
-        if (!value || seenValues.has(value)) {
-          return;
-        }
-        seenValues.add(value);
-        normalizedOptions.push({
-          ...(option && typeof option === 'object' ? option : {}),
-          label: String(optionLabel ?? value),
-          value,
-          disabled: false
-        });
-      };
-
-      // "(kein Preset)" immer als erste Option — ermöglicht reinen CLI-Betrieb
-      normalizedOptions.push({ label: '(kein Preset – nur CLI-Parameter)', value: '', disabled: false });
-      seenValues.add('');
-
-      for (const option of sourceOptions) {
-        if (option?.disabled) {
-          addGroupOption(option);
-          continue;
-        }
-        addSelectableOption(option?.value, option?.label, option);
-      }
-      addSelectableOption(setting?.value);
-      addSelectableOption(setting?.defaultValue);
+      const normalizedOptions = buildHandBrakePresetSelectOptions(sourceOptions, [
+        setting?.value,
+        setting?.defaultValue
+      ]);
 
       if (normalizedOptions.length <= 1) {
         return setting;
@@ -170,8 +183,17 @@ export default function SettingsPage() {
     description: ''
   });
   const [userPresetErrors, setUserPresetErrors] = useState({});
+  const [handBrakePresetSourceOptions, setHandBrakePresetSourceOptions] = useState([]);
 
   const toastRef = useRef(null);
+
+  const userPresetHandBrakeOptions = useMemo(
+    () => buildHandBrakePresetSelectOptions(
+      handBrakePresetSourceOptions,
+      [userPresetEditor.handbrakePreset]
+    ),
+    [handBrakePresetSourceOptions, userPresetEditor.handbrakePreset]
+  );
 
   const loadScripts = async ({ silent = false } = {}) => {
     if (!silent) {
@@ -298,37 +320,18 @@ export default function SettingsPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [settingsResponse, presetsResponse, scriptsResponse, chainsResponse] = await Promise.allSettled([
-        api.getSettings(),
-        api.getHandBrakePresets(),
-        api.getScripts(),
-        api.getScriptChains()
-      ]);
-      if (settingsResponse.status !== 'fulfilled') {
-        throw settingsResponse.reason;
-      }
-      let nextCategories = settingsResponse.value?.categories || [];
-      const presetPayload = presetsResponse.status === 'fulfilled' ? presetsResponse.value : null;
-      nextCategories = injectHandBrakePresetOptions(nextCategories, presetPayload);
-      if (presetsResponse.status === 'fulfilled' && presetsResponse.value?.message) {
-        toastRef.current?.show({
-          severity: presetsResponse.value?.source === 'fallback' ? 'warn' : 'info',
-          summary: 'HandBrake Presets',
-          detail: presetsResponse.value.message
-        });
-      }
-      if (presetsResponse.status === 'rejected') {
-        toastRef.current?.show({
-          severity: 'warn',
-          summary: 'HandBrake Presets',
-          detail: 'Preset-Liste konnte nicht geladen werden. Aktueller Wert bleibt auswählbar.'
-        });
-      }
+      const settingsResponse = await api.getSettings();
+      let nextCategories = settingsResponse?.categories || [];
       const values = buildValuesMap(nextCategories);
       setCategories(nextCategories);
       setInitialValues(values);
       setDraftValues(values);
       setErrors({});
+
+      const presetsPromise = api.getHandBrakePresets();
+      const scriptsPromise = api.getScripts();
+      const chainsPromise = api.getScriptChains();
+      const [scriptsResponse, chainsResponse] = await Promise.allSettled([scriptsPromise, chainsPromise]);
       if (scriptsResponse.status === 'fulfilled') {
         setScripts(Array.isArray(scriptsResponse.value?.scripts) ? scriptsResponse.value.scripts : []);
       } else {
@@ -341,6 +344,27 @@ export default function SettingsPage() {
       if (chainsResponse.status === 'fulfilled') {
         setChains(Array.isArray(chainsResponse.value?.chains) ? chainsResponse.value.chains : []);
       }
+
+      presetsPromise
+        .then((presetPayload) => {
+          setHandBrakePresetSourceOptions(Array.isArray(presetPayload?.options) ? presetPayload.options : []);
+          setCategories((prevCategories) => injectHandBrakePresetOptions(prevCategories, presetPayload));
+          if (presetPayload?.message) {
+            toastRef.current?.show({
+              severity: presetPayload?.source === 'fallback' ? 'warn' : 'info',
+              summary: 'HandBrake Presets',
+              detail: presetPayload.message
+            });
+          }
+        })
+        .catch(() => {
+          setHandBrakePresetSourceOptions([]);
+          toastRef.current?.show({
+            severity: 'warn',
+            summary: 'HandBrake Presets',
+            detail: 'Preset-Liste konnte nicht geladen werden. Aktueller Wert bleibt auswählbar.'
+          });
+        });
     } catch (error) {
       toastRef.current?.show({ severity: 'error', summary: 'Fehler', detail: error.message });
     } finally {
@@ -1511,44 +1535,36 @@ export default function SettingsPage() {
             ) : userPresets.length === 0 ? (
               <p style={{ marginTop: '1rem' }}>Keine Presets vorhanden. Lege ein neues Preset an.</p>
             ) : (
-              <div className="script-list" style={{ marginTop: '1rem' }}>
+              <div className="script-list script-list--reorderable" style={{ marginTop: '1rem' }}>
                 {userPresets.map((preset) => (
                   <div key={preset.id} className="script-list-item">
                     <div className="script-list-main">
                       <div className="script-title-line">
-                        <strong>#{preset.id} – {preset.name}</strong>
-                        <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', opacity: 0.7 }}>
+                        <strong className="script-id-title">#{preset.id} - {preset.name}</strong>
+                        <span className="preset-media-type-tag">
                           {preset.mediaType === 'bluray' ? 'Blu-ray'
                             : preset.mediaType === 'dvd' ? 'DVD'
                             : preset.mediaType === 'other' ? 'Sonstiges'
                             : 'Universell'}
                         </span>
                       </div>
-                      {preset.description && <small style={{ display: 'block', marginTop: '0.2rem', opacity: 0.8 }}>{preset.description}</small>}
-                      <div style={{ marginTop: '0.3rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                        {preset.handbrakePreset
-                          ? <span><span style={{ opacity: 0.6 }}>Preset:</span> {preset.handbrakePreset}</span>
-                          : <span style={{ opacity: 0.5 }}>(kein Preset-Name)</span>}
-                        {preset.extraArgs && (
-                          <span style={{ marginLeft: '1rem' }}><span style={{ opacity: 0.6 }}>Args:</span> {preset.extraArgs}</span>
-                        )}
-                      </div>
+                      <small className="preset-description-line" title={preset.description || ''}>
+                        {preset.description || '-'}
+                      </small>
                     </div>
-                    <div className="script-list-actions">
+                    <div className="script-list-actions script-list-actions--two">
                       <Button
                         icon="pi pi-pencil"
+                        label="Bearbeiten"
                         severity="secondary"
                         outlined
-                        rounded
-                        title="Bearbeiten"
                         onClick={() => openEditUserPreset(preset)}
                       />
                       <Button
                         icon="pi pi-trash"
+                        label="Löschen"
                         severity="danger"
                         outlined
-                        rounded
-                        title="Löschen"
                         onClick={() => handleDeleteUserPreset(preset.id)}
                       />
                     </div>
@@ -1594,11 +1610,16 @@ export default function SettingsPage() {
 
                 <div>
                   <label htmlFor="preset-hb-preset" style={{ display: 'block', marginBottom: '0.3rem' }}>HandBrake Preset (-Z)</label>
-                  <InputText
+                  <Dropdown
                     id="preset-hb-preset"
                     value={userPresetEditor.handbrakePreset}
-                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, handbrakePreset: e.target.value }))}
-                    placeholder="z.B. H.264 MKV 1080p30 (leer = kein Preset)"
+                    options={userPresetHandBrakeOptions}
+                    optionLabel="label"
+                    optionValue="value"
+                    optionDisabled="disabled"
+                    onChange={(e) => setUserPresetEditor((prev) => ({ ...prev, handbrakePreset: String(e.value || '') }))}
+                    placeholder="Preset auswählen"
+                    showClear
                     style={{ width: '100%' }}
                   />
                 </div>

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('SETTINGS');
 const {
@@ -15,6 +15,14 @@ const { setLogRootDir } = require('./logPathService');
 
 const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
 const HANDBRAKE_PRESET_LIST_TIMEOUT_MS = 30000;
+const SETTINGS_CACHE_TTL_MS = 15000;
+const HANDBRAKE_PRESET_CACHE_TTL_MS = 5 * 60 * 1000;
+const HANDBRAKE_PRESET_RELEVANT_SETTING_KEYS = new Set([
+  'handbrake_command',
+  'handbrake_preset',
+  'handbrake_preset_bluray',
+  'handbrake_preset_dvd'
+]);
 const SENSITIVE_SETTING_KEYS = new Set([
   'makemkv_registration_key',
   'omdb_api_key',
@@ -228,6 +236,92 @@ function uniqueOrderedValues(values) {
     unique.push(normalized);
   }
   return unique;
+}
+
+function normalizeSettingKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function runCommandCapture(cmd, args = [], options = {}) {
+  const timeoutMs = Math.max(0, Number(options.timeout || 0));
+  const maxBuffer = Math.max(1024, Number(options.maxBuffer || 8 * 1024 * 1024));
+  const argv = Array.isArray(args) ? args : [];
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let timer = null;
+    let stdout = '';
+    let stderr = '';
+    let totalBytes = 0;
+
+    const finish = (handler, payload) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      handler(payload);
+    };
+
+    const child = spawn(cmd, argv, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const appendChunk = (chunk, target) => {
+      if (settled) {
+        return;
+      }
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+      totalBytes += Buffer.byteLength(text, 'utf-8');
+      if (totalBytes > maxBuffer) {
+        try {
+          child.kill('SIGKILL');
+        } catch (_error) {
+          // ignore kill errors
+        }
+        finish(reject, new Error(`Command output exceeded ${maxBuffer} bytes.`));
+        return;
+      }
+      if (target === 'stdout') {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+    };
+
+    child.on('error', (error) => finish(reject, error));
+    child.on('close', (status, signal) => {
+      finish(resolve, {
+        status,
+        signal,
+        timedOut,
+        stdout,
+        stderr
+      });
+    });
+
+    if (child.stdout) {
+      child.stdout.on('data', (chunk) => appendChunk(chunk, 'stdout'));
+    }
+    if (child.stderr) {
+      child.stderr.on('data', (chunk) => appendChunk(chunk, 'stderr'));
+    }
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill('SIGKILL');
+        } catch (_error) {
+          // ignore kill errors
+        }
+      }, timeoutMs);
+    }
+  });
 }
 
 function uniquePresetEntries(entries) {
@@ -466,20 +560,112 @@ function mapPresetEntriesToOptions(entries) {
 }
 
 class SettingsService {
+  constructor() {
+    this.settingsSnapshotCache = {
+      expiresAt: 0,
+      snapshot: null,
+      inFlight: null
+    };
+    this.handBrakePresetCache = {
+      expiresAt: 0,
+      cacheKey: null,
+      payload: null,
+      inFlight: null
+    };
+  }
+
+  buildSettingsSnapshot(flat = []) {
+    const list = Array.isArray(flat) ? flat : [];
+    const map = {};
+    const byCategory = new Map();
+
+    for (const item of list) {
+      map[item.key] = item.value;
+      if (!byCategory.has(item.category)) {
+        byCategory.set(item.category, []);
+      }
+      byCategory.get(item.category).push(item);
+    }
+
+    return {
+      flat: list,
+      map,
+      categorized: Array.from(byCategory.entries()).map(([category, settings]) => ({
+        category,
+        settings
+      }))
+    };
+  }
+
+  invalidateHandBrakePresetCache() {
+    this.handBrakePresetCache = {
+      expiresAt: 0,
+      cacheKey: null,
+      payload: null,
+      inFlight: null
+    };
+  }
+
+  invalidateSettingsCache(changedKeys = []) {
+    this.settingsSnapshotCache = {
+      expiresAt: 0,
+      snapshot: null,
+      inFlight: null
+    };
+    const normalizedKeys = Array.isArray(changedKeys)
+      ? changedKeys.map((key) => normalizeSettingKey(key)).filter(Boolean)
+      : [];
+    const shouldInvalidatePresets = normalizedKeys.some((key) => HANDBRAKE_PRESET_RELEVANT_SETTING_KEYS.has(key));
+    if (shouldInvalidatePresets) {
+      this.invalidateHandBrakePresetCache();
+    }
+  }
+
+  buildHandBrakePresetCacheKey(map = {}) {
+    const source = map && typeof map === 'object' ? map : {};
+    return JSON.stringify({
+      cmd: String(source.handbrake_command || 'HandBrakeCLI').trim(),
+      bluray: String(source.handbrake_preset_bluray || '').trim(),
+      dvd: String(source.handbrake_preset_dvd || '').trim(),
+      fallback: String(source.handbrake_preset || '').trim()
+    });
+  }
+
+  async getSettingsSnapshot(options = {}) {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const now = Date.now();
+
+    if (!forceRefresh && this.settingsSnapshotCache.snapshot && this.settingsSnapshotCache.expiresAt > now) {
+      return this.settingsSnapshotCache.snapshot;
+    }
+    if (!forceRefresh && this.settingsSnapshotCache.inFlight) {
+      return this.settingsSnapshotCache.inFlight;
+    }
+
+    let loadPromise = null;
+    loadPromise = (async () => {
+      const flat = await this.fetchFlatSettingsFromDb();
+      const snapshot = this.buildSettingsSnapshot(flat);
+      this.settingsSnapshotCache.snapshot = snapshot;
+      this.settingsSnapshotCache.expiresAt = Date.now() + SETTINGS_CACHE_TTL_MS;
+      return snapshot;
+    })().finally(() => {
+      if (this.settingsSnapshotCache.inFlight === loadPromise) {
+        this.settingsSnapshotCache.inFlight = null;
+      }
+    });
+    this.settingsSnapshotCache.inFlight = loadPromise;
+    return loadPromise;
+  }
+
   async getSchemaRows() {
     const db = await getDb();
     return db.all('SELECT * FROM settings_schema ORDER BY category ASC, order_index ASC');
   }
 
-  async getSettingsMap() {
-    const rows = await this.getFlatSettings();
-    const map = {};
-
-    for (const row of rows) {
-      map[row.key] = row.value;
-    }
-
-    return map;
+  async getSettingsMap(options = {}) {
+    const snapshot = await this.getSettingsSnapshot(options);
+    return { ...(snapshot?.map || {}) };
   }
 
   normalizeMediaProfile(value) {
@@ -530,7 +716,7 @@ class SettingsService {
     return this.resolveEffectiveToolSettings(map, mediaProfile);
   }
 
-  async getFlatSettings() {
+  async fetchFlatSettingsFromDb() {
     const db = await getDb();
     const rows = await db.all(
       `
@@ -567,21 +753,14 @@ class SettingsService {
     }));
   }
 
-  async getCategorizedSettings() {
-    const flat = await this.getFlatSettings();
-    const byCategory = new Map();
+  async getFlatSettings(options = {}) {
+    const snapshot = await this.getSettingsSnapshot(options);
+    return Array.isArray(snapshot?.flat) ? [...snapshot.flat] : [];
+  }
 
-    for (const item of flat) {
-      if (!byCategory.has(item.category)) {
-        byCategory.set(item.category, []);
-      }
-      byCategory.get(item.category).push(item);
-    }
-
-    return Array.from(byCategory.entries()).map(([category, settings]) => ({
-      category,
-      settings
-    }));
+  async getCategorizedSettings(options = {}) {
+    const snapshot = await this.getSettingsSnapshot(options);
+    return Array.isArray(snapshot?.categorized) ? [...snapshot.categorized] : [];
   }
 
   async setSettingValue(key, rawValue) {
@@ -619,6 +798,7 @@ class SettingsService {
     if (String(key || '').trim().toLowerCase() === LOG_DIR_SETTING_KEY) {
       applyRuntimeLogDirSetting(result.normalized);
     }
+    this.invalidateSettingsCache([key]);
 
     return {
       key,
@@ -702,6 +882,7 @@ class SettingsService {
       applyRuntimeLogDirSetting(logDirChange.value);
     }
 
+    this.invalidateSettingsCache(normalizedEntries.map((item) => item.key));
     logger.info('settings:bulk-updated', { count: normalizedEntries.length });
     return normalizedEntries.map((item) => ({
       key: item.key,
@@ -1141,8 +1322,7 @@ class SettingsService {
     return `disc:${map.makemkv_source_index ?? 0}`;
   }
 
-  async getHandBrakePresetOptions() {
-    const map = await this.getSettingsMap();
+  async loadHandBrakePresetOptionsFromCli(map = {}) {
     const configuredPresets = uniqueOrderedValues([
       map.handbrake_preset_bluray,
       map.handbrake_preset_dvd,
@@ -1156,21 +1336,20 @@ class SettingsService {
     const args = [...baseArgs, '-z'];
 
     try {
-      const result = spawnSync(cmd, args, {
-        encoding: 'utf-8',
+      const result = await runCommandCapture(cmd, args, {
         timeout: HANDBRAKE_PRESET_LIST_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024
       });
 
-      if (result.error) {
+      if (result.timedOut) {
         return {
           source: 'fallback',
-          message: `Preset-Liste konnte nicht geladen werden: ${result.error.message}`,
+          message: 'Preset-Liste konnte nicht geladen werden (Timeout).',
           options: fallbackOptions
         };
       }
 
-      if (result.status !== 0) {
+      if (Number(result.status) !== 0) {
         const stderr = String(result.stderr || '').trim();
         const stdout = String(result.stdout || '').trim();
         const detail = (stderr || stdout || `exit=${result.status}`).slice(0, 280);
@@ -1225,6 +1404,65 @@ class SettingsService {
         options: fallbackOptions
       };
     }
+  }
+
+  async refreshHandBrakePresetCache(map = null, cacheKey = null) {
+    const resolvedMap = map && typeof map === 'object'
+      ? map
+      : await this.getSettingsMap();
+    const resolvedCacheKey = String(cacheKey || this.buildHandBrakePresetCacheKey(resolvedMap));
+    this.handBrakePresetCache.cacheKey = resolvedCacheKey;
+
+    let loadPromise = null;
+    loadPromise = this.loadHandBrakePresetOptionsFromCli(resolvedMap)
+      .then((payload) => {
+        this.handBrakePresetCache.payload = payload;
+        this.handBrakePresetCache.cacheKey = resolvedCacheKey;
+        this.handBrakePresetCache.expiresAt = Date.now() + HANDBRAKE_PRESET_CACHE_TTL_MS;
+        return payload;
+      })
+      .finally(() => {
+        if (this.handBrakePresetCache.inFlight === loadPromise) {
+          this.handBrakePresetCache.inFlight = null;
+        }
+      });
+    this.handBrakePresetCache.inFlight = loadPromise;
+    return loadPromise;
+  }
+
+  async getHandBrakePresetOptions(options = {}) {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const map = options?.settingsMap && typeof options.settingsMap === 'object'
+      ? options.settingsMap
+      : await this.getSettingsMap();
+    const cacheKey = this.buildHandBrakePresetCacheKey(map);
+    const now = Date.now();
+
+    if (
+      !forceRefresh
+      && this.handBrakePresetCache.payload
+      && this.handBrakePresetCache.cacheKey === cacheKey
+      && this.handBrakePresetCache.expiresAt > now
+    ) {
+      return this.handBrakePresetCache.payload;
+    }
+
+    if (
+      !forceRefresh
+      && this.handBrakePresetCache.payload
+      && this.handBrakePresetCache.cacheKey === cacheKey
+    ) {
+      if (!this.handBrakePresetCache.inFlight) {
+        void this.refreshHandBrakePresetCache(map, cacheKey);
+      }
+      return this.handBrakePresetCache.payload;
+    }
+
+    if (this.handBrakePresetCache.inFlight && this.handBrakePresetCache.cacheKey === cacheKey && !forceRefresh) {
+      return this.handBrakePresetCache.inFlight;
+    }
+
+    return this.refreshHandBrakePresetCache(map, cacheKey);
   }
 }
 

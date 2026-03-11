@@ -98,6 +98,46 @@ function normalizeChainId(value) {
   return Math.trunc(parsed);
 }
 
+function normalizeMediaProfile(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) {
+    return null;
+  }
+  if (['bluray', 'blu-ray', 'blu_ray', 'bd', 'bdmv', 'bdrom', 'bd-rom', 'bd-r', 'bd-re'].includes(raw)) {
+    return 'bluray';
+  }
+  if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
+    return 'dvd';
+  }
+  if (['other', 'sonstiges', 'unknown'].includes(raw)) {
+    return 'other';
+  }
+  return null;
+}
+
+function resolvePipelineMediaProfile(pipeline, mediaInfoReview) {
+  const context = pipeline?.context && typeof pipeline.context === 'object' ? pipeline.context : {};
+  const device = context?.device && typeof context.device === 'object' ? context.device : {};
+  const review = mediaInfoReview && typeof mediaInfoReview === 'object' ? mediaInfoReview : {};
+  const candidates = [
+    context?.mediaProfile,
+    context?.media_profile,
+    review?.mediaProfile,
+    review?.media_profile,
+    device?.mediaProfile,
+    device?.media_profile,
+    device?.profile,
+    device?.type
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeMediaProfile(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
 function isBurnedSubtitleTrack(track) {
   const flags = Array.isArray(track?.subtitlePreviewFlags)
     ? track.subtitlePreviewFlags
@@ -115,6 +155,7 @@ function isBurnedSubtitleTrack(track) {
 function buildDefaultTrackSelection(review) {
   const titles = Array.isArray(review?.titles) ? review.titles : [];
   const selection = {};
+  const reviewEncodeInputTitleId = normalizeTitleId(review?.encodeInputTitleId);
 
   for (const title of titles) {
     const titleId = normalizeTitleId(title?.id);
@@ -122,15 +163,27 @@ function buildDefaultTrackSelection(review) {
       continue;
     }
 
+    const audioTracks = Array.isArray(title?.audioTracks) ? title.audioTracks : [];
+    const subtitleTracks = Array.isArray(title?.subtitleTracks) ? title.subtitleTracks : [];
+    const isEncodeInputTitle = Boolean(
+      title?.selectedForEncode
+      || title?.encodeInput
+      || (reviewEncodeInputTitleId && reviewEncodeInputTitleId === titleId)
+    );
+    const audioSelectionSource = isEncodeInputTitle
+      ? audioTracks.filter((track) => Boolean(track?.selectedForEncode))
+      : audioTracks.filter((track) => Boolean(track?.selectedByRule));
+    const subtitleSelectionSource = isEncodeInputTitle
+      ? subtitleTracks.filter((track) => Boolean(track?.selectedForEncode))
+      : subtitleTracks.filter((track) => Boolean(track?.selectedByRule));
+
     selection[titleId] = {
       audioTrackIds: normalizeTrackIdList(
-        (Array.isArray(title?.audioTracks) ? title.audioTracks : [])
-          .filter((track) => Boolean(track?.selectedByRule))
-          .map((track) => track?.id)
+        audioSelectionSource.map((track) => track?.id)
       ),
       subtitleTrackIds: normalizeTrackIdList(
-        (Array.isArray(title?.subtitleTracks) ? title.subtitleTracks : [])
-          .filter((track) => Boolean(track?.selectedByRule) && !isBurnedSubtitleTrack(track))
+        subtitleSelectionSource
+          .filter((track) => !isBurnedSubtitleTrack(track))
           .map((track) => track?.id)
       )
     };
@@ -235,10 +288,9 @@ export default function PipelineStatusCard({
   const mediaInfoReview = pipeline?.context?.mediaInfoReview || null;
   const playlistAnalysis = pipeline?.context?.playlistAnalysis || null;
   const encodeInputPath = pipeline?.context?.inputPath || mediaInfoReview?.encodeInputPath || null;
-  const reviewConfirmed = Boolean(pipeline?.context?.reviewConfirmed || mediaInfoReview?.reviewConfirmed);
   const reviewMode = String(mediaInfoReview?.mode || '').trim().toLowerCase();
   const isPreRipReview = reviewMode === 'pre_rip' || Boolean(mediaInfoReview?.preRip);
-  const jobMediaProfile = String(pipeline?.context?.mediaProfile || '').trim().toLowerCase() || null;
+  const jobMediaProfile = resolvePipelineMediaProfile(pipeline, mediaInfoReview);
   const [selectedEncodeTitleId, setSelectedEncodeTitleId] = useState(null);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState(null);
   const [trackSelectionByTitle, setTrackSelectionByTitle] = useState({});
@@ -319,8 +371,16 @@ export default function PipelineStatusCard({
       ...normalizeScriptIdList(mediaInfoReview?.postEncodeScriptIds || []).map((id) => ({ type: 'script', id })),
       ...normChain(mediaInfoReview?.postEncodeChainIds).map((id) => ({ type: 'chain', id }))
     ]);
-    setSelectedUserPresetId(null);
-  }, [mediaInfoReview?.encodeInputTitleId, mediaInfoReview?.generatedAt, retryJobId]);
+    const userPresetId = Number(mediaInfoReview?.userPreset?.id);
+    setSelectedUserPresetId(Number.isFinite(userPresetId) && userPresetId > 0 ? Math.trunc(userPresetId) : null);
+  }, [
+    mediaInfoReview?.encodeInputTitleId,
+    mediaInfoReview?.generatedAt,
+    mediaInfoReview?.reviewConfirmedAt,
+    mediaInfoReview?.prefilledFromPreviousRunAt,
+    mediaInfoReview?.userPreset?.id,
+    retryJobId
+  ]);
 
   useEffect(() => {
     const currentTitleId = normalizeTitleId(selectedEncodeTitleId);
@@ -348,10 +408,11 @@ export default function PipelineStatusCard({
 
   // Filter user presets by job media profile ('all' presets always shown)
   const filteredUserPresets = (Array.isArray(userPresets) ? userPresets : []).filter((p) => {
+    const presetMediaType = normalizeMediaProfile(p?.mediaType) || 'all';
     if (!jobMediaProfile) {
       return true;
     }
-    return p.mediaType === 'all' || p.mediaType === jobMediaProfile;
+    return presetMediaType === 'all' || presetMediaType === jobMediaProfile;
   });
   const canStartReadyJob = isPreRipReview
     ? Boolean(retryJobId)
@@ -592,12 +653,6 @@ export default function PipelineStatusCard({
                 icon="pi pi-play"
                 severity="success"
                 onClick={async () => {
-                  const requiresAutoConfirm = !reviewConfirmed;
-                  if (!requiresAutoConfirm) {
-                    await onStart(retryJobId);
-                    return;
-                  }
-
                   const {
                     encodeTitleId,
                     selectedTrackSelection,

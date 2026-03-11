@@ -7,6 +7,7 @@ const historyService = require('./historyService');
 const omdbService = require('./omdbService');
 const scriptService = require('./scriptService');
 const scriptChainService = require('./scriptChainService');
+const runtimeActivityService = require('./runtimeActivityService');
 const wsService = require('./websocketService');
 const diskDetectionService = require('./diskDetectionService');
 const notificationService = require('./notificationService');
@@ -3061,6 +3062,304 @@ function extractManualSelectionPayloadFromPlan(encodePlan) {
   };
 }
 
+function normalizeChainIdList(rawList) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const seen = new Set();
+  const output = [];
+  for (const item of list) {
+    const value = Number(item);
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    const normalized = Math.trunc(value);
+    const key = String(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function normalizeUserPresetForPlan(rawPreset) {
+  if (!rawPreset || typeof rawPreset !== 'object') {
+    return null;
+  }
+  const rawId = Number(rawPreset.id);
+  const presetId = Number.isFinite(rawId) && rawId > 0 ? Math.trunc(rawId) : null;
+  const name = String(rawPreset.name || '').trim();
+  const handbrakePreset = String(rawPreset.handbrakePreset || '').trim();
+  const extraArgs = String(rawPreset.extraArgs || '').trim();
+  if (!presetId && !name && !handbrakePreset && !extraArgs) {
+    return null;
+  }
+  return {
+    id: presetId,
+    name: name || (presetId ? `Preset #${presetId}` : 'User-Preset'),
+    handbrakePreset: handbrakePreset || null,
+    extraArgs: extraArgs || null
+  };
+}
+
+function buildScriptDescriptorList(scriptIds, sourceScripts = []) {
+  const normalizedIds = normalizeScriptIdList(scriptIds);
+  if (normalizedIds.length === 0) {
+    return [];
+  }
+  const source = Array.isArray(sourceScripts) ? sourceScripts : [];
+  const namesById = new Map(
+    source
+      .map((item) => {
+        const id = Number(item?.id ?? item?.scriptId);
+        const normalizedId = Number.isFinite(id) && id > 0 ? Math.trunc(id) : null;
+        const name = String(item?.name || '').trim();
+        if (!normalizedId || !name) {
+          return null;
+        }
+        return [normalizedId, name];
+      })
+      .filter(Boolean)
+  );
+  return normalizedIds.map((id) => ({
+    id,
+    name: namesById.get(id) || `Skript #${id}`
+  }));
+}
+
+function findSelectedTitleInPlan(encodePlan) {
+  if (!encodePlan || !Array.isArray(encodePlan.titles) || encodePlan.titles.length === 0) {
+    return null;
+  }
+  const preferredTitleId = normalizeReviewTitleId(encodePlan.encodeInputTitleId);
+  if (preferredTitleId) {
+    const byId = encodePlan.titles.find((title) => normalizeReviewTitleId(title?.id) === preferredTitleId) || null;
+    if (byId) {
+      return byId;
+    }
+  }
+  return encodePlan.titles.find((title) => Boolean(title?.selectedForEncode || title?.encodeInput)) || null;
+}
+
+function resolvePrefillEncodeTitleId(reviewPlan, previousPlan) {
+  const reviewTitles = Array.isArray(reviewPlan?.titles) ? reviewPlan.titles : [];
+  if (reviewTitles.length === 0) {
+    return null;
+  }
+
+  const previousSelectedTitle = findSelectedTitleInPlan(previousPlan);
+  if (!previousSelectedTitle) {
+    return null;
+  }
+
+  const previousPlaylistId = normalizePlaylistId(
+    previousSelectedTitle?.playlistId
+    || previousPlan?.selectedPlaylistId
+    || null
+  );
+  if (previousPlaylistId) {
+    const byPlaylist = reviewTitles.find((title) => normalizePlaylistId(title?.playlistId) === previousPlaylistId) || null;
+    const id = normalizeReviewTitleId(byPlaylist?.id);
+    if (id) {
+      return id;
+    }
+  }
+
+  const previousMakemkvTitleId = normalizeNonNegativeInteger(
+    previousSelectedTitle?.makemkvTitleId
+    ?? previousPlan?.selectedMakemkvTitleId
+    ?? null
+  );
+  if (previousMakemkvTitleId !== null) {
+    const byMakemkvTitleId = reviewTitles.find((title) => (
+      normalizeNonNegativeInteger(title?.makemkvTitleId) === previousMakemkvTitleId
+    )) || null;
+    const id = normalizeReviewTitleId(byMakemkvTitleId?.id);
+    if (id) {
+      return id;
+    }
+  }
+
+  const previousFileName = path.basename(
+    String(previousSelectedTitle?.filePath || previousSelectedTitle?.fileName || '').trim()
+  ).toLowerCase();
+  if (previousFileName) {
+    const byFileName = reviewTitles.find((title) => {
+      const candidate = path.basename(
+        String(title?.filePath || title?.fileName || '').trim()
+      ).toLowerCase();
+      return candidate && candidate === previousFileName;
+    }) || null;
+    const id = normalizeReviewTitleId(byFileName?.id);
+    if (id) {
+      return id;
+    }
+  }
+
+  const previousTitleId = normalizeReviewTitleId(previousPlan?.encodeInputTitleId);
+  if (!previousTitleId) {
+    return null;
+  }
+  const fallback = reviewTitles.find((title) => normalizeReviewTitleId(title?.id) === previousTitleId) || null;
+  return normalizeReviewTitleId(fallback?.id);
+}
+
+function mapSelectedSourceTrackIdsToTargetTrackIds(targetTracks, sourceTrackIds, { excludeBurned = false } = {}) {
+  const tracks = Array.isArray(targetTracks) ? targetTracks : [];
+  const allowedTracks = excludeBurned
+    ? tracks.filter((track) => !isBurnedSubtitleTrack(track))
+    : tracks;
+  const requested = normalizeTrackIdList(sourceTrackIds);
+  if (requested.length === 0 || allowedTracks.length === 0) {
+    return [];
+  }
+
+  const mapped = [];
+  const seen = new Set();
+  for (const sourceTrackId of requested) {
+    const match = allowedTracks.find((track) => {
+      const sourceId = normalizeTrackIdList([track?.sourceTrackId])[0] || null;
+      const reviewId = normalizeTrackIdList([track?.id])[0] || null;
+      return sourceId === sourceTrackId || reviewId === sourceTrackId;
+    }) || null;
+    const targetId = normalizeTrackIdList([match?.id])[0] || null;
+    if (targetId === null) {
+      continue;
+    }
+    const key = String(targetId);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    mapped.push(targetId);
+  }
+  return mapped;
+}
+
+function applyPreviousSelectionDefaultsToReviewPlan(reviewPlan, previousPlan = null) {
+  const hasReviewTitles = reviewPlan && Array.isArray(reviewPlan?.titles) && reviewPlan.titles.length > 0;
+  const hasPreviousTitles = previousPlan && Array.isArray(previousPlan?.titles) && previousPlan.titles.length > 0;
+  if (!hasReviewTitles || !hasPreviousTitles) {
+    return {
+      plan: reviewPlan,
+      applied: false,
+      selectedEncodeTitleId: normalizeReviewTitleId(reviewPlan?.encodeInputTitleId),
+      preEncodeScriptCount: 0,
+      postEncodeScriptCount: 0,
+      preEncodeChainCount: 0,
+      postEncodeChainCount: 0,
+      userPresetApplied: false
+    };
+  }
+
+  let nextPlan = reviewPlan;
+  const prefillTitleId = resolvePrefillEncodeTitleId(nextPlan, previousPlan);
+  let selectedTitleApplied = false;
+  if (prefillTitleId) {
+    try {
+      const remapped = applyEncodeTitleSelectionToPlan(nextPlan, prefillTitleId);
+      nextPlan = remapped.plan;
+      selectedTitleApplied = true;
+    } catch (_error) {
+      // Keep calculated review defaults when title from previous run is no longer available.
+    }
+  }
+
+  const previousSelectedTitle = findSelectedTitleInPlan(previousPlan);
+  const nextSelectedTitle = findSelectedTitleInPlan(nextPlan);
+  let trackSelectionApplied = false;
+  if (previousSelectedTitle && nextSelectedTitle) {
+    const previousAudioSourceIds = normalizeTrackIdList(
+      (Array.isArray(previousSelectedTitle?.audioTracks) ? previousSelectedTitle.audioTracks : [])
+        .filter((track) => Boolean(track?.selectedForEncode))
+        .map((track) => track?.sourceTrackId ?? track?.id)
+    );
+    const previousSubtitleSourceIds = normalizeTrackIdList(
+      (Array.isArray(previousSelectedTitle?.subtitleTracks) ? previousSelectedTitle.subtitleTracks : [])
+        .filter((track) => Boolean(track?.selectedForEncode))
+        .map((track) => track?.sourceTrackId ?? track?.id)
+    );
+
+    const mappedAudioTrackIds = mapSelectedSourceTrackIdsToTargetTrackIds(
+      nextSelectedTitle?.audioTracks,
+      previousAudioSourceIds
+    );
+    const mappedSubtitleTrackIds = mapSelectedSourceTrackIdsToTargetTrackIds(
+      nextSelectedTitle?.subtitleTracks,
+      previousSubtitleSourceIds,
+      { excludeBurned: true }
+    );
+    const fallbackAudioTrackIds = normalizeTrackIdList(
+      (Array.isArray(nextSelectedTitle?.audioTracks) ? nextSelectedTitle.audioTracks : [])
+        .filter((track) => Boolean(track?.selectedByRule))
+        .map((track) => track?.id)
+    );
+    const fallbackSubtitleTrackIds = normalizeTrackIdList(
+      (Array.isArray(nextSelectedTitle?.subtitleTracks) ? nextSelectedTitle.subtitleTracks : [])
+        .filter((track) => Boolean(track?.selectedByRule) && !isBurnedSubtitleTrack(track))
+        .map((track) => track?.id)
+    );
+    const effectiveAudioTrackIds = previousAudioSourceIds.length > 0 && mappedAudioTrackIds.length === 0
+      ? fallbackAudioTrackIds
+      : mappedAudioTrackIds;
+    const effectiveSubtitleTrackIds = previousSubtitleSourceIds.length > 0 && mappedSubtitleTrackIds.length === 0
+      ? fallbackSubtitleTrackIds
+      : mappedSubtitleTrackIds;
+
+    const targetTitleId = normalizeReviewTitleId(nextSelectedTitle?.id || nextPlan?.encodeInputTitleId);
+    if (targetTitleId) {
+      const trackSelectionResult = applyManualTrackSelectionToPlan(nextPlan, {
+        [targetTitleId]: {
+          audioTrackIds: effectiveAudioTrackIds,
+          subtitleTrackIds: effectiveSubtitleTrackIds
+        }
+      });
+      nextPlan = trackSelectionResult.plan;
+      trackSelectionApplied = Boolean(trackSelectionResult.selectionApplied);
+    }
+  }
+
+  const preEncodeScriptIds = normalizeScriptIdList(previousPlan?.preEncodeScriptIds || []);
+  const postEncodeScriptIds = normalizeScriptIdList(previousPlan?.postEncodeScriptIds || []);
+  const preEncodeChainIds = normalizeChainIdList(previousPlan?.preEncodeChainIds || []);
+  const postEncodeChainIds = normalizeChainIdList(previousPlan?.postEncodeChainIds || []);
+  const userPreset = normalizeUserPresetForPlan(previousPlan?.userPreset || null);
+
+  nextPlan = {
+    ...nextPlan,
+    preEncodeScriptIds,
+    postEncodeScriptIds,
+    preEncodeScripts: buildScriptDescriptorList(preEncodeScriptIds, previousPlan?.preEncodeScripts || []),
+    postEncodeScripts: buildScriptDescriptorList(postEncodeScriptIds, previousPlan?.postEncodeScripts || []),
+    preEncodeChainIds,
+    postEncodeChainIds,
+    userPreset,
+    reviewConfirmed: false,
+    reviewConfirmedAt: null,
+    prefilledFromPreviousRun: true,
+    prefilledFromPreviousRunAt: nowIso()
+  };
+
+  const applied = selectedTitleApplied
+    || trackSelectionApplied
+    || preEncodeScriptIds.length > 0
+    || postEncodeScriptIds.length > 0
+    || preEncodeChainIds.length > 0
+    || postEncodeChainIds.length > 0
+    || Boolean(userPreset);
+
+  return {
+    plan: nextPlan,
+    applied,
+    selectedEncodeTitleId: normalizeReviewTitleId(nextPlan?.encodeInputTitleId),
+    preEncodeScriptCount: preEncodeScriptIds.length,
+    postEncodeScriptCount: postEncodeScriptIds.length,
+    preEncodeChainCount: preEncodeChainIds.length,
+    postEncodeChainCount: postEncodeChainIds.length,
+    userPresetApplied: Boolean(userPreset)
+  };
+}
+
 class PipelineService extends EventEmitter {
   constructor() {
     super();
@@ -3415,6 +3714,201 @@ class PipelineService extends EventEmitter {
     return this.queueEntries.findIndex((entry) => Number(entry?.jobId) === Number(jobId));
   }
 
+  normalizeQueueChainIdList(rawList) {
+    const list = Array.isArray(rawList) ? rawList : [];
+    const seen = new Set();
+    const output = [];
+    for (const item of list) {
+      const value = Number(item);
+      if (!Number.isFinite(value) || value <= 0) {
+        continue;
+      }
+      const normalized = Math.trunc(value);
+      const key = String(normalized);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      output.push(normalized);
+    }
+    return output;
+  }
+
+  extractQueueJobPlan(row) {
+    const source = row && typeof row === 'object' ? row : null;
+    if (!source) {
+      return null;
+    }
+    if (source.encodePlan && typeof source.encodePlan === 'object') {
+      return source.encodePlan;
+    }
+    if (source.encode_plan_json) {
+      try {
+        const parsed = JSON.parse(source.encode_plan_json);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch (_) {
+        // ignore parse errors for queue decorations
+      }
+    }
+    return null;
+  }
+
+  async buildQueueJobScriptMeta(rows = []) {
+    const list = Array.isArray(rows) ? rows : [];
+    const byJobId = new Map();
+    const allScriptIds = new Set();
+    const allChainIds = new Set();
+    const scriptNameHints = new Map();
+    const chainNameHints = new Map();
+
+    const addScriptHints = (items) => {
+      for (const item of (Array.isArray(items) ? items : [])) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+        const id = normalizeScriptIdList([item.id ?? item.scriptId])[0] || null;
+        const name = String(item.name || item.scriptName || '').trim();
+        if (!id) {
+          continue;
+        }
+        allScriptIds.add(id);
+        if (name) {
+          scriptNameHints.set(id, name);
+        }
+      }
+    };
+
+    const addChainHints = (items) => {
+      for (const item of (Array.isArray(items) ? items : [])) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+        const id = this.normalizeQueueChainIdList([item.id ?? item.chainId])[0] || null;
+        const name = String(item.name || item.chainName || '').trim();
+        if (!id) {
+          continue;
+        }
+        allChainIds.add(id);
+        if (name) {
+          chainNameHints.set(id, name);
+        }
+      }
+    };
+
+    for (const row of list) {
+      const jobId = this.normalizeQueueJobId(row?.id);
+      if (!jobId) {
+        continue;
+      }
+      const plan = this.extractQueueJobPlan(row);
+      if (!plan) {
+        continue;
+      }
+
+      const preScriptIds = normalizeScriptIdList([
+        ...normalizeScriptIdList(plan?.preEncodeScriptIds || []),
+        ...normalizeScriptIdList((Array.isArray(plan?.preEncodeScripts) ? plan.preEncodeScripts : []).map((item) => item?.id ?? item?.scriptId))
+      ]);
+      const postScriptIds = normalizeScriptIdList([
+        ...normalizeScriptIdList(plan?.postEncodeScriptIds || []),
+        ...normalizeScriptIdList((Array.isArray(plan?.postEncodeScripts) ? plan.postEncodeScripts : []).map((item) => item?.id ?? item?.scriptId))
+      ]);
+      const preChainIds = this.normalizeQueueChainIdList([
+        ...this.normalizeQueueChainIdList(plan?.preEncodeChainIds || []),
+        ...this.normalizeQueueChainIdList((Array.isArray(plan?.preEncodeChains) ? plan.preEncodeChains : []).map((item) => item?.id ?? item?.chainId))
+      ]);
+      const postChainIds = this.normalizeQueueChainIdList([
+        ...this.normalizeQueueChainIdList(plan?.postEncodeChainIds || []),
+        ...this.normalizeQueueChainIdList((Array.isArray(plan?.postEncodeChains) ? plan.postEncodeChains : []).map((item) => item?.id ?? item?.chainId))
+      ]);
+
+      addScriptHints(plan?.preEncodeScripts);
+      addScriptHints(plan?.postEncodeScripts);
+      addChainHints(plan?.preEncodeChains);
+      addChainHints(plan?.postEncodeChains);
+
+      for (const id of preScriptIds) allScriptIds.add(id);
+      for (const id of postScriptIds) allScriptIds.add(id);
+      for (const id of preChainIds) allChainIds.add(id);
+      for (const id of postChainIds) allChainIds.add(id);
+
+      byJobId.set(jobId, {
+        preScriptIds,
+        postScriptIds,
+        preChainIds,
+        postChainIds
+      });
+    }
+
+    if (byJobId.size === 0) {
+      return new Map();
+    }
+
+    const scriptNameById = new Map();
+    const chainNameById = new Map();
+    for (const [id, name] of scriptNameHints.entries()) {
+      scriptNameById.set(id, name);
+    }
+    for (const [id, name] of chainNameHints.entries()) {
+      chainNameById.set(id, name);
+    }
+
+    if (allScriptIds.size > 0) {
+      const scriptService = require('./scriptService');
+      try {
+        const scripts = await scriptService.resolveScriptsByIds(Array.from(allScriptIds), { strict: false });
+        for (const script of scripts) {
+          const id = Number(script?.id);
+          const name = String(script?.name || '').trim();
+          if (Number.isFinite(id) && id > 0 && name) {
+            scriptNameById.set(id, name);
+          }
+        }
+      } catch (error) {
+        logger.warn('queue:script-summary:resolve-failed', { error: errorToMeta(error) });
+      }
+    }
+
+    if (allChainIds.size > 0) {
+      const scriptChainService = require('./scriptChainService');
+      try {
+        const chains = await scriptChainService.getChainsByIds(Array.from(allChainIds));
+        for (const chain of chains) {
+          const id = Number(chain?.id);
+          const name = String(chain?.name || '').trim();
+          if (Number.isFinite(id) && id > 0 && name) {
+            chainNameById.set(id, name);
+          }
+        }
+      } catch (error) {
+        logger.warn('queue:chain-summary:resolve-failed', { error: errorToMeta(error) });
+      }
+    }
+
+    const output = new Map();
+    for (const [jobId, data] of byJobId.entries()) {
+      const preScripts = data.preScriptIds.map((id) => scriptNameById.get(id) || `Skript #${id}`);
+      const postScripts = data.postScriptIds.map((id) => scriptNameById.get(id) || `Skript #${id}`);
+      const preChains = data.preChainIds.map((id) => chainNameById.get(id) || `Kette #${id}`);
+      const postChains = data.postChainIds.map((id) => chainNameById.get(id) || `Kette #${id}`);
+      const hasScripts = preScripts.length > 0 || postScripts.length > 0;
+      const hasChains = preChains.length > 0 || postChains.length > 0;
+      output.set(jobId, {
+        hasScripts,
+        hasChains,
+        summary: {
+          preScripts,
+          postScripts,
+          preChains,
+          postChains
+        }
+      });
+    }
+    return output;
+  }
+
   async getQueueSnapshot() {
     const maxParallelJobs = await this.getMaxParallelJobs();
     const runningJobs = await historyService.getRunningJobs();
@@ -3427,6 +3921,13 @@ class PipelineService extends EventEmitter {
       ? await historyService.getJobsByIds(queuedJobIds)
       : [];
     const queuedById = new Map(queuedRows.map((row) => [Number(row.id), row]));
+    const scriptMetaByJobId = await this.buildQueueJobScriptMeta(
+      Array.from(
+        new Map(
+          [...runningJobs, ...queuedRows].map((row) => [Number(row?.id), row])
+        ).values()
+      )
+    );
 
     const queue = {
       maxParallelJobs,
@@ -3435,7 +3936,10 @@ class PipelineService extends EventEmitter {
         jobId: Number(job.id),
         title: job.title || job.detected_title || `Job #${job.id}`,
         status: job.status,
-        lastState: job.last_state || null
+        lastState: job.last_state || null,
+        hasScripts: Boolean(scriptMetaByJobId.get(Number(job.id))?.hasScripts),
+        hasChains: Boolean(scriptMetaByJobId.get(Number(job.id))?.hasChains),
+        scriptSummary: scriptMetaByJobId.get(Number(job.id))?.summary || null
       })),
       queuedJobs: this.queueEntries.map((entry, index) => {
         const entryType = entry.type || 'job';
@@ -3458,21 +3962,7 @@ class PipelineService extends EventEmitter {
 
         // type === 'job'
         const row = queuedById.get(Number(entry.jobId));
-        let hasScripts = false;
-        let hasChains = false;
-        if (row?.encode_plan_json) {
-          try {
-            const plan = JSON.parse(row.encode_plan_json);
-            hasScripts = Boolean(
-              (Array.isArray(plan?.preEncodeScriptIds) && plan.preEncodeScriptIds.length > 0)
-              || (Array.isArray(plan?.postEncodeScriptIds) && plan.postEncodeScriptIds.length > 0)
-            );
-            hasChains = Boolean(
-              (Array.isArray(plan?.preEncodeChainIds) && plan.preEncodeChainIds.length > 0)
-              || (Array.isArray(plan?.postEncodeChainIds) && plan.postEncodeChainIds.length > 0)
-            );
-          } catch (_) { /* ignore */ }
-        }
+        const scriptMeta = scriptMetaByJobId.get(Number(entry.jobId)) || null;
         return {
           ...base,
           jobId: Number(entry.jobId),
@@ -3481,8 +3971,9 @@ class PipelineService extends EventEmitter {
           title: row?.title || row?.detected_title || `Job #${entry.jobId}`,
           status: row?.status || null,
           lastState: row?.last_state || null,
-          hasScripts,
-          hasChains
+          hasScripts: Boolean(scriptMeta?.hasScripts),
+          hasChains: Boolean(scriptMeta?.hasChains),
+          scriptSummary: scriptMeta?.summary || null
         };
       }),
       queuedCount: this.queueEntries.length,
@@ -3684,19 +4175,59 @@ class PipelineService extends EventEmitter {
         logger.warn('queue:script:not-found', { scriptId: entry.scriptId });
         return;
       }
+      const activityId = runtimeActivityService.startActivity('script', {
+        name: script.name,
+        source: 'queue',
+        scriptId: script.id,
+        currentStep: 'Queue-Ausfuehrung'
+      });
       let prepared = null;
       try {
         prepared = await scriptService.createExecutableScriptFile(script, { source: 'queue', scriptId: script.id, scriptName: script.name });
         const { spawn } = require('child_process');
         await new Promise((resolve, reject) => {
-          const child = spawn(prepared.cmd, prepared.args, { env: process.env, stdio: 'ignore' });
+          const child = spawn(prepared.cmd, prepared.args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+          let stdout = '';
+          let stderr = '';
+          child.stdout?.on('data', (chunk) => {
+            stdout += String(chunk);
+            if (stdout.length > 12000) {
+              stdout = `${stdout.slice(0, 12000)}\n...[truncated]`;
+            }
+          });
+          child.stderr?.on('data', (chunk) => {
+            stderr += String(chunk);
+            if (stderr.length > 12000) {
+              stderr = `${stderr.slice(0, 12000)}\n...[truncated]`;
+            }
+          });
           child.on('error', reject);
           child.on('close', (code) => {
             logger.info('queue:script:done', { scriptId: script.id, exitCode: code });
+            const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+            const success = Number(code) === 0;
+            runtimeActivityService.completeActivity(activityId, {
+              status: success ? 'success' : 'error',
+              success,
+              outcome: success ? 'success' : 'error',
+              exitCode: Number.isFinite(Number(code)) ? Number(code) : null,
+              message: success ? 'Queue-Skript abgeschlossen' : `Queue-Skript fehlgeschlagen (Exit ${code})`,
+              output: output || null,
+              stdout: stdout || null,
+              stderr: stderr || null,
+              errorMessage: success ? null : `Queue-Skript fehlgeschlagen (Exit ${code})`
+            });
             resolve();
           });
         });
       } catch (err) {
+        runtimeActivityService.completeActivity(activityId, {
+          status: 'error',
+          success: false,
+          outcome: 'error',
+          message: err?.message || 'Queue-Skript Fehler',
+          errorMessage: err?.message || 'Queue-Skript Fehler'
+        });
         logger.error('queue:script:error', { scriptId: entry.scriptId, error: errorToMeta(err) });
       } finally {
         if (prepared?.cleanup) await prepared.cleanup();
@@ -5465,6 +5996,14 @@ class PipelineService extends EventEmitter {
       ]
     };
 
+    const reviewPrefillResult = applyPreviousSelectionDefaultsToReviewPlan(
+      review,
+      options?.previousEncodePlan && typeof options.previousEncodePlan === 'object'
+        ? options.previousEncodePlan
+        : null
+    );
+    review = reviewPrefillResult.plan;
+
     if (!Array.isArray(review.titles) || review.titles.length === 0) {
       const error = new Error('Titel-/Spurprüfung aus RAW lieferte keine Titel.');
       error.statusCode = 400;
@@ -5495,6 +6034,16 @@ class PipelineService extends EventEmitter {
       'SYSTEM',
       `Titel-/Spurprüfung aus RAW abgeschlossen (MakeMKV Titel #${selectedTitleForReview}): ${review.titles.length} Titel, Vorauswahl=${review.encodeInputTitleId ? `Titel #${review.encodeInputTitleId}` : 'keine'}.`
     );
+    if (reviewPrefillResult.applied) {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Vorherige Encode-Auswahl als Standard übernommen: Titel #${reviewPrefillResult.selectedEncodeTitleId || '-'}, `
+        + `Pre-Skripte=${reviewPrefillResult.preEncodeScriptCount}, Pre-Ketten=${reviewPrefillResult.preEncodeChainCount}, `
+        + `Post-Skripte=${reviewPrefillResult.postEncodeScriptCount}, Post-Ketten=${reviewPrefillResult.postEncodeChainCount}, `
+        + `User-Preset=${reviewPrefillResult.userPresetApplied ? 'ja' : 'nein'}.`
+      );
+    }
     if (playlistDecisionRequired) {
       const playlistFiles = playlistCandidates.map((item) => item.playlistFile).filter(Boolean);
       const recommendationFile = toPlaylistFile(playlistAnalysis?.recommendation?.playlistId);
@@ -6139,11 +6688,6 @@ class PipelineService extends EventEmitter {
       strict: true
     });
 
-    const normalizeChainIdList = (raw) => {
-      const list = Array.isArray(raw) ? raw : [];
-      return list.map(Number).filter((id) => Number.isFinite(id) && id > 0).map(Math.trunc);
-    };
-
     const hasExplicitPreScriptSelection = options?.selectedPreEncodeScriptIds !== undefined;
     const selectedPreEncodeScriptIds = hasExplicitPreScriptSelection
       ? normalizeScriptIdList(options?.selectedPreEncodeScriptIds || [])
@@ -6169,19 +6713,24 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    // Resolve user preset if provided
-    const rawUserPresetId = options?.selectedUserPresetId ?? null;
-    const userPresetId = rawUserPresetId !== null && rawUserPresetId !== undefined
-      ? Number(rawUserPresetId)
-      : null;
+    // Resolve user preset: explicit payload wins, otherwise preserve currently selected preset from encode plan.
+    const hasExplicitUserPresetSelection = Object.prototype.hasOwnProperty.call(options || {}, 'selectedUserPresetId');
     let resolvedUserPreset = null;
-    if (Number.isFinite(userPresetId) && userPresetId > 0) {
-      resolvedUserPreset = await userPresetService.getPresetById(userPresetId);
-      if (!resolvedUserPreset) {
-        const error = new Error(`User-Preset ${userPresetId} nicht gefunden.`);
-        error.statusCode = 404;
-        throw error;
+    if (hasExplicitUserPresetSelection) {
+      const rawUserPresetId = options?.selectedUserPresetId;
+      const userPresetId = rawUserPresetId !== null && rawUserPresetId !== undefined && String(rawUserPresetId).trim() !== ''
+        ? Number(rawUserPresetId)
+        : null;
+      if (Number.isFinite(userPresetId) && userPresetId > 0) {
+        resolvedUserPreset = await userPresetService.getPresetById(userPresetId);
+        if (!resolvedUserPreset) {
+          const error = new Error(`User-Preset ${userPresetId} nicht gefunden.`);
+          error.statusCode = 404;
+          throw error;
+        }
       }
+    } else {
+      resolvedUserPreset = normalizeUserPresetForPlan(encodePlan?.userPreset || null);
     }
 
     const confirmedPlan = {
@@ -6200,15 +6749,11 @@ class PipelineService extends EventEmitter {
       preEncodeChainIds: selectedPreEncodeChainIds,
       reviewConfirmed: true,
       reviewConfirmedAt: nowIso(),
-      userPreset: resolvedUserPreset
-        ? {
-          id: resolvedUserPreset.id,
-          name: resolvedUserPreset.name,
-          handbrakePreset: resolvedUserPreset.handbrakePreset,
-          extraArgs: resolvedUserPreset.extraArgs
-        }
-        : null
+      userPreset: normalizeUserPresetForPlan(resolvedUserPreset)
     };
+    const readyMediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan: confirmedPlan
+    });
     const inputPath = isPreRipMode
       ? null
       : (job.encode_input_path || confirmedPlan.encodeInputPath || this.snapshot.context?.inputPath || null);
@@ -6231,7 +6776,9 @@ class PipelineService extends EventEmitter {
       + ` Pre-Encode-Ketten: ${selectedPreEncodeChainIds.length > 0 ? selectedPreEncodeChainIds.join(',') : 'none'}.`
       + ` Post-Encode-Scripte: ${selectedPostEncodeScripts.length > 0 ? selectedPostEncodeScripts.map((item) => item.name).join(' -> ') : 'none'}.`
       + ` Post-Encode-Ketten: ${selectedPostEncodeChainIds.length > 0 ? selectedPostEncodeChainIds.join(',') : 'none'}.`
-      + (resolvedUserPreset ? ` User-Preset: "${resolvedUserPreset.name}" (ID ${resolvedUserPreset.id}).` : '')
+      + (resolvedUserPreset
+        ? ` User-Preset: "${resolvedUserPreset.name}"${resolvedUserPreset.id ? ` (ID ${resolvedUserPreset.id})` : ''}.`
+        : '')
     );
 
     if (!skipPipelineStateUpdate) {
@@ -6251,6 +6798,7 @@ class PipelineService extends EventEmitter {
           jobId,
           inputPath,
           hasEncodableTitle,
+          mediaProfile: readyMediaProfile,
           mediaInfoReview: confirmedPlan,
           reviewConfirmed: true
         }
@@ -6666,7 +7214,7 @@ class PipelineService extends EventEmitter {
       selectedMakemkvTitleId: preferredEncodeTitleId
     });
 
-    const enrichedReview = {
+    let enrichedReview = {
       ...review,
       mode: options.mode || 'rip',
       mediaProfile,
@@ -6676,6 +7224,13 @@ class PipelineService extends EventEmitter {
       processedFiles: mediaFiles.length,
       totalFiles: mediaFiles.length
     };
+    const reviewPrefillResult = applyPreviousSelectionDefaultsToReviewPlan(
+      enrichedReview,
+      options?.previousEncodePlan && typeof options.previousEncodePlan === 'object'
+        ? options.previousEncodePlan
+        : null
+    );
+    enrichedReview = reviewPrefillResult.plan;
     const hasEncodableTitle = Boolean(enrichedReview.encodeInputPath);
     const titleSelectionRequired = Boolean(enrichedReview.titleSelectionRequired);
     if (!hasEncodableTitle && !titleSelectionRequired) {
@@ -6703,6 +7258,16 @@ class PipelineService extends EventEmitter {
       'SYSTEM',
       `Mediainfo-Prüfung abgeschlossen: ${enrichedReview.titles.length} Titel, Input=${enrichedReview.encodeInputPath || (titleSelectionRequired ? 'Titelauswahl erforderlich' : 'kein passender Titel')}`
     );
+    if (reviewPrefillResult.applied) {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Vorherige Encode-Auswahl als Standard übernommen: Titel #${reviewPrefillResult.selectedEncodeTitleId || '-'}, `
+        + `Pre-Skripte=${reviewPrefillResult.preEncodeScriptCount}, Pre-Ketten=${reviewPrefillResult.preEncodeChainCount}, `
+        + `Post-Skripte=${reviewPrefillResult.postEncodeScriptCount}, Post-Ketten=${reviewPrefillResult.postEncodeChainCount}, `
+        + `User-Preset=${reviewPrefillResult.userPresetApplied ? 'ja' : 'nein'}.`
+      );
+    }
 
     if (this.isPrimaryJob(jobId)) {
       await this.setState('READY_TO_ENCODE', {
@@ -6755,6 +7320,7 @@ class PipelineService extends EventEmitter {
       try {
         const chainResult = await scriptChainService.executeChain(chainId, {
           ...context,
+          jobId,
           source: phase === 'pre' ? 'pre_encode_chain' : 'post_encode_chain'
         }, {
           appendLog: (src, msg) => historyService.appendLog(jobId, src, msg)
@@ -6823,6 +7389,13 @@ class PipelineService extends EventEmitter {
         break;
       }
       await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript startet (${index + 1}/${scriptIds.length}): ${script.name}`);
+      const activityId = runtimeActivityService.startActivity('script', {
+        name: script.name,
+        source: 'pre_encode',
+        scriptId: script.id,
+        jobId,
+        currentStep: `Pre-Encode ${index + 1}/${scriptIds.length}`
+      });
       let prepared = null;
       try {
         prepared = await scriptService.createExecutableScriptFile(script, {
@@ -6844,11 +7417,33 @@ class PipelineService extends EventEmitter {
         });
         succeeded += 1;
         results.push({ scriptId: script.id, scriptName: script.name, status: 'SUCCESS', runInfo });
+        const runOutput = Array.isArray(runInfo?.highlights) ? runInfo.highlights.join('\n').trim() : '';
+        runtimeActivityService.completeActivity(activityId, {
+          status: 'success',
+          success: true,
+          outcome: 'success',
+          exitCode: Number.isFinite(Number(runInfo?.exitCode)) ? Number(runInfo.exitCode) : null,
+          message: 'Pre-Encode Skript erfolgreich',
+          output: runOutput || null
+        });
         await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript erfolgreich: ${script.name}`);
         if (progressTracker?.onStepComplete) {
           await progressTracker.onStepComplete('pre', 'script', index + 1, scriptIds.length, script.name, true);
         }
       } catch (error) {
+        const runInfo = error?.runInfo && typeof error.runInfo === 'object' ? error.runInfo : null;
+        const runOutput = Array.isArray(runInfo?.highlights) ? runInfo.highlights.join('\n').trim() : '';
+        const runStatus = String(runInfo?.status || '').trim().toUpperCase();
+        const cancelled = runStatus === 'CANCELLED';
+        runtimeActivityService.completeActivity(activityId, {
+          status: 'error',
+          success: false,
+          outcome: cancelled ? 'cancelled' : 'error',
+          cancelled,
+          message: error?.message || 'Pre-Encode Skriptfehler',
+          errorMessage: error?.message || 'Pre-Encode Skriptfehler',
+          output: runOutput || null
+        });
         failed += 1;
         aborted = true;
         results.push({ scriptId: script.id, scriptName: script.name, status: 'ERROR', error: error?.message || 'unknown' });
@@ -6953,6 +7548,13 @@ class PipelineService extends EventEmitter {
         'SYSTEM',
         `Post-Encode Skript startet (${index + 1}/${scriptIds.length}): ${script.name}`
       );
+      const activityId = runtimeActivityService.startActivity('script', {
+        name: script.name,
+        source: 'post_encode',
+        scriptId: script.id,
+        jobId,
+        currentStep: `Post-Encode ${index + 1}/${scriptIds.length}`
+      });
 
       let prepared = null;
       try {
@@ -6981,6 +7583,15 @@ class PipelineService extends EventEmitter {
           status: 'SUCCESS',
           runInfo
         });
+        const runOutput = Array.isArray(runInfo?.highlights) ? runInfo.highlights.join('\n').trim() : '';
+        runtimeActivityService.completeActivity(activityId, {
+          status: 'success',
+          success: true,
+          outcome: 'success',
+          exitCode: Number.isFinite(Number(runInfo?.exitCode)) ? Number(runInfo.exitCode) : null,
+          message: 'Post-Encode Skript erfolgreich',
+          output: runOutput || null
+        });
         await historyService.appendLog(
           jobId,
           'SYSTEM',
@@ -6990,6 +7601,19 @@ class PipelineService extends EventEmitter {
           await progressTracker.onStepComplete('post', 'script', index + 1, scriptIds.length, script.name, true);
         }
       } catch (error) {
+        const runInfo = error?.runInfo && typeof error.runInfo === 'object' ? error.runInfo : null;
+        const runOutput = Array.isArray(runInfo?.highlights) ? runInfo.highlights.join('\n').trim() : '';
+        const runStatus = String(runInfo?.status || '').trim().toUpperCase();
+        const cancelled = runStatus === 'CANCELLED';
+        runtimeActivityService.completeActivity(activityId, {
+          status: 'error',
+          success: false,
+          outcome: cancelled ? 'cancelled' : 'error',
+          cancelled,
+          message: error?.message || 'Post-Encode Skriptfehler',
+          errorMessage: error?.message || 'Post-Encode Skriptfehler',
+          output: runOutput || null
+        });
         failed += 1;
         aborted = true;
         failedScriptId = Number(script.id);
@@ -7942,6 +8566,9 @@ class PipelineService extends EventEmitter {
       imdbId: job.imdb_id || null,
       poster: job.poster_url || null
     };
+    const readyMediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan
+    });
 
     await this.setState('READY_TO_ENCODE', {
       activeJobId: jobId,
@@ -7965,6 +8592,7 @@ class PipelineService extends EventEmitter {
         hasEncodableTitle,
         reviewConfirmed,
         mode,
+        mediaProfile: readyMediaProfile,
         sourceJobId: encodePlan?.sourceJobId || null,
         selectedMetadata,
         mediaInfoReview: encodePlan
@@ -7983,16 +8611,15 @@ class PipelineService extends EventEmitter {
   async restartEncodeWithLastSettings(jobId, options = {}) {
     const immediate = Boolean(options?.immediate);
     if (!immediate) {
-      return this.enqueueOrStartAction(
-        QUEUE_ACTIONS.RESTART_ENCODE,
-        jobId,
-        () => this.restartEncodeWithLastSettings(jobId, { ...options, immediate: true })
-      );
+      // Restart-Encode now prepares an editable READY_TO_ENCODE state first.
+      // No queue slot is needed because encoding is not started automatically here.
+      return this.restartEncodeWithLastSettings(jobId, { ...options, immediate: true });
     }
 
     this.ensureNotBusy('restartEncodeWithLastSettings', jobId);
     logger.info('restartEncodeWithLastSettings:requested', { jobId });
     this.cancelRequestedByJob.delete(Number(jobId));
+    const triggerReason = String(options?.triggerReason || 'manual').trim().toLowerCase();
 
     const job = await historyService.getJobById(jobId);
     if (!job) {
@@ -8058,26 +8685,86 @@ class PipelineService extends EventEmitter {
       }
     }
 
+    const restartPlan = {
+      ...encodePlan,
+      reviewConfirmed: false,
+      reviewConfirmedAt: null,
+      prefilledFromPreviousRun: true,
+      prefilledFromPreviousRunAt: nowIso()
+    };
+    const selectedMetadata = {
+      title: job.title || job.detected_title || null,
+      year: job.year || null,
+      imdbId: job.imdb_id || null,
+      poster: job.poster_url || null
+    };
+    const readyMediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan: restartPlan
+    });
+    const inputPath = isPreRipMode
+      ? null
+      : (job.encode_input_path || restartPlan.encodeInputPath || null);
+    const hasEncodableTitle = isPreRipMode
+      ? Boolean(restartPlan?.encodeInputTitleId)
+      : Boolean(inputPath);
+
     await historyService.updateJob(jobId, {
       status: 'READY_TO_ENCODE',
       last_state: 'READY_TO_ENCODE',
       error_message: null,
       end_time: null,
       output_path: null,
-      handbrake_info_json: null
+      handbrake_info_json: null,
+      encode_plan_json: JSON.stringify(restartPlan),
+      encode_input_path: inputPath,
+      encode_review_confirmed: 0
     });
     await historyService.appendLog(
       jobId,
       'USER_ACTION',
-      previousOutputPath
-        ? `Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
-        : 'Encode-Neustart angefordert. Letzte bestätigte Auswahl wird verwendet.'
+      triggerReason === 'cancelled_encode'
+        ? (
+          previousOutputPath
+            ? `Encode wurde abgebrochen. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
+            : 'Encode wurde abgebrochen. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden.'
+        )
+        : (
+          previousOutputPath
+            ? `Encode-Neustart angefordert. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
+            : 'Encode-Neustart angefordert. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden.'
+        )
     );
 
-    const result = await this.startPreparedJob(jobId, { immediate: true });
+    await this.setState('READY_TO_ENCODE', {
+      activeJobId: jobId,
+      progress: 0,
+      eta: null,
+      statusText: hasEncodableTitle
+        ? (isPreRipMode
+          ? 'Vorherige Spurauswahl geladen - anpassen und Backup/Rip + Encode starten'
+          : 'Vorherige Encode-Auswahl geladen - anpassen und Encoding starten')
+        : (isPreRipMode
+          ? 'Vorherige Spurauswahl geladen - kein passender Titel gewählt'
+          : 'Vorherige Encode-Auswahl geladen - kein Titel erfüllt MIN_LENGTH_MINUTES'),
+      context: {
+        ...(this.snapshot.context || {}),
+        jobId,
+        inputPath,
+        hasEncodableTitle,
+        reviewConfirmed: false,
+        mode,
+        mediaProfile: readyMediaProfile,
+        sourceJobId: restartPlan?.sourceJobId || null,
+        selectedMetadata,
+        mediaInfoReview: restartPlan
+      }
+    });
+
     return {
       restarted: true,
-      ...result
+      started: false,
+      stage: 'READY_TO_ENCODE',
+      reviewConfirmed: false
     };
   }
 
@@ -8144,6 +8831,7 @@ class PipelineService extends EventEmitter {
     await historyService.resetProcessLog(jobId);
 
     const forcePlaylistReselection = Boolean(options?.forcePlaylistReselection);
+    const previousEncodePlan = this.safeParseJson(sourceJob.encode_plan_json);
     const mkInfo = this.safeParseJson(sourceJob.makemkv_info_json);
     const nextMakemkvInfoJson = mkInfo && typeof mkInfo === 'object'
       ? JSON.stringify({
@@ -8201,7 +8889,8 @@ class PipelineService extends EventEmitter {
       mode: options?.mode || 'reencode',
       sourceJobId: jobId,
       forcePlaylistReselection,
-      forceFreshAnalyze: true
+      forceFreshAnalyze: true,
+      previousEncodePlan
     }).catch((error) => {
       logger.error('restartReviewFromRaw:background-failed', { jobId, error: errorToMeta(error) });
       this.failJob(jobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
@@ -8472,6 +9161,7 @@ class PipelineService extends EventEmitter {
     const message = error?.message || String(error);
     const isCancelled = /abgebrochen|cancelled/i.test(message)
       || String(error?.runInfo?.status || '').trim().toUpperCase() === 'CANCELLED';
+    const normalizedStage = String(stage || '').trim().toUpperCase();
     const job = await historyService.getJobById(jobId);
     const title = job?.title || job?.detected_title || `Job #${jobId}`;
     const finalState = isCancelled ? 'CANCELLED' : 'ERROR';
@@ -8498,6 +9188,33 @@ class PipelineService extends EventEmitter {
       );
     } catch (_error) {
       hasRawPath = false;
+    }
+
+    if (isCancelled && normalizedStage === 'ENCODING' && hasConfirmedPlan) {
+      try {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Abbruch in ${stage}: ${message}. Letzte Encode-Auswahl wird zur direkten Anpassung geladen.`
+        );
+        await this.restartEncodeWithLastSettings(jobId, {
+          immediate: true,
+          triggerReason: 'cancelled_encode'
+        });
+        this.cancelRequestedByJob.delete(Number(jobId));
+        return;
+      } catch (recoveryError) {
+        logger.error('job:cancelled-encode:auto-recover-failed', {
+          jobId,
+          stage,
+          error: errorToMeta(recoveryError)
+        });
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Auto-Recovery nach Encode-Abbruch fehlgeschlagen: ${recoveryError?.message || 'unknown'}`
+        );
+      }
     }
 
     await historyService.updateJob(jobId, {

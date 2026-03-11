@@ -11,6 +11,7 @@ const settingsRoutes = require('./routes/settingsRoutes');
 const pipelineRoutes = require('./routes/pipelineRoutes');
 const historyRoutes = require('./routes/historyRoutes');
 const cronRoutes = require('./routes/cronRoutes');
+const runtimeRoutes = require('./routes/runtimeRoutes');
 const wsService = require('./services/websocketService');
 const pipelineService = require('./services/pipelineService');
 const cronService = require('./services/cronService');
@@ -38,6 +39,7 @@ async function start() {
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/history', historyRoutes);
   app.use('/api/crons', cronRoutes);
+  app.use('/api/runtime', runtimeRoutes);
 
   app.use(errorHandler);
 

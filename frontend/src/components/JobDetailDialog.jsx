@@ -54,6 +54,127 @@ function ScriptSummarySection({ title, summary }) {
   );
 }
 
+function normalizeIdList(values) {
+  const list = Array.isArray(values) ? values : [];
+  const seen = new Set();
+  const output = [];
+  for (const value of list) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      continue;
+    }
+    const id = Math.trunc(parsed);
+    const key = String(id);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(id);
+  }
+  return output;
+}
+
+function shellQuote(value) {
+  const raw = String(value ?? '');
+  if (raw.length === 0) {
+    return "''";
+  }
+  if (/^[A-Za-z0-9_./:=,+-]+$/.test(raw)) {
+    return raw;
+  }
+  return `'${raw.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildExecutedHandBrakeCommand(handbrakeInfo) {
+  const cmd = String(handbrakeInfo?.cmd || '').trim();
+  const args = Array.isArray(handbrakeInfo?.args) ? handbrakeInfo.args : [];
+  if (!cmd) {
+    return null;
+  }
+  return `${cmd} ${args.map((arg) => shellQuote(arg)).join(' ')}`.trim();
+}
+
+function buildConfiguredScriptAndChainSelection(job) {
+  const plan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : {};
+  const handbrakeInfo = job?.handbrakeInfo && typeof job.handbrakeInfo === 'object' ? job.handbrakeInfo : {};
+  const scriptNameById = new Map();
+  const chainNameById = new Map();
+
+  const addScriptHint = (idValue, nameValue) => {
+    const id = normalizeIdList([idValue])[0] || null;
+    const name = String(nameValue || '').trim();
+    if (!id || !name || scriptNameById.has(id)) {
+      return;
+    }
+    scriptNameById.set(id, name);
+  };
+
+  const addChainHint = (idValue, nameValue) => {
+    const id = normalizeIdList([idValue])[0] || null;
+    const name = String(nameValue || '').trim();
+    if (!id || !name || chainNameById.has(id)) {
+      return;
+    }
+    chainNameById.set(id, name);
+  };
+
+  const addScriptHintsFromList = (list) => {
+    for (const item of (Array.isArray(list) ? list : [])) {
+      addScriptHint(item?.id ?? item?.scriptId, item?.name ?? item?.scriptName);
+    }
+  };
+
+  const addChainHintsFromList = (list) => {
+    for (const item of (Array.isArray(list) ? list : [])) {
+      addChainHint(item?.id ?? item?.chainId, item?.name ?? item?.chainName);
+    }
+  };
+
+  addScriptHintsFromList(plan?.preEncodeScripts);
+  addScriptHintsFromList(plan?.postEncodeScripts);
+  addChainHintsFromList(plan?.preEncodeChains);
+  addChainHintsFromList(plan?.postEncodeChains);
+
+  const scriptSummaries = [handbrakeInfo?.preEncodeScripts, handbrakeInfo?.postEncodeScripts];
+  for (const summary of scriptSummaries) {
+    const results = Array.isArray(summary?.results) ? summary.results : [];
+    for (const result of results) {
+      addScriptHint(result?.scriptId, result?.scriptName);
+      addChainHint(result?.chainId, result?.chainName);
+    }
+  }
+
+  const preScriptIds = normalizeIdList([
+    ...(Array.isArray(plan?.preEncodeScriptIds) ? plan.preEncodeScriptIds : []),
+    ...(Array.isArray(plan?.preEncodeScripts) ? plan.preEncodeScripts.map((item) => item?.id ?? item?.scriptId) : [])
+  ]);
+  const postScriptIds = normalizeIdList([
+    ...(Array.isArray(plan?.postEncodeScriptIds) ? plan.postEncodeScriptIds : []),
+    ...(Array.isArray(plan?.postEncodeScripts) ? plan.postEncodeScripts.map((item) => item?.id ?? item?.scriptId) : [])
+  ]);
+  const preChainIds = normalizeIdList([
+    ...(Array.isArray(plan?.preEncodeChainIds) ? plan.preEncodeChainIds : []),
+    ...(Array.isArray(plan?.preEncodeChains) ? plan.preEncodeChains.map((item) => item?.id ?? item?.chainId) : [])
+  ]);
+  const postChainIds = normalizeIdList([
+    ...(Array.isArray(plan?.postEncodeChainIds) ? plan.postEncodeChainIds : []),
+    ...(Array.isArray(plan?.postEncodeChains) ? plan.postEncodeChains.map((item) => item?.id ?? item?.chainId) : [])
+  ]);
+
+  return {
+    preScriptIds,
+    postScriptIds,
+    preChainIds,
+    postChainIds,
+    preScripts: preScriptIds.map((id) => scriptNameById.get(id) || `Skript #${id}`),
+    postScripts: postScriptIds.map((id) => scriptNameById.get(id) || `Skript #${id}`),
+    preChains: preChainIds.map((id) => chainNameById.get(id) || `Kette #${id}`),
+    postChains: postChainIds.map((id) => chainNameById.get(id) || `Kette #${id}`),
+    scriptCatalog: Array.from(scriptNameById.entries()).map(([id, name]) => ({ id, name })),
+    chainCatalog: Array.from(chainNameById.entries()).map(([id, name]) => ({ id, name }))
+  };
+}
+
 function resolveMediaType(job) {
   const candidates = [
     job?.mediaType,
@@ -205,6 +326,25 @@ export default function JobDetailDialog({
     : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
   const statusMeta = statusBadgeMeta(job?.status, queueLocked);
   const omdbInfo = job?.omdbInfo && typeof job.omdbInfo === 'object' ? job.omdbInfo : {};
+  const configuredSelection = buildConfiguredScriptAndChainSelection(job);
+  const hasConfiguredSelection = configuredSelection.preScriptIds.length > 0
+    || configuredSelection.postScriptIds.length > 0
+    || configuredSelection.preChainIds.length > 0
+    || configuredSelection.postChainIds.length > 0;
+  const reviewPreEncodeItems = [
+    ...configuredSelection.preScriptIds.map((id) => ({ type: 'script', id })),
+    ...configuredSelection.preChainIds.map((id) => ({ type: 'chain', id }))
+  ];
+  const reviewPostEncodeItems = [
+    ...configuredSelection.postScriptIds.map((id) => ({ type: 'script', id })),
+    ...configuredSelection.postChainIds.map((id) => ({ type: 'chain', id }))
+  ];
+  const encodePlanUserPreset = job?.encodePlan?.userPreset && typeof job.encodePlan.userPreset === 'object'
+    ? job.encodePlan.userPreset
+    : null;
+  const encodePlanUserPresetId = Number(encodePlanUserPreset?.id);
+  const reviewUserPresets = encodePlanUserPreset ? [encodePlanUserPreset] : [];
+  const executedHandBrakeCommand = buildExecutedHandBrakeCommand(job?.handbrakeInfo);
 
   return (
     <Dialog
@@ -335,6 +475,42 @@ export default function JobDetailDialog({
             </div>
           </section>
 
+          {hasConfiguredSelection || encodePlanUserPreset ? (
+            <section className="job-meta-block job-meta-block-full">
+              <h4>Hinterlegte Encode-Auswahl</h4>
+              <div className="job-configured-selection-grid">
+                <div>
+                  <strong>Pre-Encode Skripte:</strong> {configuredSelection.preScripts.length > 0 ? configuredSelection.preScripts.join(' | ') : '-'}
+                </div>
+                <div>
+                  <strong>Pre-Encode Ketten:</strong> {configuredSelection.preChains.length > 0 ? configuredSelection.preChains.join(' | ') : '-'}
+                </div>
+                <div>
+                  <strong>Post-Encode Skripte:</strong> {configuredSelection.postScripts.length > 0 ? configuredSelection.postScripts.join(' | ') : '-'}
+                </div>
+                <div>
+                  <strong>Post-Encode Ketten:</strong> {configuredSelection.postChains.length > 0 ? configuredSelection.postChains.join(' | ') : '-'}
+                </div>
+                <div className="job-meta-col-span-2">
+                  <strong>User-Preset:</strong>{' '}
+                  {encodePlanUserPreset
+                    ? `${encodePlanUserPreset.name || '-'} | Preset=${encodePlanUserPreset.handbrakePreset || '-'} | ExtraArgs=${encodePlanUserPreset.extraArgs || '-'}`
+                    : '-'}
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {executedHandBrakeCommand ? (
+            <section className="job-meta-block job-meta-block-full">
+              <h4>Ausgeführter Encode-Befehl</h4>
+              <div className="handbrake-command-preview">
+                <small><strong>HandBrakeCLI (tatsächlich gestartet):</strong></small>
+                <pre>{executedHandBrakeCommand}</pre>
+              </div>
+            </section>
+          ) : null}
+
           {(job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Skripte</h4>
@@ -356,7 +532,18 @@ export default function JobDetailDialog({
           {job.encodePlan ? (
             <>
               <h4>Mediainfo-Prüfung (Auswertung)</h4>
-              <MediaInfoReviewPanel review={job.encodePlan} />
+              <MediaInfoReviewPanel
+                review={job.encodePlan}
+                commandOutputPath={job.output_path || null}
+                availableScripts={configuredSelection.scriptCatalog}
+                availableChains={configuredSelection.chainCatalog}
+                preEncodeItems={reviewPreEncodeItems}
+                postEncodeItems={reviewPostEncodeItems}
+                userPresets={reviewUserPresets}
+                selectedUserPresetId={Number.isFinite(encodePlanUserPresetId) && encodePlanUserPresetId > 0
+                  ? Math.trunc(encodePlanUserPresetId)
+                  : null}
+              />
             </>
           ) : null}
 

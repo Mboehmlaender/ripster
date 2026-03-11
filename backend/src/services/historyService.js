@@ -47,13 +47,35 @@ function inspectDirectory(dirPath) {
       };
     }
 
-    const entries = fs.readdirSync(dirPath);
+    // Fast path: only determine whether directory is empty, avoid loading all entries.
+    let firstEntry = null;
+    let openError = null;
+    try {
+      const dir = fs.opendirSync(dirPath);
+      try {
+        firstEntry = dir.readSync();
+      } finally {
+        dir.closeSync();
+      }
+    } catch (error) {
+      openError = error;
+    }
+    if (openError) {
+      const entries = fs.readdirSync(dirPath);
+      return {
+        path: dirPath,
+        exists: true,
+        isDirectory: true,
+        isEmpty: entries.length === 0,
+        entryCount: entries.length
+      };
+    }
     return {
       path: dirPath,
       exists: true,
       isDirectory: true,
-      isEmpty: entries.length === 0,
-      entryCount: entries.length
+      isEmpty: !firstEntry,
+      entryCount: firstEntry ? null : 0
     };
   } catch (error) {
     return {
@@ -378,14 +400,40 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
   };
 }
 
-function enrichJobRow(job, settings = null) {
+function buildUnknownDirectoryStatus(dirPath = null) {
+  return {
+    path: dirPath || null,
+    exists: null,
+    isDirectory: null,
+    isEmpty: null,
+    entryCount: null
+  };
+}
+
+function buildUnknownFileStatus(filePath = null) {
+  return {
+    path: filePath || null,
+    exists: null,
+    isFile: null,
+    sizeBytes: null
+  };
+}
+
+function enrichJobRow(job, settings = null, options = {}) {
+  const includeFsChecks = options?.includeFsChecks !== false;
   const handbrakeInfo = parseJsonSafe(job.handbrake_info_json, null);
   const omdbInfo = parseJsonSafe(job.omdb_json, null);
   const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
-  const rawStatus = inspectDirectory(resolvedPaths.effectiveRawPath);
-  const outputStatus = inspectOutputFile(resolvedPaths.effectiveOutputPath);
+  const rawStatus = includeFsChecks
+    ? inspectDirectory(resolvedPaths.effectiveRawPath)
+    : buildUnknownDirectoryStatus(resolvedPaths.effectiveRawPath);
+  const outputStatus = includeFsChecks
+    ? inspectOutputFile(resolvedPaths.effectiveOutputPath)
+    : buildUnknownFileStatus(resolvedPaths.effectiveOutputPath);
   const movieDirPath = resolvedPaths.effectiveOutputPath ? path.dirname(resolvedPaths.effectiveOutputPath) : null;
-  const movieDirStatus = inspectDirectory(movieDirPath);
+  const movieDirStatus = includeFsChecks
+    ? inspectDirectory(movieDirPath)
+    : buildUnknownDirectoryStatus(movieDirPath);
   const makemkvInfo = resolvedPaths.makemkvInfo;
   const mediainfoInfo = resolvedPaths.mediainfoInfo;
   const encodePlan = resolvedPaths.encodePlan;
@@ -750,8 +798,25 @@ class HistoryService {
     const db = await getDb();
     const where = [];
     const values = [];
+    const includeFsChecks = filters?.includeFsChecks !== false;
+    const rawStatuses = Array.isArray(filters?.statuses)
+      ? filters.statuses
+      : (typeof filters?.statuses === 'string'
+        ? String(filters.statuses).split(',')
+        : []);
+    const normalizedStatuses = rawStatuses
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter(Boolean);
+    const limitRaw = Number(filters?.limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(Math.trunc(limitRaw), 500)
+      : 500;
 
-    if (filters.status) {
+    if (normalizedStatuses.length > 0) {
+      const placeholders = normalizedStatuses.map(() => '?').join(', ');
+      where.push(`status IN (${placeholders})`);
+      values.push(...normalizedStatuses);
+    } else if (filters.status) {
       where.push('status = ?');
       values.push(filters.status);
     }
@@ -770,7 +835,7 @@ class HistoryService {
         FROM jobs j
         ${whereClause}
         ORDER BY j.created_at DESC
-        LIMIT 500
+        LIMIT ${limit}
       `,
         values
       ),
@@ -778,8 +843,8 @@ class HistoryService {
     ]);
 
     return jobs.map((job) => ({
-      ...enrichJobRow(job, settings),
-      log_count: hasProcessLogFile(job.id) ? 1 : 0
+      ...enrichJobRow(job, settings, { includeFsChecks }),
+      log_count: includeFsChecks ? (hasProcessLogFile(job.id) ? 1 : 0) : 0
     }));
   }
 
@@ -852,6 +917,7 @@ class HistoryService {
 
   async getJobWithLogs(jobId, options = {}) {
     const db = await getDb();
+    const includeFsChecks = options?.includeFsChecks !== false;
     const [job, settings] = await Promise.all([
       db.get('SELECT * FROM jobs WHERE id = ?', [jobId]),
       settingsService.getSettingsMap()
@@ -868,12 +934,12 @@ class HistoryService {
     const includeLogs = Boolean(options.includeLogs);
     const includeAllLogs = Boolean(options.includeAllLogs);
     const shouldLoadLogs = includeLiveLog || includeLogs;
-    const hasProcessLog = hasProcessLogFile(jobId);
+    const hasProcessLog = (!shouldLoadLogs && includeFsChecks) ? hasProcessLogFile(jobId) : false;
     const baseLogCount = hasProcessLog ? 1 : 0;
 
     if (!shouldLoadLogs) {
       return {
-        ...enrichJobRow(job, settings),
+        ...enrichJobRow(job, settings, { includeFsChecks }),
         log_count: baseLogCount,
         logs: [],
         log: '',
@@ -892,7 +958,7 @@ class HistoryService {
     });
 
     return {
-      ...enrichJobRow(job, settings),
+      ...enrichJobRow(job, settings, { includeFsChecks }),
       log_count: processLog.exists ? processLog.total : 0,
       logs: [],
       log: processLog.lines.join('\n'),

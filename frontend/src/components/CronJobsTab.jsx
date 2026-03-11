@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from 'primereact/button';
 import { Dialog } from 'primereact/dialog';
 import { InputText } from 'primereact/inputtext';
@@ -32,6 +32,23 @@ function StatusBadge({ status }) {
   return <span className={`cron-status cron-status--${info.cls}`}>{info.label}</span>;
 }
 
+function normalizeActiveCronRuns(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
+  const active = Array.isArray(payload.active) ? payload.active : [];
+  return active
+    .map((item) => (item && typeof item === 'object' ? item : null))
+    .filter(Boolean)
+    .filter((item) => String(item.type || '').trim().toLowerCase() === 'cron')
+    .map((item) => ({
+      id: Number(item.id),
+      cronJobId: Number(item.cronJobId || 0),
+      currentStep: String(item.currentStep || '').trim() || null,
+      currentScriptName: String(item.currentScriptName || '').trim() || null,
+      startedAt: item.startedAt || null
+    }))
+    .filter((item) => Number.isFinite(item.cronJobId) && item.cronJobId > 0);
+}
+
 const EMPTY_FORM = {
   name: '',
   cronExpression: '',
@@ -50,6 +67,7 @@ export default function CronJobsTab({ onWsMessage }) {
   const [loading, setLoading] = useState(false);
   const [scripts, setScripts] = useState([]);
   const [chains, setChains] = useState([]);
+  const [activeCronRuns, setActiveCronRuns] = useState([]);
 
   // Editor-Dialog
   const [editorOpen, setEditorOpen] = useState(false);
@@ -76,14 +94,18 @@ export default function CronJobsTab({ onWsMessage }) {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [cronResp, scriptsResp, chainsResp] = await Promise.allSettled([
+      const [cronResp, scriptsResp, chainsResp, runtimeResp] = await Promise.allSettled([
         api.getCronJobs(),
         api.getScripts(),
-        api.getScriptChains()
+        api.getScriptChains(),
+        api.getRuntimeActivities()
       ]);
       if (cronResp.status === 'fulfilled') setJobs(cronResp.value?.jobs || []);
       if (scriptsResp.status === 'fulfilled') setScripts(scriptsResp.value?.scripts || []);
       if (chainsResp.status === 'fulfilled') setChains(chainsResp.value?.chains || []);
+      if (runtimeResp.status === 'fulfilled') {
+        setActiveCronRuns(normalizeActiveCronRuns(runtimeResp.value));
+      }
     } finally {
       setLoading(false);
     }
@@ -92,6 +114,36 @@ export default function CronJobsTab({ onWsMessage }) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshRuntime = async () => {
+      try {
+        const response = await api.getRuntimeActivities();
+        if (!cancelled) {
+          setActiveCronRuns(normalizeActiveCronRuns(response));
+        }
+      } catch (_error) {
+        // ignore polling errors
+      }
+    };
+    const interval = setInterval(refreshRuntime, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const activeCronRunByJobId = useMemo(() => {
+    const map = new Map();
+    for (const item of activeCronRuns) {
+      if (!item?.cronJobId) {
+        continue;
+      }
+      map.set(item.cronJobId, item);
+    }
+    return map;
+  }, [activeCronRuns]);
 
   // WebSocket: Cronjob-Updates empfangen
   useEffect(() => {
@@ -279,6 +331,7 @@ export default function CronJobsTab({ onWsMessage }) {
         <div className="cron-list">
           {jobs.map((job) => {
             const isBusy = busyId === job.id;
+            const activeCronRun = activeCronRunByJobId.get(Number(job.id)) || null;
             return (
               <div key={job.id} className={`cron-item${job.enabled ? '' : ' cron-item--disabled'}`}>
                 <div className="cron-item-header">
@@ -305,6 +358,17 @@ export default function CronJobsTab({ onWsMessage }) {
                     <span className="cron-meta-label">Nächster Lauf:</span>
                     <span className="cron-meta-value">{formatDateTime(job.nextRunAt)}</span>
                   </span>
+                  {activeCronRun ? (
+                    <span className="cron-meta-entry">
+                      <span className="cron-meta-label">Aktuell:</span>
+                      <span className="cron-meta-value">
+                        <StatusBadge status="running" />
+                        {activeCronRun.currentScriptName
+                          ? `Skript: ${activeCronRun.currentScriptName}`
+                          : (activeCronRun.currentStep || 'Ausführung läuft')}
+                      </span>
+                    </span>
+                  ) : null}
                 </div>
 
                 <div className="cron-item-toggles">

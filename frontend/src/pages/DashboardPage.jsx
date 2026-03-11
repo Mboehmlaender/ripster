@@ -82,6 +82,103 @@ function formatUpdatedAt(value) {
   return date.toLocaleString('de-DE');
 }
 
+function formatDurationMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) {
+    return '-';
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  return `${minutes}m ${restSeconds}s`;
+}
+
+function normalizeRuntimeActivitiesPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
+  const normalizeItem = (item) => {
+    const source = item && typeof item === 'object' ? item : {};
+    const parsedId = Number(source.id);
+    const id = Number.isFinite(parsedId) && parsedId > 0 ? Math.trunc(parsedId) : null;
+    return {
+      id,
+      type: String(source.type || '').trim().toLowerCase() || 'task',
+      name: String(source.name || '').trim() || '-',
+      status: String(source.status || '').trim().toLowerCase() || 'running',
+      outcome: String(source.outcome || '').trim().toLowerCase() || null,
+      source: String(source.source || '').trim() || null,
+      message: String(source.message || '').trim() || null,
+      errorMessage: String(source.errorMessage || '').trim() || null,
+      currentStep: String(source.currentStep || '').trim() || null,
+      currentScriptName: String(source.currentScriptName || '').trim() || null,
+      output: source.output != null ? String(source.output) : null,
+      stdout: source.stdout != null ? String(source.stdout) : null,
+      stderr: source.stderr != null ? String(source.stderr) : null,
+      stdoutTruncated: Boolean(source.stdoutTruncated),
+      stderrTruncated: Boolean(source.stderrTruncated),
+      exitCode: Number.isFinite(Number(source.exitCode)) ? Number(source.exitCode) : null,
+      startedAt: source.startedAt || null,
+      finishedAt: source.finishedAt || null,
+      durationMs: Number.isFinite(Number(source.durationMs)) ? Number(source.durationMs) : null,
+      jobId: Number.isFinite(Number(source.jobId)) && Number(source.jobId) > 0 ? Math.trunc(Number(source.jobId)) : null,
+      cronJobId: Number.isFinite(Number(source.cronJobId)) && Number(source.cronJobId) > 0 ? Math.trunc(Number(source.cronJobId)) : null,
+      canCancel: Boolean(source.canCancel),
+      canNextStep: Boolean(source.canNextStep)
+    };
+  };
+  const active = (Array.isArray(payload.active) ? payload.active : []).map(normalizeItem);
+  const recent = (Array.isArray(payload.recent) ? payload.recent : []).map(normalizeItem);
+  return {
+    active,
+    recent,
+    updatedAt: payload.updatedAt || null
+  };
+}
+
+function runtimeTypeLabel(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (normalized === 'script') return 'Skript';
+  if (normalized === 'chain') return 'Kette';
+  if (normalized === 'cron') return 'Cronjob';
+  return normalized || 'Task';
+}
+
+function runtimeStatusMeta(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'running') return { label: 'Läuft', severity: 'warning' };
+  if (normalized === 'success') return { label: 'Abgeschlossen', severity: 'success' };
+  if (normalized === 'error') return { label: 'Fehler', severity: 'danger' };
+  return { label: normalized || '-', severity: 'secondary' };
+}
+
+function runtimeOutcomeMeta(outcome, status) {
+  const normalized = String(outcome || '').trim().toLowerCase();
+  if (normalized === 'success') return { label: 'Erfolg', severity: 'success' };
+  if (normalized === 'error') return { label: 'Fehler', severity: 'danger' };
+  if (normalized === 'cancelled') return { label: 'Abgebrochen', severity: 'warning' };
+  if (normalized === 'skipped') return { label: 'Übersprungen', severity: 'info' };
+  return runtimeStatusMeta(status);
+}
+
+function hasRuntimeOutputDetails(item) {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+  const hasRelevantExitCode = Number.isFinite(Number(item.exitCode)) && Number(item.exitCode) !== 0;
+  return Boolean(
+    String(item.errorMessage || '').trim()
+    || String(item.output || '').trim()
+    || String(item.stdout || '').trim()
+    || String(item.stderr || '').trim()
+    || hasRelevantExitCode
+  );
+}
+
 function normalizeHardwareMonitoringPayload(rawPayload) {
   const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
   return {
@@ -170,6 +267,71 @@ function queueEntryLabel(item) {
   if (item.type === 'chain') return `Kette: ${item.title}`;
   if (item.type === 'wait') return `Warten: ${item.waitSeconds}s`;
   return item.title || `Job #${item.jobId}`;
+}
+
+function normalizeQueueNameList(values) {
+  const list = Array.isArray(values) ? values : [];
+  const seen = new Set();
+  const output = [];
+  for (const item of list) {
+    const name = String(item || '').trim();
+    if (!name) {
+      continue;
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(name);
+  }
+  return output;
+}
+
+function normalizeQueueScriptSummary(item) {
+  const source = item?.scriptSummary && typeof item.scriptSummary === 'object' ? item.scriptSummary : {};
+  return {
+    preScripts: normalizeQueueNameList(source.preScripts),
+    postScripts: normalizeQueueNameList(source.postScripts),
+    preChains: normalizeQueueNameList(source.preChains),
+    postChains: normalizeQueueNameList(source.postChains)
+  };
+}
+
+function hasQueueScriptSummary(item) {
+  const summary = normalizeQueueScriptSummary(item);
+  return summary.preScripts.length > 0
+    || summary.postScripts.length > 0
+    || summary.preChains.length > 0
+    || summary.postChains.length > 0;
+}
+
+function QueueJobScriptSummary({ item }) {
+  const summary = normalizeQueueScriptSummary(item);
+  const groups = [
+    { key: 'pre-scripts', icon: 'pi pi-code', label: 'Pre-Encode Skripte', values: summary.preScripts },
+    { key: 'post-scripts', icon: 'pi pi-code', label: 'Post-Encode Skripte', values: summary.postScripts },
+    { key: 'pre-chains', icon: 'pi pi-link', label: 'Pre-Encode Ketten', values: summary.preChains },
+    { key: 'post-chains', icon: 'pi pi-link', label: 'Post-Encode Ketten', values: summary.postChains }
+  ].filter((group) => group.values.length > 0);
+
+  if (groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="queue-job-script-details">
+      {groups.map((group) => {
+        const text = group.values.join(' | ');
+        return (
+          <div key={group.key} className="queue-job-script-group">
+            <strong><i className={group.icon} /> {group.label}</strong>
+            <small title={text}>{text}</small>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function getAnalyzeContext(job) {
@@ -397,10 +559,14 @@ export default function DashboardPage({
   const [draggingQueueEntryId, setDraggingQueueEntryId] = useState(null);
   const [insertQueueDialog, setInsertQueueDialog] = useState({ visible: false, afterEntryId: null });
   const [liveJobLog, setLiveJobLog] = useState('');
+  const [runtimeActivities, setRuntimeActivities] = useState(() => normalizeRuntimeActivitiesPayload(null));
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeActionBusyKeys, setRuntimeActionBusyKeys] = useState(() => new Set());
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
+  const [expandedQueueScriptKeys, setExpandedQueueScriptKeys] = useState(() => new Set());
   const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
   const [insertWaitSeconds, setInsertWaitSeconds] = useState(30);
   const toastRef = useRef(null);
@@ -438,7 +604,11 @@ export default function DashboardPage({
     setJobsLoading(true);
     try {
       const [jobsResponse, queueResponse] = await Promise.allSettled([
-        api.getJobs(),
+        api.getJobs({
+          statuses: Array.from(dashboardStatuses),
+          limit: 160,
+          lite: true
+        }),
         api.getPipelineQueue()
       ]);
       const allJobs = jobsResponse.status === 'fulfilled'
@@ -453,7 +623,7 @@ export default function DashboardPage({
 
       if (currentPipelineJobId && !next.some((job) => normalizeJobId(job?.id) === currentPipelineJobId)) {
         try {
-          const active = await api.getJob(currentPipelineJobId);
+          const active = await api.getJob(currentPipelineJobId, { lite: true });
           if (active?.job) {
             next.unshift(active.job);
           }
@@ -502,6 +672,35 @@ export default function DashboardPage({
   }, [pipeline?.state, pipeline?.activeJobId, pipeline?.context?.jobId]);
 
   useEffect(() => {
+    let cancelled = false;
+    const load = async (silent = false) => {
+      try {
+        const response = await api.getRuntimeActivities();
+        if (!cancelled) {
+          setRuntimeActivities(normalizeRuntimeActivitiesPayload(response));
+          if (!silent) {
+            setRuntimeLoading(false);
+          }
+        }
+      } catch (_error) {
+        if (!cancelled && !silent) {
+          setRuntimeActivities(normalizeRuntimeActivitiesPayload(null));
+          setRuntimeLoading(false);
+        }
+      }
+    };
+    setRuntimeLoading(true);
+    void load(false);
+    const interval = setInterval(() => {
+      void load(true);
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     const normalizedExpanded = normalizeJobId(expandedJobId);
     const hasExpanded = dashboardJobs.some((job) => normalizeJobId(job?.id) === normalizedExpanded);
     if (hasExpanded) {
@@ -529,7 +728,7 @@ export default function DashboardPage({
     let cancelled = false;
     const refreshLiveLog = async () => {
       try {
-        const response = await api.getJob(currentPipelineJobId, { includeLiveLog: true });
+        const response = await api.getJob(currentPipelineJobId, { includeLiveLog: true, lite: true });
         if (!cancelled) {
           setLiveJobLog(response?.job?.log || '');
         }
@@ -730,19 +929,55 @@ export default function DashboardPage({
       await api.cancelPipeline(cancelledJobId);
       await refreshPipeline();
       await loadDashboardJobs();
-      if (cancelledState === 'ENCODING' && cancelledJobId) {
+      let latestCancelledJob = null;
+      const fetchLatestCancelledJob = async () => {
+        if (!cancelledJobId) {
+          return null;
+        }
+        try {
+          const latestResponse = await api.getJob(cancelledJobId, { lite: true });
+          return latestResponse?.job && typeof latestResponse.job === 'object'
+            ? latestResponse.job
+            : null;
+        } catch (_error) {
+          return null;
+        }
+      };
+      latestCancelledJob = await fetchLatestCancelledJob();
+      if (cancelledState === 'ENCODING') {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const latestStatus = String(
+            latestCancelledJob?.status
+            || latestCancelledJob?.last_state
+            || ''
+          ).trim().toUpperCase();
+          if (latestStatus && latestStatus !== 'ENCODING') {
+            break;
+          }
+          await wait(250);
+          latestCancelledJob = await fetchLatestCancelledJob();
+        }
+      }
+      const latestStatus = String(
+        latestCancelledJob?.status
+        || latestCancelledJob?.last_state
+        || ''
+      ).trim().toUpperCase();
+      const autoPreparedForRestart = cancelledState === 'ENCODING' && latestStatus === 'READY_TO_ENCODE';
+      if (cancelledState === 'ENCODING' && cancelledJobId && !autoPreparedForRestart) {
         setCancelCleanupDialog({
           visible: true,
           jobId: cancelledJobId,
           target: 'movie',
-          path: cancelledJob?.output_path || null
+          path: latestCancelledJob?.output_path || cancelledJob?.output_path || null
         });
       } else if (cancelledState === 'RIPPING' && cancelledJobId) {
         setCancelCleanupDialog({
           visible: true,
           jobId: cancelledJobId,
           target: 'raw',
-          path: cancelledJob?.raw_path || null
+          path: latestCancelledJob?.raw_path || cancelledJob?.raw_path || null
         });
       }
     } catch (error) {
@@ -797,16 +1032,27 @@ export default function DashboardPage({
     setJobBusy(normalizedJobId, true);
     try {
       if (startOptions.ensureConfirmed) {
-        await api.confirmEncodeReview(normalizedJobId, {
+        const confirmPayload = {
           selectedEncodeTitleId: startOptions.selectedEncodeTitleId ?? null,
           selectedTrackSelection: startOptions.selectedTrackSelection ?? null,
-          selectedPostEncodeScriptIds: startOptions.selectedPostEncodeScriptIds ?? [],
-          selectedPreEncodeScriptIds: startOptions.selectedPreEncodeScriptIds ?? [],
-          selectedPostEncodeChainIds: startOptions.selectedPostEncodeChainIds ?? [],
-          selectedPreEncodeChainIds: startOptions.selectedPreEncodeChainIds ?? [],
-          selectedUserPresetId: startOptions.selectedUserPresetId ?? null,
           skipPipelineStateUpdate: true
-        });
+        };
+        if (startOptions.selectedPostEncodeScriptIds !== undefined) {
+          confirmPayload.selectedPostEncodeScriptIds = startOptions.selectedPostEncodeScriptIds;
+        }
+        if (startOptions.selectedPreEncodeScriptIds !== undefined) {
+          confirmPayload.selectedPreEncodeScriptIds = startOptions.selectedPreEncodeScriptIds;
+        }
+        if (startOptions.selectedPostEncodeChainIds !== undefined) {
+          confirmPayload.selectedPostEncodeChainIds = startOptions.selectedPostEncodeChainIds;
+        }
+        if (startOptions.selectedPreEncodeChainIds !== undefined) {
+          confirmPayload.selectedPreEncodeChainIds = startOptions.selectedPreEncodeChainIds;
+        }
+        if (startOptions.selectedUserPresetId !== undefined) {
+          confirmPayload.selectedUserPresetId = startOptions.selectedUserPresetId;
+        }
+        await api.confirmEncodeReview(normalizedJobId, confirmPayload);
       }
       const response = await api.startJob(normalizedJobId);
       const result = getQueueActionResult(response);
@@ -1083,6 +1329,49 @@ export default function DashboardPage({
   const queueRunningJobs = Array.isArray(queueState?.runningJobs) ? queueState.runningJobs : [];
   const queuedJobs = Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [];
   const canReorderQueue = queuedJobs.length > 1 && !queueReorderBusy;
+  const buildRunningQueueScriptKey = (jobId) => `running-${normalizeJobId(jobId) || '-'}`;
+  const buildQueuedQueueScriptKey = (entryId) => `queued-${Number(entryId) || '-'}`;
+  const toggleQueueScriptDetails = (key) => {
+    if (!key) {
+      return;
+    }
+    setExpandedQueueScriptKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+  useEffect(() => {
+    const validKeys = new Set();
+    for (const item of queueRunningJobs) {
+      if (!hasQueueScriptSummary(item)) {
+        continue;
+      }
+      validKeys.add(buildRunningQueueScriptKey(item?.jobId));
+    }
+    for (const item of queuedJobs) {
+      if (String(item?.type || 'job') !== 'job' || !hasQueueScriptSummary(item)) {
+        continue;
+      }
+      validKeys.add(buildQueuedQueueScriptKey(item?.entryId));
+    }
+    setExpandedQueueScriptKeys((prev) => {
+      let changed = false;
+      const next = new Set();
+      for (const key of prev) {
+        if (validKeys.has(key)) {
+          next.add(key);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [queueRunningJobs, queuedJobs]);
   const queuedJobIdSet = useMemo(() => {
     const set = new Set();
     for (const item of queuedJobs) {
@@ -1093,6 +1382,66 @@ export default function DashboardPage({
     }
     return set;
   }, [queuedJobs]);
+
+  const setRuntimeActionBusy = (activityId, action, busyFlag) => {
+    const key = `${Number(activityId) || 0}:${String(action || '')}`;
+    setRuntimeActionBusyKeys((prev) => {
+      const next = new Set(prev);
+      if (busyFlag) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  };
+
+  const isRuntimeActionBusy = (activityId, action) => runtimeActionBusyKeys.has(
+    `${Number(activityId) || 0}:${String(action || '')}`
+  );
+
+  const handleRuntimeControl = async (item, action) => {
+    const activityId = Number(item?.id);
+    if (!Number.isFinite(activityId) || activityId <= 0) {
+      return;
+    }
+    const normalizedAction = String(action || '').trim().toLowerCase();
+    const actionLabel = normalizedAction === 'next-step' ? 'Nächster Schritt' : 'Abbrechen';
+    setRuntimeActionBusy(activityId, normalizedAction, true);
+    try {
+      const response = normalizedAction === 'next-step'
+        ? await api.requestRuntimeNextStep(activityId)
+        : await api.cancelRuntimeActivity(activityId, { reason: 'Benutzerabbruch via Dashboard' });
+      if (response?.snapshot) {
+        setRuntimeActivities(normalizeRuntimeActivitiesPayload(response.snapshot));
+      } else {
+        const fresh = await api.getRuntimeActivities();
+        setRuntimeActivities(normalizeRuntimeActivitiesPayload(fresh));
+      }
+      const accepted = response?.action?.accepted !== false;
+      const actionMessage = String(response?.action?.message || '').trim();
+      toastRef.current?.show({
+        severity: accepted ? 'info' : 'warn',
+        summary: actionLabel,
+        detail: actionMessage || (accepted ? 'Aktion ausgelöst.' : 'Aktion aktuell nicht möglich.'),
+        life: 2600
+      });
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: actionLabel,
+        detail: error?.message || 'Aktion fehlgeschlagen.',
+        life: 3200
+      });
+    } finally {
+      setRuntimeActionBusy(activityId, normalizedAction, false);
+    }
+  };
+
+  const runtimeActiveItems = Array.isArray(runtimeActivities?.active) ? runtimeActivities.active : [];
+  const runtimeRecentItems = Array.isArray(runtimeActivities?.recent)
+    ? runtimeActivities.recent.slice(0, 8)
+    : [];
 
   return (
     <div className="page-grid">
@@ -1288,12 +1637,37 @@ export default function DashboardPage({
             {queueRunningJobs.length === 0 ? (
               <small>Keine laufenden Jobs.</small>
             ) : (
-              queueRunningJobs.map((item) => (
-                <div key={`running-${item.jobId}`} className="pipeline-queue-item running">
-                  <strong>#{item.jobId} | {item.title || `Job #${item.jobId}`}</strong>
-                  <small>{getStatusLabel(item.status)}</small>
-                </div>
-              ))
+              queueRunningJobs.map((item) => {
+                const hasScriptSummary = hasQueueScriptSummary(item);
+                const detailKey = buildRunningQueueScriptKey(item?.jobId);
+                const detailsExpanded = hasScriptSummary && expandedQueueScriptKeys.has(detailKey);
+                return (
+                  <div key={`running-${item.jobId}`} className="pipeline-queue-entry-wrap">
+                    <div className="pipeline-queue-item running queue-job-item">
+                      <div className="pipeline-queue-item-main">
+                        <strong>
+                          #{item.jobId} | {item.title || `Job #${item.jobId}`}
+                          {item.hasScripts ? <i className="pi pi-code queue-job-tag" title="Skripte hinterlegt" /> : null}
+                          {item.hasChains ? <i className="pi pi-link queue-job-tag" title="Skriptketten hinterlegt" /> : null}
+                        </strong>
+                        <small>{getStatusLabel(item.status)}</small>
+                      </div>
+                      {hasScriptSummary ? (
+                        <button
+                          type="button"
+                          className="queue-job-expand-btn"
+                          aria-label={detailsExpanded ? 'Skriptdetails ausblenden' : 'Skriptdetails einblenden'}
+                          aria-expanded={detailsExpanded}
+                          onClick={() => toggleQueueScriptDetails(detailKey)}
+                        >
+                          <i className={`pi ${detailsExpanded ? 'pi-angle-up' : 'pi-angle-down'}`} />
+                        </button>
+                      ) : null}
+                    </div>
+                    {detailsExpanded ? <QueueJobScriptSummary item={item} /> : null}
+                  </div>
+                );
+              })
             )}
           </div>
           <div className="pipeline-queue-col">
@@ -1316,6 +1690,9 @@ export default function DashboardPage({
                   const entryId = Number(item?.entryId);
                   const isNonJob = item.type && item.type !== 'job';
                   const isDragging = Number(draggingQueueEntryId) === entryId;
+                  const hasScriptSummary = !isNonJob && hasQueueScriptSummary(item);
+                  const detailKey = buildQueuedQueueScriptKey(entryId);
+                  const detailsExpanded = hasScriptSummary && expandedQueueScriptKeys.has(detailKey);
                   return (
                     <div key={`queued-entry-${entryId}`} className="pipeline-queue-entry-wrap">
                       <div
@@ -1351,25 +1728,43 @@ export default function DashboardPage({
                             </>
                           )}
                         </div>
-                        <Button
-                          icon="pi pi-times"
-                          severity="danger"
-                          text
-                          rounded
-                          size="small"
-                          className="pipeline-queue-remove-btn"
-                          disabled={queueReorderBusy}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            if (isNonJob) {
-                              void handleRemoveQueueEntry(entryId);
-                            } else {
-                              void handleRemoveQueuedJob(item.jobId);
-                            }
-                          }}
-                        />
+                        <div className="pipeline-queue-item-actions">
+                          {hasScriptSummary ? (
+                            <button
+                              type="button"
+                              className="queue-job-expand-btn"
+                              aria-label={detailsExpanded ? 'Skriptdetails ausblenden' : 'Skriptdetails einblenden'}
+                              aria-expanded={detailsExpanded}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                toggleQueueScriptDetails(detailKey);
+                              }}
+                            >
+                              <i className={`pi ${detailsExpanded ? 'pi-angle-up' : 'pi-angle-down'}`} />
+                            </button>
+                          ) : null}
+                          <Button
+                            icon="pi pi-times"
+                            severity="danger"
+                            text
+                            rounded
+                            size="small"
+                            className="pipeline-queue-remove-btn"
+                            disabled={queueReorderBusy}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              if (isNonJob) {
+                                void handleRemoveQueueEntry(entryId);
+                              } else {
+                                void handleRemoveQueuedJob(item.jobId);
+                              }
+                            }}
+                          />
+                        </div>
                       </div>
+                      {detailsExpanded ? <QueueJobScriptSummary item={item} /> : null}
                       <button
                         type="button"
                         className="queue-insert-btn"
@@ -1385,6 +1780,150 @@ export default function DashboardPage({
             )}
           </div>
         </div>
+      </Card>
+
+      <Card title="Skript- / Cron-Status" subTitle="Laufende und zuletzt abgeschlossene Skript-, Ketten- und Cron-Ausführungen.">
+        <div className="runtime-activity-meta">
+          <Tag value={`Laufend: ${runtimeActiveItems.length}`} severity={runtimeActiveItems.length > 0 ? 'warning' : 'success'} />
+          <Tag value={`Zuletzt: ${runtimeRecentItems.length}`} severity="info" />
+          <Tag value={`Update: ${formatUpdatedAt(runtimeActivities?.updatedAt)}`} severity="secondary" />
+        </div>
+
+        {runtimeLoading && runtimeActiveItems.length === 0 && runtimeRecentItems.length === 0 ? (
+          <p>Aktivitäten werden geladen ...</p>
+        ) : (
+          <div className="runtime-activity-grid">
+            <div className="runtime-activity-col">
+              <h4>Aktiv</h4>
+              {runtimeActiveItems.length === 0 ? (
+                <small>Keine laufenden Skript-/Ketten-/Cron-Ausführungen.</small>
+              ) : (
+                <div className="runtime-activity-list">
+                  {runtimeActiveItems.map((item, index) => {
+                    const statusMeta = runtimeStatusMeta(item?.status);
+                    const canCancel = Boolean(item?.canCancel);
+                    const canNextStep = String(item?.type || '').trim().toLowerCase() === 'chain' && Boolean(item?.canNextStep);
+                    const cancelBusy = isRuntimeActionBusy(item?.id, 'cancel');
+                    const nextStepBusy = isRuntimeActionBusy(item?.id, 'next-step');
+                    return (
+                      <div key={`runtime-active-${item?.id || index}`} className="runtime-activity-item">
+                        <div className="runtime-activity-head">
+                          <strong>{item?.name || '-'}</strong>
+                          <div className="runtime-activity-tags">
+                            <Tag value={runtimeTypeLabel(item?.type)} severity="info" />
+                            <Tag value={statusMeta.label} severity={statusMeta.severity} />
+                          </div>
+                        </div>
+                        <small>
+                          Quelle: {item?.source || '-'}
+                          {item?.jobId ? ` | Job #${item.jobId}` : ''}
+                          {item?.cronJobId ? ` | Cron #${item.cronJobId}` : ''}
+                        </small>
+                        {item?.currentStep ? <small>Schritt: {item.currentStep}</small> : null}
+                        {item?.currentScriptName ? <small>Laufendes Skript: {item.currentScriptName}</small> : null}
+                        {item?.message ? <small>{item.message}</small> : null}
+                        <small>Gestartet: {formatUpdatedAt(item?.startedAt)}</small>
+                        {canCancel || canNextStep ? (
+                          <div className="runtime-activity-actions">
+                            {canNextStep ? (
+                              <Button
+                                type="button"
+                                icon="pi pi-step-forward"
+                                label="Nächster Schritt"
+                                outlined
+                                severity="secondary"
+                                size="small"
+                                loading={nextStepBusy}
+                                disabled={cancelBusy}
+                                onClick={() => {
+                                  void handleRuntimeControl(item, 'next-step');
+                                }}
+                              />
+                            ) : null}
+                            {canCancel ? (
+                              <Button
+                                type="button"
+                                icon="pi pi-stop"
+                                label="Abbrechen"
+                                outlined
+                                severity="danger"
+                                size="small"
+                                loading={cancelBusy}
+                                disabled={nextStepBusy}
+                                onClick={() => {
+                                  void handleRuntimeControl(item, 'cancel');
+                                }}
+                              />
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="runtime-activity-col">
+              <h4>Zuletzt abgeschlossen</h4>
+              {runtimeRecentItems.length === 0 ? (
+                <small>Keine abgeschlossenen Einträge vorhanden.</small>
+              ) : (
+                <div className="runtime-activity-list">
+                  {runtimeRecentItems.map((item, index) => {
+                    const outcomeMeta = runtimeOutcomeMeta(item?.outcome, item?.status);
+                    return (
+                      <div key={`runtime-recent-${item?.id || index}`} className="runtime-activity-item done">
+                        <div className="runtime-activity-head">
+                          <strong>{item?.name || '-'}</strong>
+                          <div className="runtime-activity-tags">
+                            <Tag value={runtimeTypeLabel(item?.type)} severity="info" />
+                            <Tag value={outcomeMeta.label} severity={outcomeMeta.severity} />
+                          </div>
+                        </div>
+                        <small>
+                          Quelle: {item?.source || '-'}
+                          {item?.jobId ? ` | Job #${item.jobId}` : ''}
+                          {item?.cronJobId ? ` | Cron #${item.cronJobId}` : ''}
+                        </small>
+                        {Number.isFinite(Number(item?.exitCode)) ? <small>Exit-Code: {item.exitCode}</small> : null}
+                        {item?.message ? <small>{item.message}</small> : null}
+                        {item?.errorMessage ? <small className="error-text">{item.errorMessage}</small> : null}
+                        {hasRuntimeOutputDetails(item) ? (
+                          <details className="runtime-activity-details">
+                            <summary>Details anzeigen</summary>
+                            {item?.output ? (
+                              <div className="runtime-activity-details-block">
+                                <small><strong>Ausgabe:</strong></small>
+                                <pre>{item.output}</pre>
+                              </div>
+                            ) : null}
+                            {item?.stderr ? (
+                              <div className="runtime-activity-details-block">
+                                <small><strong>stderr:</strong>{item?.stderrTruncated ? ' (gekürzt)' : ''}</small>
+                                <pre>{item.stderr}</pre>
+                              </div>
+                            ) : null}
+                            {item?.stdout ? (
+                              <div className="runtime-activity-details-block">
+                                <small><strong>stdout:</strong>{item?.stdoutTruncated ? ' (gekürzt)' : ''}</small>
+                                <pre>{item.stdout}</pre>
+                              </div>
+                            ) : null}
+                          </details>
+                        ) : null}
+                        <small>
+                          Ende: {formatUpdatedAt(item?.finishedAt || item?.startedAt)}
+                          {item?.durationMs != null ? ` | Dauer: ${formatDurationMs(item.durationMs)}` : ''}
+                        </small>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card title="Job Übersicht" subTitle="Kompakte Liste; Klick auf Zeile öffnet die volle Job-Detailansicht mit passenden CTAs">
