@@ -54,26 +54,25 @@ function mapStepRow(row) {
   };
 }
 
-function terminateChildProcess(child) {
+function terminateChildProcess(child, { immediate = false } = {}) {
   if (!child) {
     return;
   }
+  const signal = immediate ? 'SIGKILL' : 'SIGTERM';
+  const pid = Number(child.pid);
+  if (Number.isFinite(pid) && pid > 0) {
+    try {
+      // For detached children this targets the full process group.
+      process.kill(-pid, signal);
+      return;
+    } catch (_error) {
+      // Fall through to direct child signal.
+    }
+  }
   try {
-    child.kill('SIGTERM');
+    child.kill(signal);
   } catch (_error) {
     return;
-  }
-  const forceKillTimer = setTimeout(() => {
-    try {
-      if (!child.killed) {
-        child.kill('SIGKILL');
-      }
-    } catch (_error) {
-      // ignore
-    }
-  }, 2000);
-  if (typeof forceKillTimer.unref === 'function') {
-    forceKillTimer.unref();
   }
 }
 
@@ -459,7 +458,7 @@ class ScriptChainService {
         controlState.activeWaitResolve('cancel');
       } else if (controlState.currentStepType === STEP_TYPE_SCRIPT && controlState.activeChild) {
         controlState.activeChildTermination = 'cancel';
-        terminateChildProcess(controlState.activeChild);
+        terminateChildProcess(controlState.activeChild, { immediate: true });
       }
       return { accepted: true, message: 'Abbruch angefordert.' };
     };
@@ -483,7 +482,7 @@ class ScriptChainService {
       }
       if (controlState.currentStepType === STEP_TYPE_SCRIPT && controlState.activeChild) {
         controlState.activeChildTermination = 'skip';
-        terminateChildProcess(controlState.activeChild);
+        terminateChildProcess(controlState.activeChild, { immediate: true });
         runtimeActivityService.updateActivity(activityId, {
           message: 'Nächster Schritt angefordert (aktuelles Skript wird übersprungen)'
         });
@@ -619,7 +618,8 @@ class ScriptChainService {
             const run = await new Promise((resolve, reject) => {
               const child = spawn(prepared.cmd, prepared.args, {
                 env: process.env,
-                stdio: ['ignore', 'pipe', 'pipe']
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: true
               });
               controlState.activeChild = child;
               controlState.activeChildTermination = null;

@@ -37,7 +37,8 @@ function spawnTrackedProcess({
   const child = spawn(cmd, args, {
     cwd,
     env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true
   });
 
   if (onStart) {
@@ -72,6 +73,23 @@ function spawnTrackedProcess({
   });
 
   let cancelCalled = false;
+  const killProcessTree = (signal) => {
+    const pid = Number(child.pid);
+    if (Number.isFinite(pid) && pid > 0) {
+      try {
+        process.kill(-pid, signal);
+        return true;
+      } catch (_error) {
+        // fallback below
+      }
+    }
+    try {
+      child.kill(signal);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
   const cancel = () => {
     if (cancelCalled) {
       return;
@@ -79,17 +97,8 @@ function spawnTrackedProcess({
     cancelCalled = true;
 
     logger.warn('spawn:cancel:requested', { cmd, args, context, pid: child.pid });
-    child.kill('SIGINT');
-
-    setTimeout(() => {
-      try {
-        process.kill(child.pid, 0);
-        logger.warn('spawn:cancel:force-kill', { cmd, args, context, pid: child.pid });
-        child.kill('SIGKILL');
-      } catch (_e) {
-        // Process already terminated
-      }
-    }, 3000);
+    // Instant cancel by user request.
+    killProcessTree('SIGKILL');
   };
 
   return {

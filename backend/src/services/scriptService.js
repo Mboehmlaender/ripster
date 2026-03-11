@@ -160,13 +160,37 @@ function appendWithCap(current, chunk, maxChars) {
   };
 }
 
+function killChildProcessTree(child, signal = 'SIGTERM') {
+  if (!child) {
+    return false;
+  }
+  const pid = Number(child.pid);
+  if (Number.isFinite(pid) && pid > 0) {
+    try {
+      // If spawned as detached=true this targets the full process group.
+      process.kill(-pid, signal);
+      return true;
+    } catch (_error) {
+      // Fallback below.
+    }
+  }
+  try {
+    child.kill(signal);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
 function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd = process.cwd(), onChild = null }) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    let ended = false;
     const child = spawn(cmd, args, {
       cwd,
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true
     });
     if (typeof onChild === 'function') {
       try {
@@ -184,10 +208,10 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      killChildProcessTree(child, 'SIGTERM');
       setTimeout(() => {
-        if (!child.killed) {
-          child.kill('SIGKILL');
+        if (!ended) {
+          killChildProcessTree(child, 'SIGKILL');
         }
       }, 2000);
     }, Math.max(1000, Number(timeoutMs || SCRIPT_TEST_TIMEOUT_MS)));
@@ -208,11 +232,13 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
     child.stderr?.on('data', (chunk) => onData('stderr', chunk));
 
     child.on('error', (error) => {
+      ended = true;
       clearTimeout(timeout);
       reject(error);
     });
 
     child.on('close', (code, signal) => {
+      ended = true;
       clearTimeout(timeout);
       const endedAt = Date.now();
       resolve({
@@ -508,23 +534,8 @@ class ScriptService {
           message: 'Abbruch angefordert'
         });
         if (controlState.child) {
-          try {
-            controlState.child.kill('SIGTERM');
-          } catch (_error) {
-            // ignore
-          }
-          const forceKillTimer = setTimeout(() => {
-            try {
-              if (controlState.child && !controlState.child.killed) {
-                controlState.child.kill('SIGKILL');
-              }
-            } catch (_error) {
-              // ignore
-            }
-          }, 2000);
-          if (typeof forceKillTimer.unref === 'function') {
-            forceKillTimer.unref();
-          }
+          // User cancel should stop instantly.
+          killChildProcessTree(controlState.child, 'SIGKILL');
         }
         return { accepted: true, message: 'Abbruch angefordert.' };
       }
@@ -539,30 +550,34 @@ class ScriptService {
           controlState.child = child;
         }
       });
-      const cancelledByUser = controlState.cancelRequested;
-      const success = !cancelledByUser && run.code === 0 && !run.timedOut;
+      const exitCode = Number.isFinite(Number(run.code)) ? Number(run.code) : null;
+      const finishedSuccessfully = exitCode === 0 && !run.timedOut;
+      const cancelledByUser = Boolean(controlState.cancelRequested) && !finishedSuccessfully;
+      const success = finishedSuccessfully;
+      const message = cancelledByUser
+        ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+        : (run.timedOut
+          ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
+          : (success ? 'Skript-Test abgeschlossen' : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`));
+      const errorMessage = success
+        ? null
+        : (cancelledByUser
+          ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
+          : (run.timedOut
+            ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
+            : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`));
       runtimeActivityService.completeActivity(activityId, {
         status: success ? 'success' : 'error',
         success,
         outcome: cancelledByUser ? 'cancelled' : (success ? 'success' : 'error'),
         cancelled: cancelledByUser,
-        exitCode: Number.isFinite(Number(run.code)) ? Number(run.code) : null,
+        exitCode,
         stdout: run.stdout || null,
         stderr: run.stderr || null,
         stdoutTruncated: Boolean(run.stdoutTruncated),
         stderrTruncated: Boolean(run.stderrTruncated),
-        errorMessage: !success
-          ? (cancelledByUser
-            ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
-            : (run.timedOut
-              ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
-              : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`))
-          : null,
-        message: cancelledByUser
-          ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
-          : (run.timedOut
-            ? `Skript-Test Timeout nach ${Math.round(effectiveTimeoutMs / 1000)}s`
-            : (success ? 'Skript-Test abgeschlossen' : `Skript-Test fehlgeschlagen (Exit ${run.code ?? 'n/a'})`))
+        errorMessage,
+        message
       });
       return {
         scriptId: script.id,
