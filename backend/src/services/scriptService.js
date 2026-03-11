@@ -521,7 +521,8 @@ class ScriptService {
     const controlState = {
       cancelRequested: false,
       cancelReason: null,
-      child: null
+      child: null,
+      cancelSignalSent: false
     };
     runtimeActivityService.setControls(activityId, {
       cancel: async (payload = {}) => {
@@ -535,7 +536,7 @@ class ScriptService {
         });
         if (controlState.child) {
           // User cancel should stop instantly.
-          killChildProcessTree(controlState.child, 'SIGKILL');
+          controlState.cancelSignalSent = killChildProcessTree(controlState.child, 'SIGKILL') || controlState.cancelSignalSent;
         }
         return { accepted: true, message: 'Abbruch angefordert.' };
       }
@@ -552,7 +553,8 @@ class ScriptService {
       });
       const exitCode = Number.isFinite(Number(run.code)) ? Number(run.code) : null;
       const finishedSuccessfully = exitCode === 0 && !run.timedOut;
-      const cancelledByUser = Boolean(controlState.cancelRequested) && !finishedSuccessfully;
+      const cancelledByUser = Boolean(controlState.cancelRequested)
+        && (Boolean(controlState.cancelSignalSent) || !finishedSuccessfully);
       const success = finishedSuccessfully;
       const message = cancelledByUser
         ? (controlState.cancelReason || 'Von Benutzer abgebrochen')
