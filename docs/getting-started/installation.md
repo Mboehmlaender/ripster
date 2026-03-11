@@ -2,6 +2,8 @@
 
 Die empfohlene Installation läuft über `install.sh` und richtet Ripster vollständig ein.
 
+Du musst dafür **keine Tools manuell vorinstallieren**. `install.sh` installiert die benötigten Abhängigkeiten automatisch (außer du überspringst sie mit `--no-*`).
+
 ## Zielbild nach der Installation
 
 - Ripster-Backend als `systemd`-Dienst

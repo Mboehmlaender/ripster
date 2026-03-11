@@ -12,7 +12,7 @@ Dieses Kapitel ist für den **Betrieb von Ripster im Alltag** geschrieben.
 
 | Kapitel | Zweck |
 |---|---|
-| [Voraussetzungen](prerequisites.md) | Prüfen, ob System und Tools bereit sind |
+| [Voraussetzungen](prerequisites.md) | Produktions- vs. Dev-Voraussetzungen klar trennen |
 | [Installation](installation.md) | Ripster aufsetzen und starten |
 | [Ersteinrichtung](configuration.md) | Pfade, Tools und Metadaten korrekt setzen |
 | [Erster Lauf](quickstart.md) | Ein kompletter Job von Disc bis Datei |

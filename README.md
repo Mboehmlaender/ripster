@@ -26,12 +26,17 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 
 ## Voraussetzungen
 
-- Linux-System mit optischem Laufwerk (oder gemounteter Quelle)
-- Node.js `>= 20.19.0` (siehe [.nvmrc](.nvmrc))
-- Installierte CLI-Tools im `PATH`:
-  - `makemkvcon`
-  - `HandBrakeCLI`
-  - `mediainfo`
+- **Produktion (empfohlen mit `install.sh`)**:
+  - unterstütztes Debian/Ubuntu-System
+  - root-Rechte + Internetzugang
+  - optisches Laufwerk (oder gemountete Quelle)
+  - `install.sh` installiert Node.js und die benötigten Tools automatisch
+- **Entwicklung (`./start.sh`, `npm run dev`)**:
+  - Node.js `>= 20.19.0` (siehe [.nvmrc](.nvmrc))
+  - installierte CLI-Tools im `PATH`:
+    - `makemkvcon`
+    - `HandBrakeCLI`
+    - `mediainfo`
 
 ## Schnellstart (Produktion)
 

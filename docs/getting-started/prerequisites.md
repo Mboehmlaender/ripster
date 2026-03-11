@@ -1,41 +1,21 @@
 # Voraussetzungen
 
-Diese Seite ist die praktische Checkliste vor der Installation.
+Die Voraussetzungen hängen davon ab, **wie** du Ripster betreibst.
 
-## 1) System
+## Produktionsbetrieb mit `install.sh` (Standard)
 
-| Punkt | Mindestwert | Empfehlung |
-|---|---|---|
-| Betriebssystem | Linux oder macOS | Ubuntu 22.04+ |
-| Node.js | 20.19.0 | 20.x LTS |
-| RAM | 4 GB | 8 GB+ |
-| Freier Speicher | 50 GB | 500 GB+ |
+Für den normalen Betrieb sind nur wenige Punkte vorab nötig.
 
-Node-Version prüfen:
+### Pflicht
 
-```bash
-node --version
-```
+- unterstütztes Linux-System (Debian/Ubuntu)
+- `root`-Rechte
+- Internetzugang während der Installation
+- optisches Laufwerk für Disc-Betrieb
 
-## 2) Externe Tools
+`install.sh` installiert die benötigten Tools selbst (u. a. Node.js, MakeMKV, HandBrakeCLI, MediaInfo), sofern sie nicht explizit per `--no-*` übersprungen werden.
 
-Ripster benötigt folgende CLI-Tools im `PATH`:
-
-- `makemkvcon`
-- `HandBrakeCLI`
-- `mediainfo`
-
-Schnell prüfen:
-
-```bash
-makemkvcon --version
-HandBrakeCLI --version
-mediainfo --Version
-```
-
-## 3) Optisches Laufwerk
-
-Für Disc-Betrieb muss ein DVD/Blu-ray-Laufwerk erreichbar sein.
+### Laufwerk kurz prüfen
 
 ```bash
 ls /dev/sr*
@@ -48,23 +28,21 @@ Wenn nötig Rechte setzen (Beispiel):
 sudo chmod a+rw /dev/sr0
 ```
 
-## 4) OMDb API-Key
+### Optional vorab
 
-Für automatische Metadaten (Titel, Poster, IMDb-ID):
+- OMDb API-Key (kann auch nach Installation in den `Settings` gesetzt werden)
+- PushOver-Zugangsdaten (optional)
 
-1. Key unter [omdbapi.com](https://www.omdbapi.com/apikey.aspx) anlegen
-2. in den `Settings` als `omdb_api_key` eintragen
+## Entwicklungsmodus (nur für Dev)
 
-## 5) Optional: PushOver
+Wenn du lokal entwickelst (`./start.sh`, `npm run dev`), gelten zusätzliche Voraussetzungen:
 
-Für Push-Nachrichten bei Erfolg/Fehler:
+- Node.js >= 20.19.0
+- `makemkvcon`, `HandBrakeCLI`, `mediainfo` im `PATH`
 
-- Account/App auf [pushover.net](https://pushover.net)
-- `pushover_token` und `pushover_user` später in den `Settings` setzen
+Details: [Entwicklungsumgebung](../deployment/development.md)
 
 ## Abschluss-Checkliste
 
-- [ ] Node.js 20.x verfügbar
-- [ ] `makemkvcon`, `HandBrakeCLI`, `mediainfo` ausführbar
-- [ ] Laufwerk erkannt
-- [ ] OMDb Key bereit
+- [ ] Produktionsbetrieb: Linux + root + Internet + Laufwerk vorhanden
+- [ ] Dev-Modus (nur falls benötigt): Node.js und CLI-Tools verfügbar
