@@ -510,6 +510,21 @@ if [[ -n "$ACTUAL_USER" && "$ACTUAL_USER" != "root" ]]; then
     "$INSTALL_DIR/backend/data/output" \
     "$INSTALL_DIR/backend/data/logs"
   ok "Verzeichnisse $ACTUAL_USER:$SERVICE_USER (775) zugewiesen"
+
+  # MakeMKV erwartet pro Benutzer ein eigenes Konfigurationsverzeichnis.
+  ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" | cut -d: -f6)"
+  if [[ -z "$ACTUAL_HOME" ]]; then
+    ACTUAL_HOME="/home/$ACTUAL_USER"
+  fi
+  MAKEMKV_USER_DIR="${ACTUAL_HOME}/.MakeMKV"
+  if [[ ! -d "$MAKEMKV_USER_DIR" ]]; then
+    mkdir -p "$MAKEMKV_USER_DIR"
+    ok "MakeMKV-Verzeichnis erstellt: $MAKEMKV_USER_DIR"
+  else
+    info "MakeMKV-Verzeichnis vorhanden: $MAKEMKV_USER_DIR"
+  fi
+  chown "$ACTUAL_USER:$ACTUAL_USER" "$MAKEMKV_USER_DIR" 2>/dev/null || true
+  chmod 700 "$MAKEMKV_USER_DIR" 2>/dev/null || true
 else
   ok "Verzeichnisse bereits $SERVICE_USER gehörig (kein SUDO_USER erkannt)"
 fi
