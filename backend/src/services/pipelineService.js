@@ -3615,26 +3615,12 @@ class PipelineService extends EventEmitter {
       logger.info('init:loaded-snapshot', { snapshot: this.snapshot });
     }
 
-    if (RUNNING_STATES.has(this.snapshot.state) && this.snapshot.activeJobId) {
-      const message = `Server-Neustart während ${this.snapshot.state} am ${new Date().toISOString()}`;
-      await historyService.updateJobStatus(this.snapshot.activeJobId, 'ERROR', {
-        end_time: nowIso(),
-        error_message: message
+    try {
+      await this.recoverStaleRunningJobsOnStartup(db);
+    } catch (recoveryError) {
+      logger.warn('init:stale-running-recovery-failed', {
+        error: errorToMeta(recoveryError)
       });
-      await historyService.appendLog(this.snapshot.activeJobId, 'SYSTEM', message);
-
-      await this.setState('ERROR', {
-        activeJobId: this.snapshot.activeJobId,
-        progress: 0,
-        eta: null,
-        statusText: message,
-        context: {
-          jobId: this.snapshot.activeJobId,
-          stage: 'RECOVERY',
-          error: message
-        }
-      });
-      logger.warn('init:recovered-running-job', { jobId: this.snapshot.activeJobId, previousState: this.snapshot.state });
     }
 
     // Always start with a clean dashboard/session snapshot after server restart.
@@ -3649,6 +3635,93 @@ class PipelineService extends EventEmitter {
     }
     await this.emitQueueChanged();
     void this.pumpQueue();
+  }
+
+  async recoverStaleRunningJobsOnStartup(db) {
+    const staleRows = await db.all(`
+      SELECT id, status, last_state
+      FROM jobs
+      WHERE status IN ('ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING')
+      ORDER BY updated_at ASC, id ASC
+    `);
+    const rows = Array.isArray(staleRows) ? staleRows : [];
+    if (rows.length === 0) {
+      return {
+        scanned: 0,
+        preparedReadyToEncode: 0,
+        markedError: 0,
+        skipped: 0
+      };
+    }
+
+    let preparedReadyToEncode = 0;
+    let markedError = 0;
+    let skipped = 0;
+
+    for (const row of rows) {
+      const jobId = this.normalizeQueueJobId(row?.id);
+      if (!jobId) {
+        skipped += 1;
+        continue;
+      }
+      const rawStage = String(row?.status || row?.last_state || '').trim().toUpperCase();
+      const stage = RUNNING_STATES.has(rawStage) ? rawStage : 'ENCODING';
+      const message = `Server-Neustart erkannt während ${stage}. Laufender Prozess wurde beendet.`;
+
+      if (stage === 'ENCODING') {
+        try {
+          await historyService.appendLog(jobId, 'SYSTEM', message);
+        } catch (_error) {
+          // keep recovery path even if log append fails
+        }
+        try {
+          await this.restartEncodeWithLastSettings(jobId, {
+            immediate: true,
+            triggerReason: 'server_restart'
+          });
+          preparedReadyToEncode += 1;
+          continue;
+        } catch (error) {
+          logger.warn('startup:recover-stale-encoding:restart-failed', {
+            jobId,
+            error: errorToMeta(error)
+          });
+          try {
+            await historyService.appendLog(
+              jobId,
+              'SYSTEM',
+              `Startup-Recovery Encode fehlgeschlagen, setze Job auf ERROR: ${error?.message || 'unknown'}`
+            );
+          } catch (_logError) {
+            // ignore logging fallback errors
+          }
+        }
+      }
+
+      await historyService.updateJobStatus(jobId, 'ERROR', {
+        end_time: nowIso(),
+        error_message: message
+      });
+      try {
+        await historyService.appendLog(jobId, 'SYSTEM', message);
+      } catch (_error) {
+        // ignore logging failures during startup recovery
+      }
+      markedError += 1;
+    }
+
+    logger.warn('startup:recover-stale-running-jobs', {
+      scanned: rows.length,
+      preparedReadyToEncode,
+      markedError,
+      skipped
+    });
+    return {
+      scanned: rows.length,
+      preparedReadyToEncode,
+      markedError,
+      skipped
+    };
   }
 
   safeParseJson(raw) {
@@ -8759,6 +8832,8 @@ class PipelineService extends EventEmitter {
       restartLogMessage = `Encode wurde abgebrochen. ${loadedSelectionText}`;
     } else if (triggerReason === 'failed_encode') {
       restartLogMessage = `Encode ist fehlgeschlagen. ${loadedSelectionText}`;
+    } else if (triggerReason === 'server_restart') {
+      restartLogMessage = `Server-Neustart während Encode erkannt. ${loadedSelectionText}`;
     } else if (triggerReason === 'confirm_auto_prepare') {
       restartLogMessage = `Status war nicht READY_TO_ENCODE. ${loadedSelectionText}`;
     } else {
