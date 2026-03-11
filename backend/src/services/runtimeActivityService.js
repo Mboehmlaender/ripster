@@ -183,6 +183,19 @@ class RuntimeActivityService {
     return this.buildSnapshot();
   }
 
+  clearRecent() {
+    const removed = this.recent.length;
+    if (removed === 0) {
+      return { removed: 0, snapshot: this.buildSnapshot() };
+    }
+    this.recent = [];
+    this.broadcastSnapshot();
+    return {
+      removed,
+      snapshot: this.buildSnapshot()
+    };
+  }
+
   setControls(activityId, handlers = {}) {
     const id = normalizeNumber(activityId);
     if (!id || !this.active.has(id)) {

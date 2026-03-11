@@ -562,6 +562,7 @@ export default function DashboardPage({
   const [runtimeActivities, setRuntimeActivities] = useState(() => normalizeRuntimeActivitiesPayload(null));
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [runtimeActionBusyKeys, setRuntimeActionBusyKeys] = useState(() => new Set());
+  const [runtimeRecentClearing, setRuntimeRecentClearing] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
@@ -1438,6 +1439,37 @@ export default function DashboardPage({
     }
   };
 
+  const handleClearRuntimeRecent = async () => {
+    if (runtimeRecentClearing || runtimeRecentItems.length === 0) {
+      return;
+    }
+    setRuntimeRecentClearing(true);
+    try {
+      const response = await api.clearRuntimeRecentActivities();
+      if (response?.snapshot) {
+        setRuntimeActivities(normalizeRuntimeActivitiesPayload(response.snapshot));
+      } else {
+        const fresh = await api.getRuntimeActivities();
+        setRuntimeActivities(normalizeRuntimeActivitiesPayload(fresh));
+      }
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Abgeschlossene Liste',
+        detail: `Einträge entfernt: ${Number(response?.removed || 0)}`,
+        life: 2200
+      });
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Liste leeren',
+        detail: error?.message || 'Leeren fehlgeschlagen.',
+        life: 3200
+      });
+    } finally {
+      setRuntimeRecentClearing(false);
+    }
+  };
+
   const runtimeActiveItems = Array.isArray(runtimeActivities?.active) ? runtimeActivities.active : [];
   const runtimeRecentItems = Array.isArray(runtimeActivities?.recent)
     ? runtimeActivities.recent.slice(0, 8)
@@ -1783,20 +1815,33 @@ export default function DashboardPage({
       </Card>
 
       <Card title="Skript- / Cron-Status" subTitle="Laufende und zuletzt abgeschlossene Skript-, Ketten- und Cron-Ausführungen.">
-        <div className="runtime-activity-meta">
+        <div className="runtime-activity-meta pipeline-queue-meta">
           <Tag value={`Laufend: ${runtimeActiveItems.length}`} severity={runtimeActiveItems.length > 0 ? 'warning' : 'success'} />
           <Tag value={`Zuletzt: ${runtimeRecentItems.length}`} severity="info" />
           <Tag value={`Update: ${formatUpdatedAt(runtimeActivities?.updatedAt)}`} severity="secondary" />
+          <Button
+            type="button"
+            icon="pi pi-trash"
+            label="Liste leeren"
+            severity="secondary"
+            outlined
+            size="small"
+            onClick={() => {
+              void handleClearRuntimeRecent();
+            }}
+            disabled={runtimeRecentItems.length === 0}
+            loading={runtimeRecentClearing}
+          />
         </div>
 
         {runtimeLoading && runtimeActiveItems.length === 0 && runtimeRecentItems.length === 0 ? (
           <p>Aktivitäten werden geladen ...</p>
         ) : (
-          <div className="runtime-activity-grid">
-            <div className="runtime-activity-col">
+          <div className="runtime-activity-grid pipeline-queue-grid">
+            <div className="runtime-activity-col pipeline-queue-col">
               <h4>Aktiv</h4>
               {runtimeActiveItems.length === 0 ? (
-                <small>Keine laufenden Skript-/Ketten-/Cron-Ausführungen.</small>
+                <small className="queue-empty-hint">Keine laufenden Skript-/Ketten-/Cron-Ausführungen.</small>
               ) : (
                 <div className="runtime-activity-list">
                   {runtimeActiveItems.map((item, index) => {
@@ -1806,7 +1851,7 @@ export default function DashboardPage({
                     const cancelBusy = isRuntimeActionBusy(item?.id, 'cancel');
                     const nextStepBusy = isRuntimeActionBusy(item?.id, 'next-step');
                     return (
-                      <div key={`runtime-active-${item?.id || index}`} className="runtime-activity-item">
+                      <div key={`runtime-active-${item?.id || index}`} className="runtime-activity-item running">
                         <div className="runtime-activity-head">
                           <strong>{item?.name || '-'}</strong>
                           <div className="runtime-activity-tags">
@@ -1864,10 +1909,10 @@ export default function DashboardPage({
               )}
             </div>
 
-            <div className="runtime-activity-col">
+            <div className="runtime-activity-col pipeline-queue-col">
               <h4>Zuletzt abgeschlossen</h4>
               {runtimeRecentItems.length === 0 ? (
-                <small>Keine abgeschlossenen Einträge vorhanden.</small>
+                <small className="queue-empty-hint">Keine abgeschlossenen Einträge vorhanden.</small>
               ) : (
                 <div className="runtime-activity-list">
                   {runtimeRecentItems.map((item, index) => {

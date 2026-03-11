@@ -53,4 +53,17 @@ router.post(
   })
 );
 
+router.post(
+  '/activities/clear-recent',
+  asyncHandler(async (req, res) => {
+    logger.info('post:runtime:activities:clear-recent', { reqId: req.reqId });
+    const result = runtimeActivityService.clearRecent();
+    res.json({
+      ok: true,
+      removed: Number(result?.removed || 0),
+      snapshot: result?.snapshot || runtimeActivityService.getSnapshot()
+    });
+  })
+);
+
 module.exports = router;

@@ -250,6 +250,12 @@ export const api = {
       body: JSON.stringify(payload || {})
     });
   },
+  clearRuntimeRecentActivities() {
+    return request('/runtime/activities/clear-recent', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  },
   async analyzeDisc() {
     const result = await request('/pipeline/analyze', {
       method: 'POST'
