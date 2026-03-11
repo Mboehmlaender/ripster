@@ -69,6 +69,7 @@ nav:
     - Settings API: api/settings.md
     - History API: api/history.md
     - Cron API: api/crons.md
+    - Runtime Activities API: api/runtime-activities.md
     - WebSocket Events: api/websocket.md
   - Konfiguration:
     - configuration/index.md

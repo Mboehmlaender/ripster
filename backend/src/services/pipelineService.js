@@ -2172,6 +2172,18 @@ function isPathInsideDirectory(parentPath, candidatePath) {
   return candidate.startsWith(parentWithSep);
 }
 
+function isEncodeInputMismatchedWithRaw(rawPath, encodeInputPath) {
+  const raw = normalizeComparablePath(rawPath);
+  const input = normalizeComparablePath(encodeInputPath);
+  if (!raw || !input) {
+    return true;
+  }
+  if (raw === input) {
+    return false;
+  }
+  return !isPathInsideDirectory(raw, input);
+}
+
 function isJobFinished(jobLike = null) {
   const status = String(jobLike?.status || '').trim().toUpperCase();
   const lastState = String(jobLike?.last_state || '').trim().toUpperCase();
@@ -9123,10 +9135,10 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    const hasRawInput = Boolean(
-      hasBluRayBackupStructure(resolvedReviewRawPath)
-      || findPreferredRawInput(resolvedReviewRawPath)
-    );
+    const resolvedReviewInput = hasBluRayBackupStructure(resolvedReviewRawPath)
+      ? { path: resolvedReviewRawPath }
+      : findPreferredRawInput(resolvedReviewRawPath);
+    const hasRawInput = Boolean(resolvedReviewInput?.path);
     if (!hasRawInput) {
       let hasAnyRawEntries = false;
       try {
@@ -9145,6 +9157,19 @@ class PipelineService extends EventEmitter {
         `Review-Neustart: keine direkten Mediendateien erkannt, versuche Analyse trotzdem mit RAW-Pfad ${resolvedReviewRawPath}.`
       );
     }
+
+    const existingEncodeInputPath = String(sourceJob.encode_input_path || '').trim() || null;
+    const shouldRealignEncodeInput = Boolean(
+      resolvedReviewInput?.path
+      && (
+        !existingEncodeInputPath
+        || !fs.existsSync(existingEncodeInputPath)
+        || isEncodeInputMismatchedWithRaw(resolvedReviewRawPath, existingEncodeInputPath)
+      )
+    );
+    const normalizedReviewInputPath = shouldRealignEncodeInput
+      ? resolvedReviewInput.path
+      : existingEncodeInputPath;
 
     const currentStatus = String(sourceJob.status || '').trim().toUpperCase();
     if (['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(currentStatus)) {
@@ -9194,7 +9219,7 @@ class PipelineService extends EventEmitter {
       handbrake_info_json: null,
       mediainfo_info_json: null,
       encode_plan_json: null,
-      encode_input_path: null,
+      encode_input_path: normalizedReviewInputPath || null,
       encode_review_confirmed: 0,
       makemkv_info_json: nextMakemkvInfoJson
     };
@@ -9202,6 +9227,13 @@ class PipelineService extends EventEmitter {
       jobUpdatePayload.raw_path = resolvedReviewRawPath;
     }
     await historyService.updateJob(jobId, jobUpdatePayload);
+    if (shouldRealignEncodeInput) {
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Review-Neustart: Encode-Input auf aktuellen RAW-Pfad abgeglichen: ${existingEncodeInputPath || '-'} -> ${normalizedReviewInputPath}`
+      );
+    }
     await historyService.appendLog(
       jobId,
       'USER_ACTION',

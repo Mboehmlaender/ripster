@@ -14,6 +14,7 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 - Pre- und Post-Encode-Ausführungen (Skripte und/oder Skript-Ketten)
 - Pipeline-Queue mit Job- und Nicht-Job-Einträgen (`script`, `chain`, `wait`)
 - Cron-Jobs für Skripte/Ketten (inkl. Logs und manueller Auslösung)
+- **Aktivitäts-Tracking**: Laufende und abgeschlossene Aktionen (Skripte, Ketten, Cron, Tasks) in Echtzeit im Dashboard
 - Historie mit Re-Encode, Review-Neustart, File-/Job-Löschung und Orphan-Import
 - Hardware-Monitoring (CPU/RAM/GPU/Storage) im Dashboard
 
@@ -189,6 +190,12 @@ ripster/
 - `GET /api/crons/:id/logs`
 - `POST /api/crons/:id/run`
 - `POST /api/crons/validate-expression`
+
+**Runtime-Aktivitäten**
+- `GET /api/activities`
+- `POST /api/activities/:id/cancel`
+- `POST /api/activities/:id/next-step`
+- `POST /api/activities/clear-recent`
 
 ## Troubleshooting
 

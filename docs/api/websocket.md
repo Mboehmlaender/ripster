@@ -204,6 +204,44 @@ Laufzeitstatus eines Cron-Jobs geändert.
 }
 ```
 
+### RUNTIME_ACTIVITY_CHANGED
+
+Vollständiger Snapshot aller laufenden und kürzlich abgeschlossenen Aktivitäten.
+
+Wird ausgelöst, wenn eine Aktivität gestartet, aktualisiert oder abgeschlossen wird sowie nach `clear-recent`.
+
+```json
+{
+  "type": "RUNTIME_ACTIVITY_CHANGED",
+  "payload": {
+    "active": [
+      {
+        "id": 7,
+        "type": "chain",
+        "name": "Post-Encode Aufräumen",
+        "status": "running",
+        "source": "cron",
+        "message": "Schritt 2 von 3",
+        "currentStep": "cleanup.sh",
+        "currentStepType": "script",
+        "stepIndex": 2,
+        "stepTotal": 3,
+        "canCancel": true,
+        "canNextStep": false,
+        "outcome": "running",
+        "startedAt": "2026-03-10T10:00:00.000Z",
+        "finishedAt": null,
+        "durationMs": null
+      }
+    ],
+    "recent": [],
+    "updatedAt": "2026-03-10T10:00:05.000Z"
+  }
+}
+```
+
+Vollständige Feldbeschreibung: [Runtime Activities API](runtime-activities.md).
+
 ---
 
 ## Reconnect-Verhalten

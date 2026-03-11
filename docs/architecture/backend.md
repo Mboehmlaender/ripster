@@ -91,6 +91,31 @@ Features:
 
 ---
 
+## `runtimeActivityService.js`
+
+In-Memory-Tracking aller laufenden und kürzlich abgeschlossenen Aktivitäten (Skripte, Ketten, Cron-Jobs, Tasks).
+
+Features:
+
+- `startActivity(type, payload)` → Aktivität registrieren, ID zurückgeben
+- `updateActivity(id, patch)` → Laufende Aktivität aktualisieren
+- `completeActivity(id, payload)` → Aktivität abschließen und in `recent` verschieben
+- `setControls(id, { cancel, nextStep })` → Steuer-Handler registrieren (für `canCancel`/`canNextStep`)
+- `requestCancel(id)` / `requestNextStep(id)` → Steuer-Handler aufrufen
+- `clearRecent()` → Abgeschlossene Aktivitäten löschen
+- `getSnapshot()` → Snapshot mit `active` + `recent` + `updatedAt`
+- Broadcasts `RUNTIME_ACTIVITY_CHANGED` über WebSocket bei jeder Änderung
+
+Limits:
+
+- `recent` max. 120 Einträge
+- `stdout`/`stderr`/`output` max. 12.000 Zeichen
+- `message`/`errorMessage` max. 2.000 Zeichen
+
+Vollständige API-Dokumentation: [Runtime Activities API](../api/runtime-activities.md)
+
+---
+
 ## Weitere Services
 
 - `scriptService.js` (CRUD + Test + Wrapper-Ausführung)
