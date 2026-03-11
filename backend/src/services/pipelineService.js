@@ -3423,12 +3423,31 @@ class PipelineService extends EventEmitter {
       return null;
     }
     const folderName = path.basename(stored);
-    const candidates = [stored];
-    const allBaseDirs = [rawBaseDir, ...extraBaseDirs].filter(Boolean);
-    for (const baseDir of allBaseDirs) {
-      const byFolder = path.join(baseDir, folderName);
-      if (!candidates.includes(byFolder)) {
-        candidates.push(byFolder);
+    const currentBaseDir = path.dirname(stored);
+    const allBaseDirs = [currentBaseDir, rawBaseDir, ...extraBaseDirs].filter(Boolean);
+    const uniqueBaseDirs = Array.from(new Set(allBaseDirs.map((item) => String(item).trim()).filter(Boolean)));
+    const variantFolderNames = Array.from(
+      new Set(
+        [
+          folderName,
+          applyRawFolderStateToName(folderName, RAW_FOLDER_STATES.RIP_COMPLETE),
+          applyRawFolderStateToName(folderName, RAW_FOLDER_STATES.INCOMPLETE),
+          applyRawFolderStateToName(folderName, RAW_FOLDER_STATES.COMPLETE)
+        ].map((item) => String(item || '').trim()).filter(Boolean)
+      )
+    );
+    const candidates = [];
+    const pushCandidate = (candidatePath) => {
+      const normalized = String(candidatePath || '').trim();
+      if (!normalized || candidates.includes(normalized)) {
+        return;
+      }
+      candidates.push(normalized);
+    };
+    pushCandidate(stored);
+    for (const baseDir of uniqueBaseDirs) {
+      for (const variantFolderName of variantFolderNames) {
+        pushCandidate(path.join(baseDir, variantFolderName));
       }
     }
     for (const candidate of candidates) {
@@ -6602,6 +6621,15 @@ class PipelineService extends EventEmitter {
 
       this.startEncodingFromPrepared(jobId).catch((error) => {
         logger.error('startPreparedJob:encode-background-failed', { jobId, error: errorToMeta(error) });
+        if (error?.jobAlreadyFailed) {
+          return;
+        }
+        this.failJob(jobId, 'ENCODING', error).catch((failError) => {
+          logger.error('startPreparedJob:encode-background-failJob-failed', {
+            jobId,
+            error: errorToMeta(failError)
+          });
+        });
       });
 
       return { started: true, stage: 'ENCODING' };
@@ -7823,17 +7851,59 @@ class PipelineService extends EventEmitter {
       rawPath: job.raw_path
     });
     const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+    const rawBaseDir = String(settings.raw_dir || '').trim();
+    const rawExtraDirs = [
+      settings.raw_dir_bluray,
+      settings.raw_dir_dvd,
+      settings.raw_dir_other
+    ].map((item) => String(item || '').trim()).filter(Boolean);
+    const resolvedRawPath = job.raw_path
+      ? this.resolveCurrentRawPath(rawBaseDir, job.raw_path, rawExtraDirs)
+      : null;
+    const activeRawPath = resolvedRawPath || String(job.raw_path || '').trim() || null;
+    if (activeRawPath && normalizeComparablePath(activeRawPath) !== normalizeComparablePath(job.raw_path)) {
+      await historyService.updateJob(jobId, { raw_path: activeRawPath });
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `RAW-Pfad für Encode-Start aktualisiert: ${job.raw_path} -> ${activeRawPath}`
+      );
+    }
     const movieDir = settings.movie_dir;
     ensureDir(movieDir);
     const mode = encodePlan?.mode || this.snapshot.context?.mode || 'rip';
     let inputPath = job.encode_input_path || encodePlan?.encodeInputPath || this.snapshot.context?.inputPath || null;
-
-    if (!inputPath && job.raw_path) {
-      const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job);
-      inputPath = findPreferredRawInput(job.raw_path, {
+    let playlistDecision = null;
+    const resolveInputFromRaw = (rawPathCandidate) => {
+      if (!rawPathCandidate) {
+        return null;
+      }
+      if (hasBluRayBackupStructure(rawPathCandidate)) {
+        return rawPathCandidate;
+      }
+      if (!playlistDecision) {
+        playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job);
+      }
+      return findPreferredRawInput(rawPathCandidate, {
         playlistAnalysis: playlistDecision.playlistAnalysis,
         selectedPlaylistId: playlistDecision.selectedPlaylist
       })?.path || null;
+    };
+
+    if (inputPath && !fs.existsSync(inputPath)) {
+      const recoveredInputPath = resolveInputFromRaw(activeRawPath);
+      if (recoveredInputPath && fs.existsSync(recoveredInputPath)) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Encode-Input wurde auf aktuellen RAW-Pfad korrigiert: ${inputPath} -> ${recoveredInputPath}`
+        );
+        inputPath = recoveredInputPath;
+      }
+    }
+
+    if (!inputPath) {
+      inputPath = resolveInputFromRaw(activeRawPath);
     }
 
     if (!inputPath) {
@@ -7878,7 +7948,8 @@ class PipelineService extends EventEmitter {
       status: 'ENCODING',
       last_state: 'ENCODING',
       output_path: incompleteOutputPath,
-      encode_input_path: inputPath
+      encode_input_path: inputPath,
+      ...(activeRawPath ? { raw_path: activeRawPath } : {})
     });
 
     await historyService.appendLog(
@@ -7904,7 +7975,7 @@ class PipelineService extends EventEmitter {
       jobId,
       jobTitle: job.title || job.detected_title || null,
       inputPath,
-      rawPath: job.raw_path || null,
+      rawPath: activeRawPath,
       mediaProfile
     };
     const preScriptIds = normalizeScriptIdList(encodePlan?.preEncodeScriptIds || []);
@@ -8115,7 +8186,7 @@ class PipelineService extends EventEmitter {
           jobTitle: job.title || job.detected_title || null,
           inputPath,
           outputPath: finalizedOutputPath,
-          rawPath: job.raw_path || null
+          rawPath: activeRawPath
         }, encodeScriptProgressTracker);
       } catch (error) {
         logger.warn('encode:post-script:summary-failed', {
@@ -8135,9 +8206,9 @@ class PipelineService extends EventEmitter {
           `Post-Encode Skripte abgeschlossen: ${postEncodeScriptsSummary.succeeded} erfolgreich, ${postEncodeScriptsSummary.failed} fehlgeschlagen, ${postEncodeScriptsSummary.skipped} übersprungen.${postEncodeScriptsSummary.aborted ? ' Kette wurde abgebrochen.' : ''}`
         );
       }
-      let finalizedRawPath = job.raw_path || null;
-      if (job.raw_path) {
-        const currentRawPath = String(job.raw_path || '').trim();
+      let finalizedRawPath = activeRawPath || null;
+      if (activeRawPath) {
+        const currentRawPath = String(activeRawPath || '').trim();
         const completedRawPath = buildCompletedRawPath(currentRawPath);
         if (completedRawPath && completedRawPath !== currentRawPath) {
           if (fs.existsSync(completedRawPath)) {
@@ -8245,6 +8316,7 @@ class PipelineService extends EventEmitter {
       }
       logger.error('encode:start-from-prepared:failed', { jobId, mode, error: errorToMeta(error) });
       await this.failJob(jobId, 'ENCODING', error);
+      error.jobAlreadyFailed = true;
       throw error;
     }
   }
