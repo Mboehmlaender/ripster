@@ -541,14 +541,9 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ripster-backend
 
-# Device-Zugriff fuer GPU und CD-ROM
-DeviceAllow=/dev/sr0 rw
-DeviceAllow=/dev/nvidia0 rw
-DeviceAllow=/dev/nvidiactl rw
-DeviceAllow=/dev/nvidia-uvm rw
-DeviceAllow=/dev/nvidia-uvm-tools rw
-DeviceAllow=/dev/dri/renderD128 rw
-DeviceAllow=/dev/dri/renderD129 rw
+# Kein statisches DeviceAllow: Device-Pfade unterscheiden sich je nach Host/Container.
+# Damit Ripster auf unterschiedlichen Systemen funktioniert, kein Device-Cgroup-Filter.
+DevicePolicy=auto
 SupplementaryGroups=video render cdrom disk
 
 NoNewPrivileges=true
