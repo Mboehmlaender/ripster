@@ -2159,6 +2159,19 @@ function normalizeComparablePath(inputPath) {
   return path.resolve(source).replace(/[\\/]+$/, '');
 }
 
+function isPathInsideDirectory(parentPath, candidatePath) {
+  const parent = normalizeComparablePath(parentPath);
+  const candidate = normalizeComparablePath(candidatePath);
+  if (!parent || !candidate) {
+    return false;
+  }
+  if (candidate === parent) {
+    return true;
+  }
+  const parentWithSep = parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`;
+  return candidate.startsWith(parentWithSep);
+}
+
 function isJobFinished(jobLike = null) {
   const status = String(jobLike?.status || '').trim().toUpperCase();
   const lastState = String(jobLike?.last_state || '').trim().toUpperCase();
@@ -6885,9 +6898,43 @@ class PipelineService extends EventEmitter {
     const readyMediaProfile = this.resolveMediaProfileForJob(job, {
       encodePlan: confirmedPlan
     });
-    const inputPath = isPreRipMode
+    const confirmSettings = await settingsService.getEffectiveSettingsMap(readyMediaProfile);
+    const confirmRawBaseDir = String(confirmSettings?.raw_dir || '').trim();
+    const confirmRawExtraDirs = [
+      confirmSettings?.raw_dir_bluray,
+      confirmSettings?.raw_dir_dvd,
+      confirmSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedConfirmRawPath = job.raw_path
+      ? this.resolveCurrentRawPath(confirmRawBaseDir, job.raw_path, confirmRawExtraDirs)
+      : null;
+    const activeConfirmRawPath = resolvedConfirmRawPath || String(job.raw_path || '').trim() || null;
+
+    let inputPath = isPreRipMode
       ? null
       : (job.encode_input_path || confirmedPlan.encodeInputPath || this.snapshot.context?.inputPath || null);
+    if (!isPreRipMode && activeConfirmRawPath) {
+      const needsInputRefresh = !inputPath
+        || !fs.existsSync(inputPath)
+        || !isPathInsideDirectory(activeConfirmRawPath, inputPath);
+      if (needsInputRefresh) {
+        const selectedPlaylistId = normalizePlaylistId(
+          confirmedPlan?.selectedPlaylistId
+          || confirmedPlan?.selectedPlaylist
+          || null
+        );
+        if (hasBluRayBackupStructure(activeConfirmRawPath)) {
+          inputPath = activeConfirmRawPath;
+        } else {
+          const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job, selectedPlaylistId);
+          inputPath = findPreferredRawInput(activeConfirmRawPath, {
+            playlistAnalysis: playlistDecision.playlistAnalysis,
+            selectedPlaylistId: selectedPlaylistId || playlistDecision.selectedPlaylist
+          })?.path || null;
+        }
+      }
+    }
+    confirmedPlan.encodeInputPath = inputPath;
     const hasEncodableTitle = isPreRipMode
       ? Boolean(confirmedPlan?.encodeInputTitleId)
       : Boolean(inputPath);
@@ -6895,7 +6942,8 @@ class PipelineService extends EventEmitter {
     await historyService.updateJob(jobId, {
       encode_review_confirmed: 1,
       encode_plan_json: JSON.stringify(confirmedPlan),
-      encode_input_path: inputPath
+      encode_input_path: inputPath,
+      ...(activeConfirmRawPath ? { raw_path: activeConfirmRawPath } : {})
     });
     await historyService.appendLog(
       jobId,
@@ -8729,9 +8777,42 @@ class PipelineService extends EventEmitter {
     const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
     const isPreRipMode = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
     const reviewConfirmed = Boolean(Number(job.encode_review_confirmed || 0) || encodePlan?.reviewConfirmed);
-    const inputPath = isPreRipMode
+    const resumeSettings = await settingsService.getEffectiveSettingsMap(this.resolveMediaProfileForJob(job, { encodePlan }));
+    const resumeRawBaseDir = String(resumeSettings?.raw_dir || '').trim();
+    const resumeRawExtraDirs = [
+      resumeSettings?.raw_dir_bluray,
+      resumeSettings?.raw_dir_dvd,
+      resumeSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedResumeRawPath = job.raw_path
+      ? this.resolveCurrentRawPath(resumeRawBaseDir, job.raw_path, resumeRawExtraDirs)
+      : null;
+    const activeResumeRawPath = resolvedResumeRawPath || String(job.raw_path || '').trim() || null;
+
+    let inputPath = isPreRipMode
       ? null
       : (job.encode_input_path || encodePlan?.encodeInputPath || null);
+    if (!isPreRipMode && activeResumeRawPath) {
+      const needsInputRefresh = !inputPath
+        || !fs.existsSync(inputPath)
+        || !isPathInsideDirectory(activeResumeRawPath, inputPath);
+      if (needsInputRefresh) {
+        const selectedPlaylistId = normalizePlaylistId(
+          encodePlan?.selectedPlaylistId
+          || encodePlan?.selectedPlaylist
+          || null
+        );
+        if (hasBluRayBackupStructure(activeResumeRawPath)) {
+          inputPath = activeResumeRawPath;
+        } else {
+          const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job, selectedPlaylistId);
+          inputPath = findPreferredRawInput(activeResumeRawPath, {
+            playlistAnalysis: playlistDecision.playlistAnalysis,
+            selectedPlaylistId: selectedPlaylistId || playlistDecision.selectedPlaylist
+          })?.path || null;
+        }
+      }
+    }
     const hasEncodableTitle = isPreRipMode
       ? Boolean(encodePlan?.encodeInputTitleId)
       : Boolean(inputPath);
@@ -8779,6 +8860,20 @@ class PipelineService extends EventEmitter {
       'USER_ACTION',
       'READY_TO_ENCODE Job nach Neustart ins Dashboard geladen.'
     );
+
+    if (
+      (activeResumeRawPath && normalizeComparablePath(activeResumeRawPath) !== normalizeComparablePath(job.raw_path))
+      || (!isPreRipMode && inputPath && normalizeComparablePath(inputPath) !== normalizeComparablePath(job.encode_input_path))
+    ) {
+      const resumeUpdatePayload = {};
+      if (activeResumeRawPath && normalizeComparablePath(activeResumeRawPath) !== normalizeComparablePath(job.raw_path)) {
+        resumeUpdatePayload.raw_path = activeResumeRawPath;
+      }
+      if (!isPreRipMode) {
+        resumeUpdatePayload.encode_input_path = inputPath;
+      }
+      await historyService.updateJob(jobId, resumeUpdatePayload);
+    }
 
     return historyService.getJobById(jobId);
   }
@@ -8876,9 +8971,43 @@ class PipelineService extends EventEmitter {
     const readyMediaProfile = this.resolveMediaProfileForJob(job, {
       encodePlan: restartPlan
     });
-    const inputPath = isPreRipMode
+    const restartSettings = await settingsService.getEffectiveSettingsMap(readyMediaProfile);
+    const restartRawBaseDir = String(restartSettings?.raw_dir || '').trim();
+    const restartRawExtraDirs = [
+      restartSettings?.raw_dir_bluray,
+      restartSettings?.raw_dir_dvd,
+      restartSettings?.raw_dir_other
+    ].map((d) => String(d || '').trim()).filter(Boolean);
+    const resolvedRestartRawPath = job.raw_path
+      ? this.resolveCurrentRawPath(restartRawBaseDir, job.raw_path, restartRawExtraDirs)
+      : null;
+    const activeRestartRawPath = resolvedRestartRawPath || String(job.raw_path || '').trim() || null;
+
+    let inputPath = isPreRipMode
       ? null
       : (job.encode_input_path || restartPlan.encodeInputPath || null);
+    if (!isPreRipMode && activeRestartRawPath) {
+      const needsInputRefresh = !inputPath
+        || !fs.existsSync(inputPath)
+        || !isPathInsideDirectory(activeRestartRawPath, inputPath);
+      if (needsInputRefresh) {
+        const selectedPlaylistId = normalizePlaylistId(
+          restartPlan?.selectedPlaylistId
+          || restartPlan?.selectedPlaylist
+          || null
+        );
+        if (hasBluRayBackupStructure(activeRestartRawPath)) {
+          inputPath = activeRestartRawPath;
+        } else {
+          const playlistDecision = this.resolvePlaylistDecisionForJob(jobId, job, selectedPlaylistId);
+          inputPath = findPreferredRawInput(activeRestartRawPath, {
+            playlistAnalysis: playlistDecision.playlistAnalysis,
+            selectedPlaylistId: selectedPlaylistId || playlistDecision.selectedPlaylist
+          })?.path || null;
+        }
+      }
+    }
+    restartPlan.encodeInputPath = inputPath;
     const hasEncodableTitle = isPreRipMode
       ? Boolean(restartPlan?.encodeInputTitleId)
       : Boolean(inputPath);
@@ -8892,6 +9021,7 @@ class PipelineService extends EventEmitter {
       handbrake_info_json: null,
       encode_plan_json: JSON.stringify(restartPlan),
       encode_input_path: inputPath,
+      ...(activeRestartRawPath ? { raw_path: activeRestartRawPath } : {}),
       encode_review_confirmed: 0
     });
     const loadedSelectionText = (
