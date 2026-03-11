@@ -561,7 +561,9 @@ SyslogIdentifier=ripster-backend
 DevicePolicy=auto
 SupplementaryGroups=video render cdrom disk
 
-NoNewPrivileges=true
+# Für Skriptausführung via GUI (inkl. optionalem sudo in User-Skripten)
+# darf no_new_privileges nicht aktiv sein.
+NoNewPrivileges=false
 ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=${INSTALL_DIR}/backend/data ${INSTALL_DIR}/backend/logs /tmp

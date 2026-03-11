@@ -815,7 +815,9 @@ StandardError=journal
 SyslogIdentifier=ripster-backend
 
 # Sicherheit
-NoNewPrivileges=true
+# Für Skriptausführung via GUI (inkl. optionalem sudo in User-Skripten)
+# darf no_new_privileges nicht aktiv sein.
+NoNewPrivileges=false
 ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=${INSTALL_DIR}/backend/data ${INSTALL_DIR}/backend/logs /tmp
