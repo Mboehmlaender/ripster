@@ -991,7 +991,7 @@ class HistoryService {
     const db = await getDb();
     const linkedRows = await db.all(
       `
-        SELECT id, raw_path, status, makemkv_info_json, mediainfo_info_json, encode_plan_json, encode_input_path, media_type
+        SELECT id, raw_path, status, makemkv_info_json, mediainfo_info_json, encode_plan_json, encode_input_path
         FROM jobs
         WHERE raw_path IS NOT NULL AND TRIM(raw_path) <> ''
       `
