@@ -6652,7 +6652,7 @@ class PipelineService extends EventEmitter {
         : 0
     });
 
-    const job = await historyService.getJobById(jobId);
+    let job = await historyService.getJobById(jobId);
     if (!job) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
       error.statusCode = 404;
@@ -6660,6 +6660,36 @@ class PipelineService extends EventEmitter {
     }
 
     if (job.status !== 'READY_TO_ENCODE' && job.last_state !== 'READY_TO_ENCODE') {
+      const currentStatus = String(job.status || job.last_state || '').trim().toUpperCase();
+      const recoverableStatus = currentStatus === 'ERROR' || currentStatus === 'CANCELLED';
+      const recoveryPlan = this.safeParseJson(job.encode_plan_json);
+      const recoveryMode = String(recoveryPlan?.mode || '').trim().toLowerCase();
+      const recoveryPreRip = recoveryMode === 'pre_rip' || Boolean(recoveryPlan?.preRip);
+      const recoveryHasInput = recoveryPreRip
+        ? Boolean(recoveryPlan?.encodeInputTitleId)
+        : Boolean(job?.encode_input_path || recoveryPlan?.encodeInputPath || job?.raw_path);
+      const recoveryHasConfirmedPlan = Boolean(
+        recoveryPlan
+        && Array.isArray(recoveryPlan?.titles)
+        && recoveryPlan.titles.length > 0
+        && (Number(job?.encode_review_confirmed || 0) === 1 || Boolean(recoveryPlan?.reviewConfirmed))
+        && recoveryHasInput
+      );
+      if (recoverableStatus && recoveryHasConfirmedPlan) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Bestätigung angefordert obwohl Status ${currentStatus}. Letzte Encode-Auswahl wird automatisch geladen.`
+        );
+        await this.restartEncodeWithLastSettings(jobId, {
+          immediate: true,
+          triggerReason: 'confirm_auto_prepare'
+        });
+        job = await historyService.getJobById(jobId);
+      }
+    }
+
+    if (!job || (job.status !== 'READY_TO_ENCODE' && job.last_state !== 'READY_TO_ENCODE')) {
       const error = new Error('Bestätigung nicht möglich: Job ist nicht im Status READY_TO_ENCODE.');
       error.statusCode = 409;
       throw error;
@@ -8719,21 +8749,22 @@ class PipelineService extends EventEmitter {
       encode_input_path: inputPath,
       encode_review_confirmed: 0
     });
-    await historyService.appendLog(
-      jobId,
-      'USER_ACTION',
-      triggerReason === 'cancelled_encode'
-        ? (
-          previousOutputPath
-            ? `Encode wurde abgebrochen. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
-            : 'Encode wurde abgebrochen. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden.'
-        )
-        : (
-          previousOutputPath
-            ? `Encode-Neustart angefordert. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
-            : 'Encode-Neustart angefordert. Letzte bestätigte Auswahl wurde geladen und kann angepasst werden.'
-        )
+    const loadedSelectionText = (
+      previousOutputPath
+        ? `Letzte bestätigte Auswahl wurde geladen und kann angepasst werden. Vorheriger Output-Pfad: ${previousOutputPath}. autoDeleteIncomplete=${restartDeleteIncompleteOutput ? 'on' : 'off'}`
+        : 'Letzte bestätigte Auswahl wurde geladen und kann angepasst werden.'
     );
+    let restartLogMessage;
+    if (triggerReason === 'cancelled_encode') {
+      restartLogMessage = `Encode wurde abgebrochen. ${loadedSelectionText}`;
+    } else if (triggerReason === 'failed_encode') {
+      restartLogMessage = `Encode ist fehlgeschlagen. ${loadedSelectionText}`;
+    } else if (triggerReason === 'confirm_auto_prepare') {
+      restartLogMessage = `Status war nicht READY_TO_ENCODE. ${loadedSelectionText}`;
+    } else {
+      restartLogMessage = `Encode-Neustart angefordert. ${loadedSelectionText}`;
+    }
+    await historyService.appendLog(jobId, 'USER_ACTION', restartLogMessage);
 
     await this.setState('READY_TO_ENCODE', {
       activeJobId: jobId,
@@ -9190,21 +9221,21 @@ class PipelineService extends EventEmitter {
       hasRawPath = false;
     }
 
-    if (isCancelled && normalizedStage === 'ENCODING' && hasConfirmedPlan) {
+    if (normalizedStage === 'ENCODING' && hasConfirmedPlan) {
       try {
         await historyService.appendLog(
           jobId,
           'SYSTEM',
-          `Abbruch in ${stage}: ${message}. Letzte Encode-Auswahl wird zur direkten Anpassung geladen.`
+          `${isCancelled ? 'Abbruch' : 'Fehler'} in ${stage}: ${message}. Letzte Encode-Auswahl wird zur direkten Anpassung geladen.`
         );
         await this.restartEncodeWithLastSettings(jobId, {
           immediate: true,
-          triggerReason: 'cancelled_encode'
+          triggerReason: isCancelled ? 'cancelled_encode' : 'failed_encode'
         });
         this.cancelRequestedByJob.delete(Number(jobId));
         return;
       } catch (recoveryError) {
-        logger.error('job:cancelled-encode:auto-recover-failed', {
+        logger.error('job:encoding:auto-recover-failed', {
           jobId,
           stage,
           error: errorToMeta(recoveryError)
