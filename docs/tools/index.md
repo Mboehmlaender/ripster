@@ -1,6 +1,6 @@
-# Externe Tools
+# Anhang: Externe Tools
 
-Ripster ist ein **Orchestrator** – die eigentliche Arbeit erledigen diese bewährten Open-Source-Tools:
+Ripster orchestriert externe CLI-Tools. Dieser Abschnitt erklärt deren Rolle im Gesamtsystem.
 
 <div class="grid cards" markdown>
 
@@ -8,7 +8,7 @@ Ripster ist ein **Orchestrator** – die eigentliche Arbeit erledigen diese bew�
 
     ---
 
-    Disc-Analyse und Ripping. Erstellt MKV-Dateien oder vollständige Backups.
+    Disc-Analyse und Ripping.
 
     [:octicons-arrow-right-24: MakeMKV](makemkv.md)
 
@@ -16,7 +16,7 @@ Ripster ist ein **Orchestrator** – die eigentliche Arbeit erledigen diese bew�
 
     ---
 
-    Video-Encoding mit umfangreichen Preset-Optionen.
+    Video-Encoding inklusive Preset-Logik.
 
     [:octicons-arrow-right-24: HandBrake](handbrake.md)
 
@@ -24,7 +24,7 @@ Ripster ist ein **Orchestrator** – die eigentliche Arbeit erledigen diese bew�
 
     ---
 
-    Analyse von Track-Informationen in Mediendateien.
+    Track-/Containeranalyse für Review und Auswahl.
 
     [:octicons-arrow-right-24: MediaInfo](mediainfo.md)
 

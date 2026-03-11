@@ -33,7 +33,30 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
   - `HandBrakeCLI`
   - `mediainfo`
 
-## Schnellstart
+## Schnellstart (Produktion)
+
+Auf Debian 11/12 oder Ubuntu 22.04/24.04 (root erforderlich):
+
+```bash
+wget -qO install.sh https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh
+sudo bash install.sh
+```
+
+Das Skript fragt interaktiv, ob HandBrake als Standard-Version (apt) oder mit GPU/NVDEC-Unterstützung (gebündeltes Binary) installiert werden soll.
+
+Danach ist Ripster unter `http://<Server-IP>` erreichbar.
+
+Wichtige Optionen:
+
+```bash
+sudo bash install.sh --branch dev          # anderen Branch installieren
+sudo bash install.sh --no-makemkv          # MakeMKV überspringen
+sudo bash install.sh --reinstall           # Update (Daten bleiben erhalten)
+```
+
+## Entwicklungsumgebung
+
+Für lokale Entwicklung mit Hot-Reload:
 
 ```bash
 ./start.sh

@@ -1,103 +1,84 @@
 # Installation
 
----
+Die empfohlene Installation läuft über `install.sh` und richtet Ripster vollständig ein.
 
-## Repository klonen
+## Zielbild nach der Installation
 
-```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/ripster.git
-cd ripster
-```
+- Ripster-Backend als `systemd`-Dienst
+- Frontend über nginx erreichbar
+- UI auf `http://<Server-IP>`
 
----
+## Schritt-für-Schritt
 
-## Dev-Start (empfohlen)
-
-```bash
-./start.sh
-```
-
-`start.sh`:
-
-1. prüft Node-Version (`>= 20.19.0`)
-2. installiert Dependencies (Root/Backend/Frontend)
-3. startet Backend + Frontend parallel
-
-Danach:
-
-- Backend: `http://localhost:3001`
-- Frontend: `http://localhost:5173`
-
-Stoppen: mit `Ctrl+C` im laufenden Terminal.
-
----
-
-## Manuell starten
+### 1. Installationsskript herunterladen
 
 ```bash
-npm install
-npm --prefix backend install
-npm --prefix frontend install
-npm run dev
+wget -qO install.sh https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh
 ```
 
-Oder getrennt:
+### 2. Installation ausführen
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
+sudo bash install.sh
 ```
 
----
+Während der Installation wirst du nach dem HandBrake-Modus gefragt:
 
-## Optional: .env-Dateien anlegen
+- `1` Standard (`apt`)
+- `2` GPU/NVDEC (gebündeltes Binary)
 
-### Backend
+### 3. Dienststatus prüfen
 
 ```bash
-cp backend/.env.example backend/.env
+sudo systemctl status ripster-backend
 ```
 
-Beispiel:
+### 4. Weboberfläche öffnen
 
-```env
-PORT=3001
-DB_PATH=./data/ripster.db
-LOG_DIR=./logs
-CORS_ORIGIN=http://localhost:5173
-LOG_LEVEL=info
-```
+- Mit nginx: `http://<Server-IP>`
+- Ohne nginx (`--no-nginx`): API auf `http://<Server-IP>:3001/api`
 
-### Frontend
+## Wichtige Optionen
+
+| Option | Zweck |
+|---|---|
+| `--branch <branch>` | anderen Branch installieren |
+| `--dir <pfad>` | Installationsverzeichnis ändern |
+| `--port <port>` | Backend-Port setzen |
+| `--host <hostname>` | Hostname/IP für nginx/CORS |
+| `--no-makemkv` | MakeMKV nicht installieren |
+| `--no-handbrake` | HandBrake nicht installieren |
+| `--no-nginx` | nginx-Konfiguration überspringen |
+| `--reinstall` | Update einer bestehenden Installation |
+
+Beispiele:
 
 ```bash
-cp frontend/.env.example frontend/.env
+sudo bash install.sh --branch dev
+sudo bash install.sh --port 8080 --host ripster.local
+sudo bash install.sh --reinstall
 ```
 
-Beispiel:
+## Betrieb im Alltag
 
-```env
-VITE_API_BASE=/api
-# optional:
-# VITE_WS_URL=ws://localhost:3001/ws
+```bash
+# Logs live ansehen
+sudo journalctl -u ripster-backend -f
+
+# Dienst neu starten
+sudo systemctl restart ripster-backend
+
+# Update aus bestehender Installation
+sudo bash /opt/ripster/install.sh --reinstall
 ```
 
----
+## Häufige Stolperstellen
 
-## Datenbank
+- `Permission denied` am Laufwerk: Laufwerksrechte/Gruppen prüfen
+- Tools nicht gefunden: `makemkvcon`, `HandBrakeCLI`, `mediainfo` im `PATH` prüfen
+- UI nicht erreichbar: nginx-Status und Port/Firewall prüfen
 
-SQLite wird automatisch beim Backend-Start initialisiert:
+## Danach weiter
 
-```text
-backend/data/ripster.db
-```
-
-Schema-Quelle: `db/schema.sql`
-
----
-
-## Nächste Schritte
-
-1. Browser öffnen: `http://localhost:5173`
-2. In `Settings` Pfade/Tools/API-Keys prüfen
-3. Erste Disc einlegen und Workflow starten
+1. [Ersteinrichtung](configuration.md)
+2. [Erster Lauf](quickstart.md)

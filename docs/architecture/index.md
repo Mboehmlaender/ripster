@@ -1,6 +1,6 @@
-# Architektur
+# Anhang: Architektur
 
-Ripster ist eine Client-Server-Anwendung mit REST + WebSocket.
+Ripster ist eine Client-Server-Anwendung mit REST + WebSocket und externen CLI-Tools.
 
 ---
 
@@ -40,26 +40,7 @@ graph TB
 
 ---
 
-## Schichten
-
-### Backend
-
-- `src/index.js` (Bootstrapping, Routes, WS, Services)
-- `src/routes/*` (Pipeline, Settings, History, Crons)
-- `src/services/*` (Business-Logik)
-- `src/db/database.js` (Init/Migration)
-- `src/utils/*` (Parser, Dateifunktionen, Validierung)
-
-### Frontend
-
-- `App.jsx` + `pages/*` (Dashboard, Settings, History)
-- `components/*` (Status-/Review-/Dialog-Komponenten)
-- `api/client.js` (REST-Client)
-- `hooks/useWebSocket.js` (WS-Reconnect)
-
----
-
-## Weiterführend
+## Details
 
 <div class="grid cards" markdown>
 

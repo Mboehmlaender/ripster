@@ -2,130 +2,162 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://mboehmlaender.github.io/ripster/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/crons/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/history/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/pipeline/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/api/runtime-activities/</loc>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/settings/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/api/websocket/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/appendix/</loc>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/architecture/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/architecture/backend/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/architecture/database/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/architecture/frontend/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/architecture/overview/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/configuration/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/configuration/environment/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/configuration/settings-reference/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/deployment/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/deployment/development/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/deployment/production/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/getting-started/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/getting-started/configuration/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/getting-started/installation/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/getting-started/prerequisites/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/getting-started/quickstart/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/gui/</loc>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/gui/dashboard/</loc>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/gui/database/</loc>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/gui/history/</loc>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/gui/settings/</loc>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/pipeline/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/pipeline/encoding/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/pipeline/playlist-analysis/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/pipeline/post-encode-scripts/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/pipeline/workflow/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/tools/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/tools/handbrake/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/tools/makemkv/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
     </url>
     <url>
          <loc>https://mboehmlaender.github.io/ripster/tools/mediainfo/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <lastmod>2026-03-11</lastmod>
+    </url>
+    <url>
+         <loc>https://mboehmlaender.github.io/ripster/workflows/</loc>
+         <lastmod>2026-03-11</lastmod>
     </url>
 </urlset>

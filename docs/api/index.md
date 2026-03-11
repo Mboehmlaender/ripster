@@ -1,8 +1,6 @@
-# API-Referenz
+# Anhang: API-Referenz
 
-Ripster bietet eine REST-API für Steuerung/Verwaltung sowie einen WebSocket-Endpunkt für Echtzeit-Updates.
-
----
+REST- und WebSocket-Schnittstellen für Integration, Automatisierung und Debugging.
 
 ## Basis-URL
 
@@ -11,13 +9,6 @@ http://localhost:3001
 ```
 
 API-Prefix: `/api`
-
-Beispiele:
-
-- `GET /api/health`
-- `GET /api/pipeline/state`
-
----
 
 ## API-Gruppen
 
@@ -73,45 +64,6 @@ Beispiele:
 
 </div>
 
----
+## Hinweis
 
-## Authentifizierung
-
-Es gibt keine eingebaute Authentifizierung. Ripster ist für lokalen Betrieb gedacht.
-
----
-
-## Fehlerformat
-
-Fehler werden zentral als JSON geliefert:
-
-```json
-{
-  "error": {
-    "message": "Job nicht gefunden.",
-    "statusCode": 404,
-    "reqId": "req_...",
-    "details": [
-      {
-        "field": "name",
-        "message": "Name darf nicht leer sein."
-      }
-    ]
-  }
-}
-```
-
-`details` ist optional (z. B. bei Validierungsfehlern).
-
----
-
-## Häufige Statuscodes
-
-| Code | Bedeutung |
-|------|-----------|
-| `200` | Erfolg |
-| `201` | Ressource erstellt |
-| `400` | Ungültige Anfrage / Validierungsfehler |
-| `404` | Ressource nicht gefunden |
-| `409` | Konflikt (z. B. falscher Pipeline-Zustand, Job läuft bereits) |
-| `500` | Interner Fehler |
+Ripster hat keine eingebaute Authentifizierung und ist für lokalen, geschützten Betrieb gedacht.

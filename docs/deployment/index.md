@@ -1,4 +1,6 @@
-# Deployment
+# Anhang: Deployment
+
+Technische Betriebsdokumentation für Entwicklung und Produktion.
 
 <div class="grid cards" markdown>
 
@@ -6,7 +8,7 @@
 
     ---
 
-    Lokale Entwicklungsumgebung einrichten.
+    Lokale Entwicklung mit Hot-Reload.
 
     [:octicons-arrow-right-24: Entwicklung](development.md)
 
@@ -14,7 +16,7 @@
 
     ---
 
-    Ripster auf einem Server dauerhaft betreiben.
+    Installation und Betrieb auf Servern.
 
     [:octicons-arrow-right-24: Produktion](production.md)
 

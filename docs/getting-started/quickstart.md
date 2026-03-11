@@ -1,114 +1,70 @@
-# Schnellstart – Erster kompletter Job
+# Erster Lauf
 
-Diese Seite führt durch den typischen ersten Lauf.
+Dieser Ablauf zeigt einen vollständigen Job aus Anwendersicht: von Disc-Erkennung bis fertiger Datei.
 
----
+## 1. Dashboard öffnen und Disc einlegen
 
-## 1) Starten
+Erwartung:
 
-```bash
-cd ripster
-./start.sh
-```
+- Status wechselt auf `DISC_DETECTED` bzw. `Medium erkannt`
+- im Bereich `Disk-Information` sind Laufwerksdaten sichtbar
 
-Öffne `http://localhost:5173`.
+Wenn nichts passiert: `Laufwerk neu lesen`.
 
----
+## 2. Analyse starten
 
-## 2) Disc einlegen
+Aktion im Dashboard:
 
-Pipeline wechselt auf `DISC_DETECTED`.
+- `Analyse starten`
 
-Falls nötig manuell neu scannen:
+Erwartung:
 
-```bash
-curl -X POST http://localhost:3001/api/pipeline/rescan-disc
-```
+- Status `ANALYZING`
+- danach Metadaten-Dialog
 
----
+## 3. Metadaten auswählen
 
-## 3) Analyse starten
+Im Dialog `Metadaten auswählen`:
 
-Klicke im Dashboard auf `Analyse starten`.
+1. OMDb-Suche nutzen oder manuell eintragen
+2. passenden Treffer markieren
+3. `Auswahl übernehmen`
 
-Intern:
+## 4. Auf den nächsten Zustand reagieren
 
-- Job wird angelegt
-- MakeMKV-Analyse läuft (`ANALYZING`)
-- UI wechselt in Metadatenauswahl (`METADATA_SELECTION`)
+- Normalfall ohne vorhandenes RAW: `RIPPING` -> `MEDIAINFO_CHECK` -> `READY_TO_ENCODE`
+- bei vorhandenem RAW: direkt `MEDIAINFO_CHECK` -> `READY_TO_ENCODE`
+- bei unklarer Blu-ray-Playlist: `WAITING_FOR_USER_DECISION` (Playlist auswählen und übernehmen)
 
----
+## 5. Review in `READY_TO_ENCODE`
 
-## 4) Metadaten bestätigen
+Im aufgeklappten Job (`Pipeline-Status`):
 
-Im Dialog:
+- Encode-Titel wählen
+- Audio-/Subtitle-Spuren prüfen
+- optional User-Preset auswählen
+- optional Pre-/Post-Skripte bzw. Ketten hinzufügen
 
-- OMDb-Ergebnis wählen oder manuell eintragen
-- bei Playlist-Abfrage ggf. `selectedPlaylist` wählen
+Dann `Encoding starten`.
 
-Nach Bestätigung startet Ripster automatisch weiter.
+## 6. Encoding überwachen
 
----
+Während `ENCODING`:
 
-## 5) Pipeline-Pfade
+- Fortschritt + ETA im Dashboard
+- Live-Log im `Pipeline-Status`
+- Queue- und Skript/Cron-Status parallel beobachtbar
 
-Abhängig von Job/RAW-Situation:
+## 7. Ergebnis prüfen
 
-- **kein RAW vorhanden** -> `RIPPING`
-- **RAW vorhanden** -> `MEDIAINFO_CHECK`
-- **mehrdeutige Playlist** -> `WAITING_FOR_USER_DECISION`
+Bei `FINISHED`:
 
-Wenn Parallel-Limit erreicht ist, wird der Job in die Queue eingereiht.
+1. Seite `Historie` öffnen
+2. Job in Details öffnen
+3. Output-Pfad, Status und Log prüfen
 
----
+## Typische Folgeaktionen
 
-## 6) Review (`READY_TO_ENCODE`)
-
-Im Review-Panel:
-
-- Titel auswählen (falls mehrere)
-- Audio-/Subtitle-Tracks auswählen
-- optional User-Preset anwenden
-- optional Pre-/Post-Skripte und Ketten hinzufügen
-
-Mit `Encoding starten` wird `confirm-encode` + Start ausgelöst.
-
----
-
-## 7) Encoding (`ENCODING`)
-
-Während Encoding:
-
-- Live-Fortschritt/ETA über WebSocket
-- Pre-Encode-Ausführungen laufen vor HandBrake
-- Post-Encode-Ausführungen laufen nach HandBrake
-
-Wichtig:
-
-- Pre-Encode-Fehler -> Job endet in `ERROR`
-- Post-Encode-Fehler -> Job kann `FINISHED` bleiben, aber mit Fehlerhinweis im Status/Log
-
----
-
-## 8) Abschluss (`FINISHED`)
-
-Ergebnis:
-
-- Ausgabe in `movie_dir` (ggf. profilspezifisch)
-- Job in Historie sichtbar
-- Logs im konfigurierten `log_dir`
-
----
-
-## Nützliche API-Shortcuts
-
-```bash
-# Pipeline-Snapshot
-curl http://localhost:3001/api/pipeline/state
-
-# Queue-Snapshot
-curl http://localhost:3001/api/pipeline/queue
-
-# Jobs
-curl http://localhost:3001/api/history
-```
+- Falsches OMDb-Match: in `Historie` -> `OMDb neu zuordnen`
+- Neue Encodierung aus RAW: `RAW neu encodieren`
+- Prüfung komplett neu aufbauen: `Review neu starten`

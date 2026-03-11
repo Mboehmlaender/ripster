@@ -1,99 +1,71 @@
-# Konfiguration
+# Ersteinrichtung
 
-Die Hauptkonfiguration erfolgt über die UI (`Settings`) und wird in SQLite gespeichert.
+Nach der Installation erfolgt die tägliche Konfiguration fast vollständig in der GUI unter `Settings`.
 
----
+## Ziel
 
-## Pflichteinstellungen vor dem ersten Rip
+Vor dem ersten echten Job müssen Pfade, Tools und Metadatenzugriff sauber gesetzt sein.
 
-### 1) Pfade
+## Reihenfolge (empfohlen)
 
-| Einstellung | Beschreibung | Beispiel |
-|------------|-------------|---------|
-| `raw_dir` | Basisverzeichnis für RAW-Rips | `/mnt/ripster/raw` |
-| `movie_dir` | Basisverzeichnis für finale Encodes | `/mnt/ripster/movies` |
-| `log_dir` | Verzeichnis für Prozess-/Backend-Logs | `/mnt/ripster/logs` |
+### 1. `Settings` -> Tab `Konfiguration`
 
-Optional profilspezifisch:
+Setze zuerst diese Pflichtwerte:
 
-- `raw_dir_bluray`, `raw_dir_dvd`, `raw_dir_other`
-- `movie_dir_bluray`, `movie_dir_dvd`, `movie_dir_other`
+| Bereich | Wichtige Felder |
+|---|---|
+| Pfade | `raw_dir`, `movie_dir`, `log_dir` |
+| Tools | `makemkv_command`, `handbrake_command`, `mediainfo_command` |
+| Metadaten | `omdb_api_key`, optional `omdb_default_type` |
 
-### 2) Tools
+Danach `Änderungen speichern`.
 
-| Einstellung | Standard |
-|------------|---------|
-| `makemkv_command` | `makemkvcon` |
-| `handbrake_command` | `HandBrakeCLI` |
-| `mediainfo_command` | `mediainfo` |
+### 2. Medienprofile prüfen
 
-### 3) OMDb
+Wenn du Blu-ray und DVD unterschiedlich behandeln willst, pflege die profilbezogenen Felder:
 
-| Einstellung | Beschreibung |
-|------------|-------------|
-| `omdb_api_key` | API-Key von omdbapi.com |
-| `omdb_default_type` | `movie`, `series`, `episode` |
+- `*_bluray`
+- `*_dvd`
+- optional `*_other`
 
----
+Typische Beispiele:
 
-## Encode-Konfiguration (wichtig)
+- `handbrake_preset_bluray` und `handbrake_preset_dvd`
+- `raw_dir_bluray` und `raw_dir_dvd`
+- `filename_template_bluray` und `filename_template_dvd`
 
-Ripster arbeitet profilspezifisch, typischerweise über:
+### 3. Queue und Monitoring festlegen
 
-- Blu-ray: `handbrake_preset_bluray`, `handbrake_extra_args_bluray`, `output_extension_bluray`, `filename_template_bluray`
-- DVD: `handbrake_preset_dvd`, `handbrake_extra_args_dvd`, `output_extension_dvd`, `filename_template_dvd`
+- `pipeline_max_parallel_jobs` für parallele Jobs
+- `hardware_monitoring_enabled` und Intervall für Live-Metriken im Dashboard
 
-### Template-Platzhalter
+### 4. Optional: Push-Benachrichtigungen
 
-Verfügbar in `filename_template_*` und `output_folder_template_*`:
-
-- `${title}`
-- `${year}`
-- `${imdbId}`
-
-Beispiel:
-
-```text
-${title} (${year})
--> Inception (2010).mkv
-```
-
----
-
-## MakeMKV-spezifisch
-
-| Einstellung | Standard | Hinweis |
-|------------|---------|--------|
-| `makemkv_min_length_minutes` | `60` | Kandidaten-Filter |
-| `makemkv_rip_mode_bluray` | `backup` | `mkv` oder `backup` |
-| `makemkv_rip_mode_dvd` | `mkv` | `mkv` oder `backup` |
-| `makemkv_registration_key` | leer | optional, wird via `makemkvcon reg` gesetzt |
-
----
-
-## Monitoring & Queue
-
-| Einstellung | Standard |
-|------------|---------|
-| `hardware_monitoring_enabled` | `true` |
-| `hardware_monitoring_interval_ms` | `5000` |
-| `pipeline_max_parallel_jobs` | `1` |
-
----
-
-## PushOver (optional)
-
-Basis:
+In den Benachrichtigungsfeldern setzen:
 
 - `pushover_enabled`
 - `pushover_token`
 - `pushover_user`
 
-Zusätzlich pro Event ein/aus (z. B. `pushover_notify_job_finished`).
+Dann über `PushOver Test` direkt prüfen.
 
----
+## 2-Minuten-Funktionstest
 
-## Verwandte Doku
+1. `Dashboard` öffnen
+2. Disc einlegen
+3. `Analyse starten`
+4. Metadaten übernehmen
+5. Bis `READY_TO_ENCODE` laufen lassen
 
-- [Einstellungsreferenz](../configuration/settings-reference.md)
-- [Umgebungsvariablen](../configuration/environment.md)
+Wenn diese Schritte funktionieren, ist die Grundkonfiguration korrekt.
+
+## Wenn Werte nicht gespeichert werden
+
+- Feld mit Fehler markieren lassen (rote Validierung im Formular)
+- Pfadangaben und numerische Werte prüfen
+- bei Tool-Pfaden direkt CLI-Aufruf im Terminal testen
+
+## Weiter
+
+- [Erster Lauf](quickstart.md)
+- [GUI-Seiten im Detail](../gui/index.md)

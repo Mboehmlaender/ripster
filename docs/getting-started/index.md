@@ -1,41 +1,33 @@
-# Erste Schritte
+# Benutzerhandbuch Überblick
 
-Dieser Abschnitt führt dich durch die Installation und Einrichtung von Ripster.
+Dieses Kapitel ist für den **Betrieb von Ripster im Alltag** geschrieben.
 
-## Überblick
+## Zielgruppe
 
-<div class="grid cards" markdown>
+- Anwender, die Discs verarbeiten wollen
+- Betreiber, die den täglichen Ablauf stabil fahren möchten
+- Power-User, die Queue/Skripte/Cron im UI steuern möchten
 
--   :material-list-check: **Voraussetzungen**
+## Kapitelstruktur
 
-    ---
+| Kapitel | Zweck |
+|---|---|
+| [Voraussetzungen](prerequisites.md) | Prüfen, ob System und Tools bereit sind |
+| [Installation](installation.md) | Ripster aufsetzen und starten |
+| [Ersteinrichtung](configuration.md) | Pfade, Tools und Metadaten korrekt setzen |
+| [Erster Lauf](quickstart.md) | Ein kompletter Job von Disc bis Datei |
+| [GUI-Seiten](../gui/index.md) | Alle Ansichten und Aktionen im Detail |
+| [Workflows](../workflows/index.md) | Typische Abläufe und Entscheidungen aus User-Sicht |
 
-    Systemanforderungen und externe Tools, die vor der Installation benötigt werden.
+## Wenn du neu startest
 
-    [:octicons-arrow-right-24: Voraussetzungen prüfen](prerequisites.md)
+1. [Voraussetzungen](prerequisites.md)
+2. [Installation](installation.md)
+3. [Ersteinrichtung](configuration.md)
+4. [Erster Lauf](quickstart.md)
 
--   :material-download: **Installation**
+## Wenn Ripster bereits läuft
 
-    ---
-
-    Schritt-für-Schritt-Anleitung zur Installation von Ripster.
-
-    [:octicons-arrow-right-24: Installation starten](installation.md)
-
--   :material-tune: **Konfiguration**
-
-    ---
-
-    Einrichten von Pfaden, API-Keys und Encoding-Presets.
-
-    [:octicons-arrow-right-24: Konfigurieren](configuration.md)
-
--   :material-rocket-launch: **Schnellstart**
-
-    ---
-
-    Rippe deinen ersten Film in wenigen Minuten.
-
-    [:octicons-arrow-right-24: Loslegen](quickstart.md)
-
-</div>
+1. [GUI-Seiten](../gui/index.md)
+2. [Workflows](../workflows/index.md)
+3. Bei Detailfragen: [Technischer Anhang](../appendix/index.md)

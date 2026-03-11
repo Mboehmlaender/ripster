@@ -2,7 +2,117 @@
 
 ---
 
-## Empfohlene Architektur
+## Automatische Installation (empfohlen)
+
+Das mitgelieferte `install.sh` richtet Ripster vollautomatisch auf Debian/Ubuntu ein – inklusive Node.js, MakeMKV, HandBrake, nginx und systemd-Dienst.
+
+**Unterstützte Systeme:** Debian 11/12, Ubuntu 22.04/24.04
+**Voraussetzung:** root-Rechte, Internetzugang
+
+### Schnellstart via curl
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh | sudo bash
+```
+
+Oder mit wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh | sudo bash
+```
+
+!!! warning "Optionen nur via Datei"
+    Beim Pipen von curl/wget können keine Argumente übergeben werden. Für benutzerdefinierte Optionen zuerst herunterladen und dann mit `sudo bash install.sh [Optionen]` ausführen.
+
+### Optionen
+
+| Option | Standard | Beschreibung |
+|--------|----------|--------------|
+| `--branch <branch>` | `main` | Git-Branch für die Installation |
+| `--dir <pfad>` | `/opt/ripster` | Installationsverzeichnis |
+| `--user <benutzer>` | `ripster` | Systembenutzer für den Dienst |
+| `--port <port>` | `3001` | Backend-Port |
+| `--host <hostname>` | Auto (Maschinen-IP) | Hostname/IP für die Weboberfläche |
+| `--no-makemkv` | – | MakeMKV-Installation überspringen |
+| `--no-handbrake` | – | HandBrake-Installation überspringen |
+| `--no-nginx` | – | nginx-Einrichtung überspringen |
+| `--reinstall` | – | Bestehende Installation aktualisieren (Daten bleiben erhalten) |
+| `-h`, `--help` | – | Hilfe anzeigen |
+
+### Beispiele
+
+```bash
+# Standard-Installation
+sudo bash install.sh
+
+# Anderen Branch und Port verwenden
+sudo bash install.sh --branch dev --port 8080
+
+# Ohne MakeMKV (bereits installiert)
+sudo bash install.sh --no-makemkv
+
+# Bestehende Installation aktualisieren
+sudo bash install.sh --reinstall
+
+# Ohne nginx (eigener Reverse-Proxy)
+sudo bash install.sh --no-nginx --host mein-server.local
+```
+
+### Was das Skript erledigt
+
+1. **Systemprüfung** – OS-Erkennung und Root-Check
+2. **Systempakete** – `curl`, `wget`, `git`, `mediainfo`, `udev` u. a.
+3. **Node.js 20** – via NodeSource, falls noch nicht installiert
+4. **MakeMKV** – aktuelle Version wird aus dem offiziellen Forum ermittelt und aus dem Quellcode kompiliert (kann mit `--no-makemkv` übersprungen werden)
+5. **HandBrake** – interaktive Auswahl:
+    - **Option 1**: Standard (`apt install handbrake-cli`)
+    - **Option 2**: Gebündelte GPU-Version mit NVDEC aus `bin/HandBrakeCLI`
+6. **Systembenutzer** `ripster` – ohne Login-Shell, Gruppen: `cdrom`, `optical`, `disk`, `video`, `render`
+7. **Repository** – klont Branch nach `--dir` (bei `--reinstall`: sichert DB, pullt, stellt DB wieder her)
+8. **npm-Abhängigkeiten** – Root, Backend (nur production), Frontend
+9. **Frontend-Build** – `npm run build` mit relativen API-URLs (nginx-kompatibel)
+10. **Backend `.env`** – wird automatisch generiert (bei `--reinstall` bleibt bestehende erhalten)
+11. **Berechtigungen** – `ripster:ripster` auf Installationsverzeichnis, `600` auf `.env`
+12. **systemd-Dienst** – `ripster-backend.service` erstellt, aktiviert und gestartet
+13. **nginx** – konfiguriert als Reverse-Proxy für Frontend, `/api/` und `/ws` (kann mit `--no-nginx` übersprungen werden)
+
+### Nach der Installation
+
+```bash
+# Status prüfen
+sudo systemctl status ripster-backend
+
+# Logs verfolgen
+sudo journalctl -u ripster-backend -f
+
+# Neustart
+sudo systemctl restart ripster-backend
+
+# Aktualisieren
+sudo bash /opt/ripster/install.sh --reinstall
+```
+
+**Zugriff:** `http://<Maschinen-IP>` (oder der mit `--host` angegebene Hostname)
+
+### HandBrake-Modus (GPU/NVDEC)
+
+Bei nicht-interaktiver Ausführung (Pipe von curl) wird automatisch die Standard-Version gewählt. Für die GPU-Version zuerst herunterladen:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh -o install.sh
+sudo bash install.sh
+# → Interaktive Auswahl: Option 2 für NVDEC
+```
+
+Das gebündelte Binary liegt unter `bin/HandBrakeCLI` und wird nach `/usr/local/bin/HandBrakeCLI` kopiert.
+
+---
+
+## Manuelle Installation
+
+Die folgenden Abschnitte beschreiben die einzelnen Schritte für manuelle oder angepasste Setups.
+
+### Empfohlene Architektur
 
 ```text
 Client
