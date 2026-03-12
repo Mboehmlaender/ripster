@@ -56,6 +56,21 @@ router.get(
   })
 );
 
+router.get(
+  '/cd/musicbrainz/release/:mbId',
+  asyncHandler(async (req, res) => {
+    const mbId = String(req.params.mbId || '').trim();
+    if (!mbId) {
+      const error = new Error('mbId fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+    logger.info('get:cd:musicbrainz:release', { reqId: req.reqId, mbId });
+    const release = await pipelineService.getMusicBrainzReleaseById(mbId);
+    res.json({ release });
+  })
+);
+
 router.post(
   '/cd/select-metadata',
   asyncHandler(async (req, res) => {

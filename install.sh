@@ -570,6 +570,9 @@ StartLimitIntervalSec=60
 StartLimitBurst=3
 
 Environment=NODE_ENV=production
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
+Environment=LANGUAGE=C.UTF-8
 EnvironmentFile=${INSTALL_DIR}/backend/.env
 
 StandardOutput=journal

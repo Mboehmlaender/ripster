@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dialog } from 'primereact/dialog';
 import { Button } from 'primereact/button';
 import { DataTable } from 'primereact/datatable';
 import { Column } from 'primereact/column';
 import { InputText } from 'primereact/inputtext';
 import { InputNumber } from 'primereact/inputnumber';
-import { Checkbox } from 'primereact/checkbox';
 
 function CoverThumb({ url, alt }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [url]);
   if (!url || failed) {
     return <div className="poster-thumb-lg poster-fallback">-</div>;
   }
@@ -17,16 +19,46 @@ function CoverThumb({ url, alt }) {
       src={url}
       alt={alt}
       className="poster-thumb-lg"
+      loading="eager"
+      decoding="sync"
       onError={() => setFailed(true)}
     />
   );
 }
 
-function formatDurationMs(ms) {
-  const totalSec = Math.round((ms || 0) / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${String(sec).padStart(2, '0')}`;
+const COVER_PRELOAD_TIMEOUT_MS = 3000;
+
+function preloadCoverImage(url) {
+  const src = String(url || '').trim();
+  if (!src) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const cleanup = () => {
+      image.onload = null;
+      image.onerror = null;
+    };
+    const done = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const timer = window.setTimeout(done, COVER_PRELOAD_TIMEOUT_MS);
+    image.onload = () => {
+      window.clearTimeout(timer);
+      done();
+    };
+    image.onerror = () => {
+      window.clearTimeout(timer);
+      done();
+    };
+    image.src = src;
+  });
 }
 
 export default function CdMetadataDialog({
@@ -35,20 +67,22 @@ export default function CdMetadataDialog({
   onHide,
   onSubmit,
   onSearch,
+  onFetchRelease,
   busy
 }) {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const searchRunRef = useRef(0);
 
   // Manual metadata inputs
   const [manualTitle, setManualTitle] = useState('');
   const [manualArtist, setManualArtist] = useState('');
   const [manualYear, setManualYear] = useState(null);
 
-  // Per-track title editing
+  // Track titles are pre-filled from MusicBrainz and edited in the next step.
   const [trackTitles, setTrackTitles] = useState({});
-  const [selectedTrackPositions, setSelectedTrackPositions] = useState(new Set());
 
   const tocTracks = Array.isArray(context?.tracks) ? context.tracks : [];
 
@@ -57,20 +91,18 @@ export default function CdMetadataDialog({
       return;
     }
     setSelected(null);
-    setQuery(context?.detectedTitle || '');
+    setQuery('');
     setManualTitle(context?.detectedTitle || '');
     setManualArtist('');
     setManualYear(null);
     setResults([]);
+    setSearchBusy(false);
 
     const titles = {};
-    const positions = new Set();
     for (const t of tocTracks) {
       titles[t.position] = t.title || `Track ${t.position}`;
-      positions.add(t.position);
     }
     setTrackTitles(titles);
-    setSelectedTrackPositions(positions);
   }, [visible, context]);
 
   useEffect(() => {
@@ -100,48 +132,79 @@ export default function CdMetadataDialog({
   }, [selected]);
 
   const handleSearch = async () => {
-    if (!query.trim()) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
       return;
     }
-    const searchResults = await onSearch(query.trim());
-    setResults(searchResults || []);
-    setSelected(null);
-  };
-
-  const handleToggleTrack = (position) => {
-    setSelectedTrackPositions((prev) => {
-      const next = new Set(prev);
-      if (next.has(position)) {
-        next.delete(position);
-      } else {
-        next.add(position);
+    setSearchBusy(true);
+    const searchRunId = searchRunRef.current + 1;
+    searchRunRef.current = searchRunId;
+    try {
+      const searchResults = await onSearch(trimmedQuery);
+      const normalizedResults = Array.isArray(searchResults) ? searchResults : [];
+      await Promise.all(normalizedResults.map((item) => preloadCoverImage(item?.coverArtUrl)));
+      if (searchRunRef.current !== searchRunId) {
+        return;
       }
-      return next;
-    });
-  };
-
-  const handleToggleAll = () => {
-    if (selectedTrackPositions.size === tocTracks.length) {
-      setSelectedTrackPositions(new Set());
-    } else {
-      setSelectedTrackPositions(new Set(tocTracks.map((t) => t.position)));
+      setResults(normalizedResults);
+      setSelected(null);
+    } finally {
+      if (searchRunRef.current === searchRunId) {
+        setSearchBusy(false);
+      }
     }
   };
 
   const handleSubmit = async () => {
-    const tracks = tocTracks.map((t) => ({
-      position: t.position,
-      title: trackTitles[t.position] || `Track ${t.position}`,
-      selected: selectedTrackPositions.has(t.position)
-    }));
+    const normalizeTrackText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    let releaseDetails = selected;
+    if (selected?.mbId && (!Array.isArray(selected?.tracks) || selected.tracks.length === 0) && typeof onFetchRelease === 'function') {
+      const fetched = await onFetchRelease(selected.mbId);
+      if (fetched && typeof fetched === 'object') {
+        releaseDetails = fetched;
+      }
+    }
+
+    const releaseTracks = Array.isArray(releaseDetails?.tracks) ? releaseDetails.tracks : [];
+    const releaseTracksByPosition = new Map();
+    releaseTracks.forEach((track, index) => {
+      const parsedPosition = Number(track?.position);
+      const normalizedPosition = Number.isFinite(parsedPosition) && parsedPosition > 0
+        ? Math.trunc(parsedPosition)
+        : index + 1;
+      if (!releaseTracksByPosition.has(normalizedPosition)) {
+        releaseTracksByPosition.set(normalizedPosition, track);
+      }
+    });
+
+    const tracks = tocTracks.map((t, index) => {
+      const position = Number(t.position);
+      const byPosition = releaseTracksByPosition.get(position);
+      const byIndex = releaseTracks[index];
+      return {
+        position,
+        title: normalizeTrackText(
+          byPosition?.title
+          || byIndex?.title
+          || trackTitles[t.position]
+        ) || `Track ${t.position}`,
+        artist: normalizeTrackText(
+          byPosition?.artist
+          || byIndex?.artist
+          || manualArtist.trim()
+          || releaseDetails?.artist
+        ) || null,
+        selected: true
+      };
+    });
 
     const payload = {
       jobId: context.jobId,
       title: manualTitle.trim() || context?.detectedTitle || 'Audio CD',
       artist: manualArtist.trim() || null,
       year: manualYear || null,
-      mbId: selected?.mbId || null,
-      coverUrl: selected?.coverArtUrl || null,
+      mbId: releaseDetails?.mbId || selected?.mbId || null,
+      coverUrl: releaseDetails?.coverArtUrl || selected?.coverArtUrl || null,
       tracks
     };
 
@@ -158,9 +221,6 @@ export default function CdMetadataDialog({
       </div>
     </div>
   );
-
-  const allSelected = tocTracks.length > 0 && selectedTrackPositions.size === tocTracks.length;
-  const tracksBlocking = tocTracks.length > 0 && selectedTrackPositions.size === 0;
 
   return (
     <Dialog
@@ -180,7 +240,12 @@ export default function CdMetadataDialog({
           onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           placeholder="Album / Interpret suchen"
         />
-        <Button label="MusicBrainz Suche" icon="pi pi-search" onClick={handleSearch} loading={busy} />
+        <Button
+          label="MusicBrainz Suche"
+          icon="pi pi-search"
+          onClick={handleSearch}
+          loading={busy || searchBusy}
+        />
       </div>
 
       {results.length > 0 ? (
@@ -226,42 +291,11 @@ export default function CdMetadataDialog({
         />
       </div>
 
-      {/* Track selection */}
+      {/* Track selection/editing moved to CD-Rip configuration panel */}
       {tocTracks.length > 0 ? (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '1rem', marginBottom: '0.25rem' }}>
-            <h4 style={{ margin: 0 }}>Tracks ({tocTracks.length})</h4>
-            <Button
-              label={allSelected ? 'Alle abwählen' : 'Alle auswählen'}
-              size="small"
-              severity="secondary"
-              outlined
-              onClick={handleToggleAll}
-            />
-          </div>
-          <div className="cd-track-list">
-            {tocTracks.map((track) => (
-              <div key={track.position} className="cd-track-row">
-                <Checkbox
-                  checked={selectedTrackPositions.has(track.position)}
-                  onChange={() => handleToggleTrack(track.position)}
-                  inputId={`track-${track.position}`}
-                />
-                <span className="cd-track-num">{String(track.position).padStart(2, '0')}</span>
-                <InputText
-                  value={trackTitles[track.position] ?? `Track ${track.position}`}
-                  onChange={(e) => setTrackTitles((prev) => ({ ...prev, [track.position]: e.target.value }))}
-                  className="cd-track-title-input"
-                  placeholder={`Track ${track.position}`}
-                  disabled={!selectedTrackPositions.has(track.position)}
-                />
-                <span className="cd-track-duration">
-                  {track.durationMs ? formatDurationMs(track.durationMs) : '-'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </>
+        <small style={{ display: 'block', marginTop: '0.9rem' }}>
+          {tocTracks.length} Tracks erkannt. Auswahl/Feinschliff (Checkboxen, Interpret, Titel, Länge) erfolgt im nächsten Schritt in der Job-Übersicht.
+        </small>
       ) : null}
 
       <div className="dialog-actions" style={{ marginTop: '1rem' }}>
@@ -271,7 +305,7 @@ export default function CdMetadataDialog({
           icon="pi pi-arrow-right"
           onClick={handleSubmit}
           loading={busy}
-          disabled={tracksBlocking || (!manualTitle.trim() && !context?.detectedTitle)}
+          disabled={!manualTitle.trim() && !context?.detectedTitle}
         />
       </div>
     </Dialog>

@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const settingsService = require('./settingsService');
 const logger = require('./logger').child('DISK');
+const { parseToc } = require('./cdRipService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const execFileAsync = promisify(execFile);
@@ -541,15 +542,28 @@ class DiskDetectionService extends EventEmitter {
 
     // Last resort: cdparanoia can read the TOC of audio CDs directly.
     // Useful when udev media flags are not propagated (e.g. VM passthrough).
-    // blkid already returned nothing above, so a successful cdparanoia -Q
-    // means an audio CD is present (data discs have no filesystem but blkid
-    // would still have caught them via sector probing).
+    // Some builds return non-zero even when TOC output exists, so parse both
+    // stdout/stderr and treat valid TOC lines as "audio CD present".
+    // Keep compatibility with previous behavior: exit 0 counts as media even
+    // when TOC output format cannot be parsed.
     try {
-      await execFileAsync('cdparanoia', ['-Q', '-d', devicePath], { timeout: 10000 });
-      logger.debug('cdparanoia:audio-cd', { devicePath });
+      const { stdout, stderr } = await execFileAsync('cdparanoia', ['-Q', '-d', devicePath], { timeout: 10000 });
+      const tracks = parseToc(`${stderr || ''}\n${stdout || ''}`);
+      if (tracks.length > 0) {
+        logger.debug('cdparanoia:audio-cd', { devicePath, trackCount: tracks.length });
+        return { hasMedia: true, type: 'audio_cd' };
+      }
+      logger.debug('cdparanoia:audio-cd-exit-0-no-parse', { devicePath });
       return { hasMedia: true, type: 'audio_cd' };
-    } catch (_cdError) {
-      // cdparanoia failed – no audio CD present (or cdparanoia not installed)
+    } catch (cdError) {
+      const stderr = String(cdError?.stderr || '');
+      const stdout = String(cdError?.stdout || '');
+      const tracks = parseToc(`${stderr}\n${stdout}`);
+      if (tracks.length > 0) {
+        logger.debug('cdparanoia:audio-cd-from-error-streams', { devicePath, trackCount: tracks.length });
+        return { hasMedia: true, type: 'audio_cd' };
+      }
+      // cdparanoia failed and no TOC output could be parsed.
     }
 
     logger.debug('blkid:no-media-or-fail', { devicePath });

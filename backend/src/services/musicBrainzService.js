@@ -39,14 +39,40 @@ function normalizeRelease(release) {
   const year = yearMatch ? Number(yearMatch[1]) : null;
 
   const media = Array.isArray(release.media) ? release.media : [];
-  const tracks = media.flatMap((medium, mediumIdx) => {
+  const normalizedTracks = media.flatMap((medium, mediumIdx) => {
     const mediumTracks = Array.isArray(medium.tracks) ? medium.tracks : [];
-    return mediumTracks.map((track) => ({
-      position: Number(track.position || mediumIdx * 100 + 1),
+    return mediumTracks.map((track, trackIdx) => {
+      const rawPosition = String(track.position || track.number || '').trim();
+      const parsedPosition = Number.parseInt(rawPosition, 10);
+      const fallbackPosition = mediumIdx * 100 + trackIdx + 1;
+      const position = Number.isFinite(parsedPosition) && parsedPosition > 0
+        ? parsedPosition
+        : fallbackPosition;
+      return {
+        position,
       number: String(track.number || track.position || ''),
       title: String(track.title || ''),
-      durationMs: Number(track.length || 0) || null
-    }));
+      durationMs: Number(track.length || 0) || null,
+      rawTrackArtistCredit: Array.isArray(track['artist-credit']) ? track['artist-credit'] : [],
+      rawRecordingArtistCredit: Array.isArray(track?.recording?.['artist-credit']) ? track.recording['artist-credit'] : []
+      };
+    });
+  }).map((track) => {
+    const trackArtistCredit = Array.isArray(track?.rawTrackArtistCredit)
+      ? track.rawTrackArtistCredit
+      : [];
+    const recordingArtistCredit = Array.isArray(track?.rawRecordingArtistCredit)
+      ? track.rawRecordingArtistCredit
+      : [];
+    const artistFromTrack = trackArtistCredit.map((ac) => ac?.artist?.name || ac?.name || '').filter(Boolean).join(', ');
+    const artistFromRecording = recordingArtistCredit.map((ac) => ac?.artist?.name || ac?.name || '').filter(Boolean).join(', ');
+    return {
+      position: track.position,
+      number: track.number,
+      title: track.title,
+      durationMs: track.durationMs,
+      artist: artistFromTrack || artistFromRecording || artistCredit || null
+    };
   });
 
   // Always generate the CAA URL when an id is present; the browser/onError
@@ -66,7 +92,7 @@ function normalizeRelease(release) {
       ? release['label-info'].map((li) => li?.label?.name).filter(Boolean).join(', ') || null
       : null,
     coverArtUrl,
-    tracks
+    tracks: normalizedTracks
   };
 }
 
@@ -93,7 +119,7 @@ class MusicBrainzService {
     url.searchParams.set('query', q);
     url.searchParams.set('fmt', 'json');
     url.searchParams.set('limit', '10');
-    url.searchParams.set('inc', 'artist-credits+labels+recordings');
+    url.searchParams.set('inc', 'artist-credits+labels+recordings+media');
 
     try {
       const data = await mbFetch(url.toString());
@@ -126,7 +152,7 @@ class MusicBrainzService {
 
     const url = new URL(`${MB_BASE}/release/${id}`);
     url.searchParams.set('fmt', 'json');
-    url.searchParams.set('inc', 'artist-credits+labels+recordings+cover-art-archive');
+    url.searchParams.set('inc', 'artist-credits+labels+recordings+media');
 
     try {
       const data = await mbFetch(url.toString());

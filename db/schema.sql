@@ -345,6 +345,22 @@ INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, des
 VALUES ('cdparanoia_command', 'Tools', 'cdparanoia Kommando', 'string', 1, 'Pfad oder Befehl für cdparanoia. Wird als Fallback genutzt wenn kein individuelles Kommando gesetzt ist.', 'cdparanoia', '[]', '{"minLength":1}', 230);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('cdparanoia_command', 'cdparanoia');
 
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES (
+  'cd_output_template',
+  'Tools',
+  'CD Output Template',
+  'string',
+  1,
+  'Template für relative CD-Ausgabepfade ohne Dateiendung. Platzhalter: {artist}, {album}, {year}, {title}, {trackNr}, {trackNo}. Unterordner sind über "/" möglich. Die Endung wird über das gewählte Ausgabeformat gesetzt.',
+  '{artist} - {album} ({year})/{trackNr} {artist} - {title}',
+  '[]',
+  '{"minLength":1}',
+  235
+);
+INSERT OR IGNORE INTO settings_values (key, value)
+VALUES ('cd_output_template', '{artist} - {album} ({year})/{trackNr} {artist} - {title}');
+
 -- Pfade – CD
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('raw_dir_cd', 'Pfade', 'CD Ausgabeordner', 'path', 0, 'Optionaler Ausgabeordner für geripppte CD-Dateien. Leer = Fallback auf "Raw Ausgabeordner".', '/opt/ripster/backend/data/output/cd', '[]', '{}', 104);

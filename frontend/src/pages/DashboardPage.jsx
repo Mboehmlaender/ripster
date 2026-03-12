@@ -423,7 +423,48 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   );
 
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
+  const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
   const analyzeContext = getAnalyzeContext(job);
+  const cdTracks = Array.isArray(makemkvInfo?.tracks)
+    ? makemkvInfo.tracks
+      .map((track) => {
+        const position = Number(track?.position);
+        if (!Number.isFinite(position) || position <= 0) {
+          return null;
+        }
+        return {
+          ...track,
+          position: Math.trunc(position),
+          selected: track?.selected !== false
+        };
+      })
+      .filter(Boolean)
+    : [];
+  const cdSelectedMeta = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : {};
+  const cdparanoiaCmd = String(makemkvInfo?.cdparanoiaCmd || 'cdparanoia').trim() || 'cdparanoia';
+  const devicePath = String(job?.disc_device || '').trim() || null;
+  const firstConfiguredTrack = Array.isArray(encodePlan?.selectedTracks) && encodePlan.selectedTracks.length > 0
+    ? Number(encodePlan.selectedTracks[0])
+    : null;
+  const fallbackTrack = cdTracks[0]?.position ? Number(cdTracks[0].position) : null;
+  const previewTrackPos = Number.isFinite(firstConfiguredTrack) && firstConfiguredTrack > 0
+    ? Math.trunc(firstConfiguredTrack)
+    : (Number.isFinite(fallbackTrack) && fallbackTrack > 0 ? Math.trunc(fallbackTrack) : null);
+  const previewWavPath = previewTrackPos && job?.raw_path
+    ? `${job.raw_path}/track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`
+    : '<temp>/trackNN.cdda.wav';
+  const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} ${previewWavPath}`;
+  const selectedMetadata = {
+    title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
+    artist: cdSelectedMeta?.artist || null,
+    year: cdSelectedMeta?.year ?? job?.year ?? null,
+    mbId: cdSelectedMeta?.mbId || null,
+    coverUrl: cdSelectedMeta?.coverUrl || null,
+    imdbId: job?.imdb_id || null,
+    poster: job?.poster_url || cdSelectedMeta?.coverUrl || null
+  };
   const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
   const isPreRip = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
   const inputPath = isPreRip
@@ -468,17 +509,17 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     jobId,
     rawPath: job?.raw_path || null,
     detectedTitle: job?.detected_title || null,
+    mediaProfile: resolveMediaType(job),
+    devicePath,
+    cdparanoiaCmd,
+    cdparanoiaCommandPreview,
+    tracks: cdTracks,
     inputPath,
     hasEncodableTitle,
     reviewConfirmed,
     mode,
     sourceJobId: encodePlan?.sourceJobId || null,
-    selectedMetadata: {
-      title: job?.title || job?.detected_title || null,
-      year: job?.year || null,
-      imdbId: job?.imdb_id || null,
-      poster: job?.poster_url || null
-    },
+    selectedMetadata,
     mediaInfoReview: encodePlan,
     playlistAnalysis: analyzeContext.playlistAnalysis || null,
     playlistDecisionRequired: Boolean(analyzeContext.playlistDecisionRequired),
@@ -502,6 +543,9 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
         ...computedContext,
         ...existingContext,
         rawPath: existingContext.rawPath || computedContext.rawPath,
+        tracks: (Array.isArray(existingContext.tracks) && existingContext.tracks.length > 0)
+          ? existingContext.tracks
+          : computedContext.tracks,
         selectedMetadata: existingContext.selectedMetadata || computedContext.selectedMetadata,
         canRestartEncodeFromLastSettings:
           existingContext.canRestartEncodeFromLastSettings ?? computedContext.canRestartEncodeFromLastSettings,
@@ -1350,6 +1394,16 @@ export default function DashboardPage({
     } catch (error) {
       showError(error);
       return [];
+    }
+  };
+
+  const handleMusicBrainzReleaseFetch = async (mbId) => {
+    try {
+      const response = await api.getMusicBrainzRelease(mbId);
+      return response?.release || null;
+    } catch (error) {
+      showError(error);
+      return null;
     }
   };
 
@@ -2271,6 +2325,7 @@ export default function DashboardPage({
         }}
         onSubmit={handleCdMetadataSubmit}
         onSearch={handleMusicBrainzSearch}
+        onFetchRelease={handleMusicBrainzReleaseFetch}
         busy={busy}
       />
 

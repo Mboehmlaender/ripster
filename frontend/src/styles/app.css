@@ -1095,6 +1095,101 @@ body {
   gap: 0.5rem;
 }
 
+.cd-rip-config-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.cd-rip-status {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.cd-meta-summary {
+  border: 1px solid var(--rip-border);
+  border-radius: 0.45rem;
+  background: var(--rip-panel-soft);
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.cd-format-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.cd-format-field label {
+  font-weight: 600;
+}
+
+.cd-format-field small {
+  color: var(--rip-muted);
+}
+
+.cd-track-selection {
+  border: 1px solid var(--rip-border);
+  border-radius: 0.5rem;
+  background: var(--rip-panel-soft);
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.cd-track-list {
+  overflow-x: auto;
+}
+
+.cd-track-table {
+  width: 100%;
+  min-width: 44rem;
+  border-collapse: collapse;
+}
+
+.cd-track-table th,
+.cd-track-table td {
+  border-bottom: 1px solid var(--rip-border);
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.cd-track-table thead th {
+  color: var(--rip-muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.cd-track-table tbody tr.selected {
+  background: rgba(175, 114, 7, 0.09);
+}
+
+.cd-track-table td.check,
+.cd-track-table th.check {
+  width: 4.5rem;
+  text-align: center;
+}
+
+.cd-track-table td.num,
+.cd-track-table th.num {
+  width: 4rem;
+  white-space: nowrap;
+}
+
+.cd-track-table td.duration,
+.cd-track-table th.duration {
+  width: 5.5rem;
+  white-space: nowrap;
+}
+
+.cd-track-table td.artist .p-inputtext,
+.cd-track-table td.title .p-inputtext {
+  width: 100%;
+}
+
 .device-meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2218,6 +2313,10 @@ body {
 
   .dashboard-job-expanded-head {
     flex-wrap: wrap;
+  }
+
+  .cd-track-table {
+    min-width: 36rem;
   }
 
   .script-list {

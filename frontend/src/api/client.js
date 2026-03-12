@@ -276,6 +276,9 @@ export const api = {
   searchMusicBrainz(q) {
     return request(`/pipeline/cd/musicbrainz/search?q=${encodeURIComponent(q)}`);
   },
+  getMusicBrainzRelease(mbId) {
+    return request(`/pipeline/cd/musicbrainz/release/${encodeURIComponent(String(mbId || '').trim())}`);
+  },
   async selectCdMetadata(payload) {
     const result = await request('/pipeline/cd/select-metadata', {
       method: 'POST',

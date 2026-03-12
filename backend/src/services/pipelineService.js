@@ -74,6 +74,16 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeCdTrackText(value) {
+  return String(value || '')
+    .normalize('NFC')
+    // Keep umlauts/special letters, but strip heart symbols from imported metadata.
+    .replace(/[♥❤♡❥❣❦❧]/gu, ' ')
+    .replace(/\p{C}+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normalizeMediaProfile(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) {
@@ -9793,11 +9803,17 @@ class PipelineService extends EventEmitter {
 
       const tracks = await cdRipService.readToc(devicePath, cdparanoiaCmd);
       logger.info('cd:analyze:toc', { jobId: job.id, trackCount: tracks.length });
+      if (!tracks.length) {
+        const error = new Error('Keine Audio-Tracks erkannt. Bitte Laufwerk/Medium prüfen (cdparanoia -Q).');
+        error.statusCode = 400;
+        throw error;
+      }
 
       const cdInfo = {
         phase: 'PREPARE',
         mediaProfile: 'cd',
         preparedAt: nowIso(),
+        cdparanoiaCmd,
         tracks,
         detectedTitle
       };
@@ -9817,6 +9833,8 @@ class PipelineService extends EventEmitter {
       const runningJobs = await historyService.getRunningJobs();
       const foreignRunningJobs = runningJobs.filter((item) => Number(item?.id) !== Number(job.id));
       if (!foreignRunningJobs.length) {
+        const previewTrackPos = tracks[0]?.position ? Number(tracks[0].position) : null;
+        const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} <temp>/trackNN.cdda.wav`;
         await this.setState('CD_METADATA_SELECTION', {
           activeJobId: job.id,
           progress: 0,
@@ -9826,6 +9844,9 @@ class PipelineService extends EventEmitter {
             jobId: job.id,
             device,
             mediaProfile: 'cd',
+            devicePath,
+            cdparanoiaCmd,
+            cdparanoiaCommandPreview,
             detectedTitle,
             tracks
           }
@@ -9845,6 +9866,24 @@ class PipelineService extends EventEmitter {
     const results = await musicBrainzService.searchByTitle(query);
     logger.info('musicbrainz:search:done', { query, count: results.length });
     return results;
+  }
+
+  async getMusicBrainzReleaseById(mbId) {
+    const id = String(mbId || '').trim();
+    if (!id) {
+      const error = new Error('mbId fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+    logger.info('musicbrainz:get-by-id', { mbId: id });
+    const release = await musicBrainzService.getReleaseById(id);
+    if (!release) {
+      const error = new Error(`MusicBrainz Release ${id} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    logger.info('musicbrainz:get-by-id:done', { mbId: id, trackCount: Array.isArray(release.tracks) ? release.tracks.length : 0 });
+    return release;
   }
 
   async selectCdMetadata(payload) {
@@ -9881,9 +9920,12 @@ class PipelineService extends EventEmitter {
       const selected = Array.isArray(selectedTracks)
         ? selectedTracks.find((st) => Number(st.position) === Number(t.position))
         : null;
+      const resolvedTitle = normalizeCdTrackText(selected?.title) || t.title || `Track ${t.position}`;
+      const resolvedArtist = normalizeCdTrackText(selected?.artist) || t.artist || artist || null;
       return {
         ...t,
-        title: selected?.title || t.title || `Track ${t.position}`,
+        title: resolvedTitle,
+        artist: resolvedArtist,
         selected: selected ? Boolean(selected.selected) : true
       };
     });
@@ -9909,6 +9951,10 @@ class PipelineService extends EventEmitter {
     );
 
     if (this.isPrimaryJob(jobId)) {
+      const resolvedDevicePath = String(job?.disc_device || this.snapshot?.context?.device?.path || '').trim() || null;
+      const resolvedCdparanoiaCmd = String(cdInfo?.cdparanoiaCmd || 'cdparanoia').trim() || 'cdparanoia';
+      const previewTrackPos = mergedTracks[0]?.position ? Number(mergedTracks[0].position) : null;
+      const cdparanoiaCommandPreview = `${resolvedCdparanoiaCmd} -d ${resolvedDevicePath || '<device>'} ${previewTrackPos || '<trackNr>'} <temp>/trackNN.cdda.wav`;
       await this.setState('CD_READY_TO_RIP', {
         activeJobId: jobId,
         progress: 0,
@@ -9919,7 +9965,10 @@ class PipelineService extends EventEmitter {
           jobId,
           mediaProfile: 'cd',
           tracks: mergedTracks,
-          selectedMetadata: { title, artist, year, mbId, coverUrl }
+          selectedMetadata: { title, artist, year, mbId, coverUrl },
+          devicePath: resolvedDevicePath,
+          cdparanoiaCmd: resolvedCdparanoiaCmd,
+          cdparanoiaCommandPreview
         }
       });
     }
@@ -9949,27 +9998,119 @@ class PipelineService extends EventEmitter {
 
     const format = String(ripConfig?.format || 'flac').trim().toLowerCase();
     const formatOptions = ripConfig?.formatOptions || {};
+    const normalizeTrackPosition = (value) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+      }
+      return Math.trunc(parsed);
+    };
     const selectedTrackPositions = Array.isArray(ripConfig?.selectedTracks)
-      ? ripConfig.selectedTracks.map(Number).filter(Number.isFinite)
+      ? ripConfig.selectedTracks
+        .map(normalizeTrackPosition)
+        .filter((value) => Number.isFinite(value) && value > 0)
       : [];
+    const normalizeOptionalYear = (value) => {
+      if (value === null || value === undefined || String(value).trim() === '') {
+        return null;
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+      }
+      return Math.trunc(parsed);
+    };
 
     const tocTracks = Array.isArray(cdInfo.tracks) ? cdInfo.tracks : [];
+    const incomingTracks = Array.isArray(ripConfig?.tracks) ? ripConfig.tracks : [];
+    const incomingByPosition = new Map();
+    for (const incoming of incomingTracks) {
+      const position = normalizeTrackPosition(incoming?.position);
+      if (!position) {
+        continue;
+      }
+      incomingByPosition.set(position, incoming);
+    }
     const selectedMeta = cdInfo.selectedMetadata || {};
+    const incomingMeta = ripConfig?.metadata && typeof ripConfig.metadata === 'object'
+      ? ripConfig.metadata
+      : {};
+    const effectiveSelectedMeta = {
+      ...selectedMeta,
+      title: normalizeCdTrackText(incomingMeta?.title)
+        || normalizeCdTrackText(selectedMeta?.title)
+        || normalizeCdTrackText(job?.title)
+        || normalizeCdTrackText(cdInfo?.detectedTitle)
+        || 'Audio CD',
+      artist: normalizeCdTrackText(incomingMeta?.artist)
+        || normalizeCdTrackText(selectedMeta?.artist)
+        || null,
+      year: normalizeOptionalYear(incomingMeta?.year)
+        ?? normalizeOptionalYear(selectedMeta?.year)
+        ?? normalizeOptionalYear(job?.year)
+        ?? null
+    };
+    const mergedTracks = tocTracks.map((track) => {
+      const position = normalizeTrackPosition(track?.position);
+      if (!position) {
+        return null;
+      }
+      const incoming = incomingByPosition.get(position) || null;
+      const fallbackTitle = normalizeCdTrackText(track?.title) || `Track ${position}`;
+      const fallbackArtist = normalizeCdTrackText(track?.artist) || normalizeCdTrackText(effectiveSelectedMeta?.artist) || '';
+      const title = normalizeCdTrackText(incoming?.title) || fallbackTitle;
+      const artist = normalizeCdTrackText(incoming?.artist) || fallbackArtist || null;
+      const selected = incoming
+        ? Boolean(incoming?.selected)
+        : (track?.selected !== false);
+      return {
+        ...track,
+        position,
+        title,
+        artist,
+        selected
+      };
+    }).filter(Boolean);
+
+    const effectiveSelectedTrackPositions = selectedTrackPositions.length > 0
+      ? selectedTrackPositions
+      : mergedTracks.filter((track) => track?.selected !== false).map((track) => track.position);
 
     const settings = await settingsService.getEffectiveSettingsMap('cd');
     const cdparanoiaCmd = String(settings.cdparanoia_command || 'cdparanoia').trim() || 'cdparanoia';
-    const rawBaseDir = String(settings.raw_dir || 'data/output/raw').trim();
+    const cdOutputTemplate = String(
+      settings.cd_output_template || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE
+    ).trim() || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE;
+    const cdBaseDir = String(settings.raw_dir_cd || '').trim() || 'data/output/cd';
     const jobDir = `CD_Job${jobId}_${Date.now()}`;
-    const rawWavDir = path.join(rawBaseDir, jobDir, 'wav');
-    const outputDir = cdRipService.buildOutputDir(selectedMeta, path.join(rawBaseDir, jobDir));
+    const rawWavDir = path.join(cdBaseDir, '.tmp', jobDir, 'wav');
+    const outputDir = cdRipService.buildOutputDir(effectiveSelectedMeta, cdBaseDir, cdOutputTemplate);
+    const previewTrackPos = effectiveSelectedTrackPositions[0] || mergedTracks[0]?.position || 1;
+    const previewWavPath = path.join(rawWavDir, `track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`);
+    const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath} ${previewTrackPos} ${previewWavPath}`;
+
+    const updatedCdInfo = {
+      ...cdInfo,
+      tracks: mergedTracks,
+      selectedMetadata: effectiveSelectedMeta
+    };
 
     await historyService.updateJob(jobId, {
+      title: effectiveSelectedMeta?.title || null,
+      year: normalizeOptionalYear(effectiveSelectedMeta?.year),
       status: 'CD_RIPPING',
       last_state: 'CD_RIPPING',
       error_message: null,
-      raw_path: rawWavDir,
+      raw_path: null,
       output_path: outputDir,
-      encode_plan_json: JSON.stringify({ format, formatOptions, selectedTracks: selectedTrackPositions })
+      makemkv_info_json: JSON.stringify(updatedCdInfo),
+      encode_plan_json: JSON.stringify({
+        format,
+        formatOptions,
+        selectedTracks: effectiveSelectedTrackPositions,
+        tracks: mergedTracks,
+        outputTemplate: cdOutputTemplate
+      })
     });
 
     await this.setState('CD_RIPPING', {
@@ -9981,16 +10122,25 @@ class PipelineService extends EventEmitter {
         ...(this.snapshot.context || {}),
         jobId,
         mediaProfile: 'cd',
-        selectedMetadata: selectedMeta
+        tracks: mergedTracks,
+        selectedMetadata: effectiveSelectedMeta,
+        devicePath,
+        cdparanoiaCmd,
+        rawWavDir,
+        outputTemplate: cdOutputTemplate,
+        cdparanoiaCommandPreview
       }
     });
 
-    logger.info('cd:rip:start', { jobId, devicePath, format, trackCount: selectedTrackPositions.length });
-    await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip gestartet: Format=${format}, Tracks=${selectedTrackPositions.join(',') || 'alle'}`);
+    logger.info('cd:rip:start', { jobId, devicePath, format, trackCount: effectiveSelectedTrackPositions.length });
+    await historyService.appendLog(
+      jobId,
+      'SYSTEM',
+      `CD-Rip gestartet: Format=${format}, Tracks=${effectiveSelectedTrackPositions.join(',') || 'alle'}`
+    );
 
     // Run asynchronously so the HTTP response returns immediately
     this._runCdRip({
-      job,
       jobId,
       devicePath,
       cdparanoiaCmd,
@@ -9998,9 +10148,10 @@ class PipelineService extends EventEmitter {
       outputDir,
       format,
       formatOptions,
-      selectedTrackPositions,
-      tocTracks,
-      selectedMeta
+      outputTemplate: cdOutputTemplate,
+      selectedTrackPositions: effectiveSelectedTrackPositions,
+      tocTracks: mergedTracks,
+      selectedMeta: effectiveSelectedMeta
     }).catch((error) => {
       logger.error('cd:rip:unhandled', { jobId, error: errorToMeta(error) });
     });
@@ -10009,7 +10160,6 @@ class PipelineService extends EventEmitter {
   }
 
   async _runCdRip({
-    job,
     jobId,
     devicePath,
     cdparanoiaCmd,
@@ -10017,14 +10167,54 @@ class PipelineService extends EventEmitter {
     outputDir,
     format,
     formatOptions,
+    outputTemplate,
     selectedTrackPositions,
     tocTracks,
     selectedMeta
   }) {
     const processKey = Number(jobId);
-    this.activeProcesses.set(processKey, { cancel: () => {} });
+    let currentProcessHandle = null;
+    let lifecycleResolve = null;
+    let lifecycleSettled = false;
+    const lifecyclePromise = new Promise((resolve) => {
+      lifecycleResolve = resolve;
+    });
+    const settleLifecycle = () => {
+      if (lifecycleSettled) {
+        return;
+      }
+      lifecycleSettled = true;
+      lifecycleResolve({ settled: true });
+    };
+    const sharedHandle = {
+      child: null,
+      promise: lifecyclePromise,
+      cancel: () => {
+        try {
+          currentProcessHandle?.cancel?.();
+        } catch (_error) {
+          // ignore cancel race errors
+        }
+      }
+    };
+    this.activeProcesses.set(processKey, sharedHandle);
+    this.syncPrimaryActiveProcess();
 
     try {
+      let encodeStateApplied = false;
+      let lastProgressPercent = 0;
+      const bindProcessHandle = (handle) => {
+        currentProcessHandle = handle && typeof handle === 'object' ? handle : null;
+        sharedHandle.child = currentProcessHandle?.child || null;
+        this.syncPrimaryActiveProcess();
+        if (this.cancelRequestedByJob.has(processKey)) {
+          try {
+            currentProcessHandle?.cancel?.();
+          } catch (_error) {
+            // ignore cancel race errors
+          }
+        }
+      };
       await cdRipService.ripAndEncode({
         jobId,
         devicePath,
@@ -10033,34 +10223,49 @@ class PipelineService extends EventEmitter {
         outputDir,
         format,
         formatOptions,
+        outputTemplate,
         selectedTracks: selectedTrackPositions,
         tracks: tocTracks,
         meta: selectedMeta,
-        onProgress: async ({ phase, percent }) => {
-          const clampedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
-          const statusText = phase === 'rip' ? 'CD wird gerippt …' : 'Tracks werden encodiert …';
-          const newState = phase === 'rip' ? 'CD_RIPPING' : 'CD_ENCODING';
+        onProcessHandle: bindProcessHandle,
+        isCancelled: () => this.cancelRequestedByJob.has(processKey),
+        onProgress: async ({ phase, percent, trackIndex, trackTotal }) => {
+          const normalizedPhase = phase === 'encode' ? 'encode' : 'rip';
+          const stage = normalizedPhase === 'rip' ? 'CD_RIPPING' : 'CD_ENCODING';
+          let clampedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+          if (normalizedPhase === 'rip') {
+            clampedPercent = Math.min(clampedPercent, 50);
+          } else {
+            clampedPercent = Math.max(50, clampedPercent);
+          }
+          if (clampedPercent < lastProgressPercent) {
+            clampedPercent = lastProgressPercent;
+          }
+          lastProgressPercent = clampedPercent;
 
-          if (phase === 'encode' && this.snapshot.state === 'CD_RIPPING') {
+          if (normalizedPhase === 'encode' && !encodeStateApplied) {
+            encodeStateApplied = true;
             await historyService.updateJob(jobId, {
               status: 'CD_ENCODING',
               last_state: 'CD_ENCODING'
             });
           }
 
-          await this.setState(newState, {
-            activeJobId: jobId,
-            progress: clampedPercent,
-            eta: null,
-            statusText,
-            context: this.snapshot.context
-          });
+          const detail = Number.isFinite(Number(trackIndex)) && Number.isFinite(Number(trackTotal)) && Number(trackTotal) > 0
+            ? ` (${Math.trunc(Number(trackIndex))}/${Math.trunc(Number(trackTotal))})`
+            : '';
+          const statusText = normalizedPhase === 'rip'
+            ? `CD wird gerippt …${detail}`
+            : `Tracks werden encodiert …${detail}`;
+
+          await this.updateProgress(stage, clampedPercent, null, statusText, processKey);
         },
         onLog: async (level, msg) => {
           await historyService.appendLog(jobId, 'SYSTEM', msg).catch(() => {});
         },
         context: { jobId: processKey }
       });
+      settleLifecycle();
 
       // Success
       await historyService.updateJob(jobId, {
@@ -10090,10 +10295,20 @@ class PipelineService extends EventEmitter {
         message: `Job #${jobId}: ${selectedMeta?.title || 'Audio CD'}`
       });
     } catch (error) {
+      settleLifecycle();
       logger.error('cd:rip:failed', { jobId, error: errorToMeta(error) });
       await this.failJob(jobId, this.snapshot.state === 'CD_ENCODING' ? 'CD_ENCODING' : 'CD_RIPPING', error);
     } finally {
+      try {
+        const cdTempJobDir = path.dirname(String(rawWavDir || ''));
+        if (cdTempJobDir && cdTempJobDir !== '.' && cdTempJobDir !== path.sep) {
+          fs.rmSync(cdTempJobDir, { recursive: true, force: true });
+        }
+      } catch (_cleanupError) {
+        // ignore temp cleanup issues
+      }
       this.activeProcesses.delete(processKey);
+      this.syncPrimaryActiveProcess();
     }
   }
 
