@@ -412,6 +412,13 @@ done
 # --- Repository klonen / aktualisieren ----------------------------------------
 header "Repository holen (Git)"
 
+# Prüfen ob der gewünschte Branch auf dem Remote existiert
+info "Prüfe Branch '$GIT_BRANCH' auf Remote..."
+if ! git ls-remote --exit-code --heads "$REPO_URL" "$GIT_BRANCH" &>/dev/null; then
+  fatal "Branch '$GIT_BRANCH' existiert nicht im Repository $REPO_URL.\nVerfügbare Branches: $(git ls-remote --heads "$REPO_URL" | awk '{print $2}' | sed 's|refs/heads/||' | tr '\n' ' ')"
+fi
+ok "Branch '$GIT_BRANCH' gefunden"
+
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   if [[ "$REINSTALL" == true ]]; then
     info "Aktualisiere bestehendes Repository..."
