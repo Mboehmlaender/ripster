@@ -658,6 +658,15 @@ else
   ok "Benutzer '$SERVICE_USER' angelegt"
 fi
 
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+if [[ -z "$SERVICE_HOME" || "$SERVICE_HOME" == "/" || "$SERVICE_HOME" == "/nonexistent" ]]; then
+  SERVICE_HOME="/home/$SERVICE_USER"
+fi
+mkdir -p "$SERVICE_HOME"
+chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME" 2>/dev/null || true
+chmod 755 "$SERVICE_HOME" 2>/dev/null || true
+info "Service-Home für '$SERVICE_USER': $SERVICE_HOME"
+
 # Optisches Laufwerk: Benutzer zur cdrom/optical-Gruppe hinzufügen
 for grp in cdrom optical disk; do
   if getent group "$grp" &>/dev/null; then
@@ -767,22 +776,15 @@ chmod -R 755 "$INSTALL_DIR"
 chmod 600 "$ENV_FILE"
 
 # MakeMKV erwartet pro Benutzer ein eigenes Konfigurationsverzeichnis.
-ACTUAL_USER="${SUDO_USER:-}"
-if [[ -n "$ACTUAL_USER" && "$ACTUAL_USER" != "root" ]]; then
-  ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" | cut -d: -f6)"
-  if [[ -z "$ACTUAL_HOME" ]]; then
-    ACTUAL_HOME="/home/$ACTUAL_USER"
-  fi
-  MAKEMKV_USER_DIR="${ACTUAL_HOME}/.MakeMKV"
-  if [[ ! -d "$MAKEMKV_USER_DIR" ]]; then
-    mkdir -p "$MAKEMKV_USER_DIR"
-    ok "MakeMKV-Verzeichnis erstellt: $MAKEMKV_USER_DIR"
-  else
-    info "MakeMKV-Verzeichnis vorhanden: $MAKEMKV_USER_DIR"
-  fi
-  chown "$ACTUAL_USER:$ACTUAL_USER" "$MAKEMKV_USER_DIR" 2>/dev/null || true
-  chmod 700 "$MAKEMKV_USER_DIR" 2>/dev/null || true
+MAKEMKV_SERVICE_DIR="${SERVICE_HOME}/.MakeMKV"
+if [[ ! -d "$MAKEMKV_SERVICE_DIR" ]]; then
+  mkdir -p "$MAKEMKV_SERVICE_DIR"
+  ok "MakeMKV-Verzeichnis erstellt: $MAKEMKV_SERVICE_DIR"
+else
+  info "MakeMKV-Verzeichnis vorhanden: $MAKEMKV_SERVICE_DIR"
 fi
+chown "$SERVICE_USER:$SERVICE_USER" "$MAKEMKV_SERVICE_DIR" 2>/dev/null || true
+chmod 700 "$MAKEMKV_SERVICE_DIR" 2>/dev/null || true
 
 # --- Systemd-Dienst: Backend -------------------------------------------------
 header "Systemd-Dienst (Backend) erstellen"
@@ -807,6 +809,7 @@ StartLimitBurst=3
 
 # Umgebung
 Environment=NODE_ENV=production
+Environment=HOME=${SERVICE_HOME}
 Environment=LANG=C.UTF-8
 Environment=LC_ALL=C.UTF-8
 Environment=LANGUAGE=C.UTF-8
@@ -823,7 +826,7 @@ SyslogIdentifier=ripster-backend
 NoNewPrivileges=false
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=${INSTALL_DIR}/backend/data ${INSTALL_DIR}/backend/logs /tmp
+ReadWritePaths=${INSTALL_DIR}/backend/data ${INSTALL_DIR}/backend/logs /tmp ${SERVICE_HOME} ${MAKEMKV_SERVICE_DIR}
 PrivateTmp=true
 
 [Install]

@@ -1317,6 +1317,13 @@ class SettingsService {
       return `dev:${device}`;
     }
 
+    const devicePath = String(deviceInfo?.path || '').trim();
+    if (devicePath) {
+      // Prefer stable Linux device path over MakeMKV disc index mapping.
+      // MakeMKV drive indices (disc:N) do not reliably match /dev/srN numbering.
+      return `dev:${devicePath}`;
+    }
+
     if (deviceInfo && deviceInfo.index !== undefined && deviceInfo.index !== null) {
       return `disc:${deviceInfo.index}`;
     }

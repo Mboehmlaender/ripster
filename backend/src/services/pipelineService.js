@@ -62,6 +62,7 @@ const PRE_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_FINISH_BUFFER = 1;
 const MIN_EXTENSIONLESS_DISC_IMAGE_BYTES = 256 * 1024 * 1024;
+const MAKEMKV_BACKUP_FAILURE_MSG_CODES = new Set([5069, 5080]);
 const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
 const RAW_RIP_COMPLETE_PREFIX = 'Rip_Complete_';
 const RAW_FOLDER_STATES = Object.freeze({
@@ -552,6 +553,37 @@ function composeEncodeScriptStatusText(percent, phase, itemType, index, total, l
   return `ENCODING ${percent.toFixed(2)}% - ${phaseLabel} ${itemLabel}${position}${status}${detail ? `: ${detail}` : ''}`;
 }
 
+function parseMakeMkvMessageCode(line) {
+  const match = String(line || '').match(/\bMSG:(\d+),/i);
+  if (!match) {
+    return null;
+  }
+  const code = Number(match[1]);
+  if (!Number.isFinite(code)) {
+    return null;
+  }
+  return Math.trunc(code);
+}
+
+function isMakeMkvBackupFailureMarker(line) {
+  const text = String(line || '').trim();
+  if (!text) {
+    return false;
+  }
+  const code = parseMakeMkvMessageCode(text);
+  if (code !== null && MAKEMKV_BACKUP_FAILURE_MSG_CODES.has(code)) {
+    return true;
+  }
+  return /backup\s+failed/i.test(text) || /backup\s+fehlgeschlagen/i.test(text);
+}
+
+function findMakeMkvBackupFailureMarker(lines) {
+  if (!Array.isArray(lines)) {
+    return null;
+  }
+  return lines.find((line) => isMakeMkvBackupFailureMarker(line)) || null;
+}
+
 function createEncodeScriptProgressTracker({
   jobId,
   preSteps = 0,
@@ -664,7 +696,8 @@ function createEncodeScriptProgressTracker({
 }
 
 function shouldKeepHighlight(line) {
-  return /error|fail|warn|title\s+#|saving|encoding:|muxing|copying|decrypt/i.test(line);
+  return /error|fail|warn|fehl|title\s+#|saving|encoding:|muxing|copying|decrypt/i.test(line)
+    || isMakeMkvBackupFailureMarker(line);
 }
 
 function normalizeNonNegativeInteger(rawValue) {
@@ -8626,13 +8659,14 @@ class PipelineService extends EventEmitter {
       }
 
       // Check for MakeMKV backup failure even when exit code is 0.
-      // MakeMKV can exit 0 but still output "Backup failed" in stdout.
-      const backupFailed = Array.isArray(makemkvInfo?.highlights) &&
-        makemkvInfo.highlights.some(line => /backup failed/i.test(line));
-      if (backupFailed) {
-        const failMsg = makemkvInfo.highlights.find(line => /backup failed/i.test(line)) || 'Backup failed';
+      // MakeMKV can emit localized failure text while still exiting with 0.
+      const backupFailureLine = ripMode === 'backup'
+        ? findMakeMkvBackupFailureMarker(makemkvInfo?.highlights)
+        : null;
+      if (backupFailureLine) {
+        const msgCode = parseMakeMkvMessageCode(backupFailureLine);
         throw Object.assign(
-          new Error(`MakeMKV Backup fehlgeschlagen (Exit Code 0): ${failMsg}`),
+          new Error(`MakeMKV Backup fehlgeschlagen${msgCode !== null ? ` (MSG:${msgCode})` : ''}: ${backupFailureLine}`),
           { runInfo: makemkvInfo }
         );
       }
@@ -10082,9 +10116,16 @@ class PipelineService extends EventEmitter {
       settings.cd_output_template || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE
     ).trim() || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE;
     const cdBaseDir = String(settings.raw_dir_cd || '').trim() || 'data/output/cd';
+    const cdOutputOwner = String(settings.raw_dir_owner || '').trim();
     const jobDir = `CD_Job${jobId}_${Date.now()}`;
     const rawWavDir = path.join(cdBaseDir, '.tmp', jobDir, 'wav');
+    const cdTempJobDir = path.dirname(rawWavDir);
     const outputDir = cdRipService.buildOutputDir(effectiveSelectedMeta, cdBaseDir, cdOutputTemplate);
+    ensureDir(cdBaseDir);
+    ensureDir(cdTempJobDir);
+    ensureDir(outputDir);
+    chownRecursive(cdTempJobDir, cdOutputOwner);
+    chownRecursive(outputDir, cdOutputOwner);
     const previewTrackPos = effectiveSelectedTrackPositions[0] || mergedTracks[0]?.position || 1;
     const previewWavPath = path.join(rawWavDir, `track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`);
     const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath} ${previewTrackPos} ${previewWavPath}`;
@@ -10149,6 +10190,7 @@ class PipelineService extends EventEmitter {
       format,
       formatOptions,
       outputTemplate: cdOutputTemplate,
+      outputOwner: cdOutputOwner,
       selectedTrackPositions: effectiveSelectedTrackPositions,
       tocTracks: mergedTracks,
       selectedMeta: effectiveSelectedMeta
@@ -10168,6 +10210,7 @@ class PipelineService extends EventEmitter {
     format,
     formatOptions,
     outputTemplate,
+    outputOwner,
     selectedTrackPositions,
     tocTracks,
     selectedMeta
@@ -10275,6 +10318,7 @@ class PipelineService extends EventEmitter {
         rip_successful: 1,
         output_path: outputDir
       });
+      chownRecursive(outputDir, outputOwner);
       await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip abgeschlossen. Ausgabe: ${outputDir}`);
 
       await this.setState('FINISHED', {
