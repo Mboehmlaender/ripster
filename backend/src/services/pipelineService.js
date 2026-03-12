@@ -8528,7 +8528,7 @@ class PipelineService extends EventEmitter {
 
     const deviceCandidate = this.detectedDisc || this.snapshot.context?.device || {
       path: job.disc_device,
-      index: Number(settings.makemkv_source_index || 0)
+      index: 0
     };
     const deviceProfile = normalizeMediaProfile(deviceCandidate?.mediaProfile)
       || inferMediaProfileFromDeviceInfo(deviceCandidate)

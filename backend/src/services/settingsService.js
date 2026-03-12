@@ -1308,27 +1308,10 @@ class SettingsService {
   }
 
   resolveSourceArg(map, deviceInfo = null) {
-    const mode = map.drive_mode;
-    if (mode === 'explicit') {
-      const device = map.drive_device;
-      if (!device) {
-        throw new Error('drive_device ist leer, obwohl drive_mode=explicit gesetzt ist.');
-      }
-      return `dev:${device}`;
-    }
-
-    const devicePath = String(deviceInfo?.path || '').trim();
-    if (devicePath) {
-      // Prefer stable Linux device path over MakeMKV disc index mapping.
-      // MakeMKV drive indices (disc:N) do not reliably match /dev/srN numbering.
-      return `dev:${devicePath}`;
-    }
-
-    if (deviceInfo && deviceInfo.index !== undefined && deviceInfo.index !== null) {
-      return `disc:${deviceInfo.index}`;
-    }
-
-    return `disc:${map.makemkv_source_index ?? 0}`;
+    // Single-drive setup: always use MakeMKV's first logical disc device.
+    void map;
+    void deviceInfo;
+    return 'disc:0';
   }
 
   async loadHandBrakePresetOptionsFromCli(map = {}) {
