@@ -46,6 +46,50 @@ router.get(
   })
 );
 
+router.get(
+  '/cd/musicbrainz/search',
+  asyncHandler(async (req, res) => {
+    const query = req.query.q || '';
+    logger.info('get:cd:musicbrainz:search', { reqId: req.reqId, query });
+    const results = await pipelineService.searchMusicBrainz(String(query));
+    res.json({ results });
+  })
+);
+
+router.post(
+  '/cd/select-metadata',
+  asyncHandler(async (req, res) => {
+    const { jobId, title, artist, year, mbId, coverUrl, tracks } = req.body;
+    if (!jobId) {
+      const error = new Error('jobId fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+    logger.info('post:cd:select-metadata', { reqId: req.reqId, jobId, title, artist, year, mbId });
+    const job = await pipelineService.selectCdMetadata({
+      jobId: Number(jobId),
+      title,
+      artist,
+      year,
+      mbId,
+      coverUrl,
+      tracks
+    });
+    res.json({ job });
+  })
+);
+
+router.post(
+  '/cd/start/:jobId',
+  asyncHandler(async (req, res) => {
+    const jobId = Number(req.params.jobId);
+    const ripConfig = req.body || {};
+    logger.info('post:cd:start', { reqId: req.reqId, jobId, format: ripConfig.format });
+    const result = await pipelineService.startCdRip(jobId, ripConfig);
+    res.json({ result });
+  })
+);
+
 router.post(
   '/select-metadata',
   asyncHandler(async (req, res) => {

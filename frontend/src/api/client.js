@@ -273,6 +273,25 @@ export const api = {
   searchOmdb(q) {
     return request(`/pipeline/omdb/search?q=${encodeURIComponent(q)}`);
   },
+  searchMusicBrainz(q) {
+    return request(`/pipeline/cd/musicbrainz/search?q=${encodeURIComponent(q)}`);
+  },
+  async selectCdMetadata(payload) {
+    const result = await request('/pipeline/cd/select-metadata', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async startCdRip(jobId, ripConfig) {
+    const result = await request(`/pipeline/cd/start/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify(ripConfig || {})
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
   async selectMetadata(payload) {
     const result = await request('/pipeline/select-metadata', {
       method: 'POST',

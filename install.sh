@@ -359,6 +359,16 @@ apt-get install -y \
 
 ok "Basispakete installiert"
 
+info "Installiere CD-Ripping-Tools..."
+apt-get install -y \
+  cdparanoia \
+  flac \
+  lame \
+  opus-tools \
+  vorbis-tools
+
+ok "CD-Ripping-Tools installiert (cdparanoia, flac, lame, opus-tools, vorbis-tools)"
+
 install_node
 
 if [[ "$SKIP_MAKEMKV" == false ]]; then
@@ -434,6 +444,7 @@ mkdir -p "$INSTALL_DIR/backend/data"
 mkdir -p "$INSTALL_DIR/backend/logs"
 mkdir -p "$INSTALL_DIR/backend/data/output/raw"
 mkdir -p "$INSTALL_DIR/backend/data/output/movies"
+mkdir -p "$INSTALL_DIR/backend/data/output/cd"
 mkdir -p "$INSTALL_DIR/backend/data/logs"
 
 # Gesicherte Daten zurückspielen
@@ -676,6 +687,11 @@ missing_tools=()
 command_exists makemkvcon   || missing_tools+=("makemkvcon")
 command_exists HandBrakeCLI || missing_tools+=("HandBrakeCLI")
 command_exists mediainfo    || missing_tools+=("mediainfo")
+command_exists cdparanoia   || missing_tools+=("cdparanoia")
+command_exists flac         || missing_tools+=("flac")
+command_exists lame         || missing_tools+=("lame")
+command_exists opusenc      || missing_tools+=("opusenc")
+command_exists oggenc       || missing_tools+=("oggenc")
 
 if [[ ${#missing_tools[@]} -gt 0 ]]; then
   echo -e "  ${YELLOW}${BOLD}Hinweis:${RESET} Folgende Tools fehlen noch:"

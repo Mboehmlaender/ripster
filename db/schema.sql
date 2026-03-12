@@ -340,6 +340,20 @@ INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, des
 VALUES ('output_folder_template_dvd', 'Tools', 'Ordnername Template', 'string', 0, 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template (DVD).', NULL, '[]', '{}', 540);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_folder_template_dvd', NULL);
 
+-- Tools – CD
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('cdparanoia_command', 'Tools', 'cdparanoia Kommando', 'string', 1, 'Pfad oder Befehl für cdparanoia. Wird als Fallback genutzt wenn kein individuelles Kommando gesetzt ist.', 'cdparanoia', '[]', '{"minLength":1}', 230);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('cdparanoia_command', 'cdparanoia');
+
+-- Pfade – CD
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('raw_dir_cd', 'Pfade', 'CD Ausgabeordner', 'path', 0, 'Optionaler Ausgabeordner für geripppte CD-Dateien. Leer = Fallback auf "Raw Ausgabeordner".', '/opt/ripster/backend/data/output/cd', '[]', '{}', 104);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd', '/opt/ripster/backend/data/output/cd');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('raw_dir_cd_owner', 'Pfade', 'Eigentümer CD-Ordner', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1045);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd_owner', NULL);
+
 -- Metadaten
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('omdb_api_key', 'Metadaten', 'OMDb API Key', 'string', 0, 'API Key für Metadatensuche.', NULL, '[]', '{}', 400);
@@ -348,6 +362,10 @@ INSERT OR IGNORE INTO settings_values (key, value) VALUES ('omdb_api_key', NULL)
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('omdb_default_type', 'Metadaten', 'OMDb Typ', 'select', 1, 'Vorauswahl für Suche.', 'movie', '[{"label":"Movie","value":"movie"},{"label":"Series","value":"series"},{"label":"Episode","value":"episode"}]', '{}', 410);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('omdb_default_type', 'movie');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('musicbrainz_enabled', 'Metadaten', 'MusicBrainz aktiviert', 'boolean', 1, 'MusicBrainz-Metadatensuche für CDs aktivieren.', 'true', '[]', '{}', 420);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('musicbrainz_enabled', 'true');
 
 -- Benachrichtigungen
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)

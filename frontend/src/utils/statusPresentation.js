@@ -12,7 +12,12 @@ const STATUS_LABELS = {
   POST_ENCODE_SCRIPTS: 'Nachbearbeitung',
   FINISHED: 'Fertig',
   CANCELLED: 'Abgebrochen',
-  ERROR: 'Fehler'
+  ERROR: 'Fehler',
+  CD_ANALYZING: 'CD-Analyse',
+  CD_METADATA_SELECTION: 'CD-Metadatenauswahl',
+  CD_READY_TO_RIP: 'CD bereit zum Rippen',
+  CD_RIPPING: 'CD rippen',
+  CD_ENCODING: 'CD encodieren'
 };
 
 const PROCESS_STATUS_LABELS = {
@@ -46,6 +51,8 @@ export function getStatusSeverity(status, options = {}) {
   if (normalized === 'ERROR') return 'danger';
   if (normalized === 'READY_TO_START' || normalized === 'READY_TO_ENCODE') return 'info';
   if (normalized === 'WAITING_FOR_USER_DECISION') return 'warning';
+  if (normalized === 'CD_READY_TO_RIP') return 'info';
+  if (normalized === 'CD_METADATA_SELECTION') return 'warning';
   if (
     normalized === 'RIPPING'
     || normalized === 'ENCODING'
@@ -53,6 +60,9 @@ export function getStatusSeverity(status, options = {}) {
     || normalized === 'MEDIAINFO_CHECK'
     || normalized === 'METADATA_SELECTION'
     || normalized === 'POST_ENCODE_SCRIPTS'
+    || normalized === 'CD_ANALYZING'
+    || normalized === 'CD_RIPPING'
+    || normalized === 'CD_ENCODING'
   ) {
     return 'warning';
   }

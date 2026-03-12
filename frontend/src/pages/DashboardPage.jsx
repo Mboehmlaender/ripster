@@ -9,12 +9,14 @@ import { InputNumber } from 'primereact/inputnumber';
 import { api } from '../api/client';
 import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
+import CdMetadataDialog from '../components/CdMetadataDialog';
+import CdRipConfigPanel from '../components/CdRipConfigPanel';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
 import otherIndicatorIcon from '../assets/media-other.svg';
 import { getStatusLabel, getStatusSeverity, normalizeStatus } from '../utils/statusPresentation';
 
-const processingStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'];
+const processingStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING'];
 const dashboardStatuses = new Set([
   'ANALYZING',
   'METADATA_SELECTION',
@@ -25,7 +27,12 @@ const dashboardStatuses = new Set([
   'RIPPING',
   'ENCODING',
   'CANCELLED',
-  'ERROR'
+  'ERROR',
+  'CD_METADATA_SELECTION',
+  'CD_READY_TO_RIP',
+  'CD_ANALYZING',
+  'CD_RIPPING',
+  'CD_ENCODING'
 ]);
 
 function normalizeJobId(value) {
@@ -362,32 +369,25 @@ function resolveMediaType(job) {
     if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
       return 'dvd';
     }
+    if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
+      return 'cd';
+    }
   }
   return 'other';
 }
 
 function mediaIndicatorMeta(job) {
   const mediaType = resolveMediaType(job);
-  return mediaType === 'bluray'
-    ? {
-      mediaType,
-      src: blurayIndicatorIcon,
-      alt: 'Blu-ray',
-      title: 'Blu-ray'
-    }
-    : mediaType === 'dvd'
-      ? {
-        mediaType,
-        src: discIndicatorIcon,
-        alt: 'DVD',
-        title: 'DVD'
-      }
-    : {
-      mediaType,
-      src: otherIndicatorIcon,
-      alt: 'Sonstiges Medium',
-      title: 'Sonstiges Medium'
-    };
+  if (mediaType === 'bluray') {
+    return { mediaType, src: blurayIndicatorIcon, alt: 'Blu-ray', title: 'Blu-ray' };
+  }
+  if (mediaType === 'dvd') {
+    return { mediaType, src: discIndicatorIcon, alt: 'DVD', title: 'DVD' };
+  }
+  if (mediaType === 'cd') {
+    return { mediaType, src: otherIndicatorIcon, alt: 'Audio CD', title: 'Audio CD' };
+  }
+  return { mediaType, src: otherIndicatorIcon, alt: 'Sonstiges Medium', title: 'Sonstiges Medium' };
 }
 
 function JobStepChecks({ backupSuccess, encodeSuccess }) {
@@ -547,6 +547,9 @@ export default function DashboardPage({
   };
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
+  const [cdMetadataDialogVisible, setCdMetadataDialogVisible] = useState(false);
+  const [cdMetadataDialogContext, setCdMetadataDialogContext] = useState(null);
+  const [cdRipPanelJobId, setCdRipPanelJobId] = useState(null);
   const [cancelCleanupDialog, setCancelCleanupDialog] = useState({
     visible: false,
     jobId: null,
@@ -663,6 +666,24 @@ export default function DashboardPage({
       setMetadataDialogVisible(false);
     }
   }, [pipeline?.state, metadataDialogVisible, metadataDialogContext?.jobId]);
+
+  // Auto-open CD metadata dialog when pipeline enters CD_METADATA_SELECTION
+  useEffect(() => {
+    const currentState = String(pipeline?.state || '').trim().toUpperCase();
+    if (currentState === 'CD_METADATA_SELECTION') {
+      const ctx = pipeline?.context && typeof pipeline.context === 'object' ? pipeline.context : null;
+      if (ctx?.jobId && !cdMetadataDialogVisible) {
+        setCdMetadataDialogContext(ctx);
+        setCdMetadataDialogVisible(true);
+      }
+    }
+    if (currentState === 'CD_READY_TO_RIP') {
+      const ctx = pipeline?.context && typeof pipeline.context === 'object' ? pipeline.context : null;
+      if (ctx?.jobId) {
+        setCdRipPanelJobId(ctx.jobId);
+      }
+    }
+  }, [pipeline?.state, pipeline?.context?.jobId]);
 
   useEffect(() => {
     setQueueState(normalizeQueue(pipeline?.queue));
@@ -1319,6 +1340,47 @@ export default function DashboardPage({
       showError(error);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleMusicBrainzSearch = async (query) => {
+    try {
+      const response = await api.searchMusicBrainz(query);
+      return response.results || [];
+    } catch (error) {
+      showError(error);
+      return [];
+    }
+  };
+
+  const handleCdMetadataSubmit = async (payload) => {
+    setBusy(true);
+    try {
+      await api.selectCdMetadata(payload);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      setCdMetadataDialogVisible(false);
+      setCdMetadataDialogContext(null);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCdRipStart = async (jobId, ripConfig) => {
+    if (!jobId) {
+      return;
+    }
+    setJobBusy(jobId, true);
+    try {
+      await api.startCdRip(jobId, ripConfig);
+      await refreshPipeline();
+      await loadDashboardJobs();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setJobBusy(jobId, false);
     }
   };
 
@@ -2034,6 +2096,40 @@ export default function DashboardPage({
                         disabled={busyJobIds.has(jobId)}
                       />
                     </div>
+                    {(() => {
+                      const jobState = String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase();
+                      const isCdJob = jobState.startsWith('CD_');
+                      if (isCdJob) {
+                        return (
+                          <>
+                            {jobState === 'CD_METADATA_SELECTION' ? (
+                              <Button
+                                label="CD-Metadaten auswählen"
+                                icon="pi pi-list"
+                                onClick={() => {
+                                  const ctx = pipelineForJob?.context && typeof pipelineForJob.context === 'object'
+                                    ? pipelineForJob.context
+                                    : pipeline?.context || {};
+                                  setCdMetadataDialogContext({ ...ctx, jobId });
+                                  setCdMetadataDialogVisible(true);
+                                }}
+                                disabled={busyJobIds.has(jobId)}
+                              />
+                            ) : null}
+                            {(jobState === 'CD_READY_TO_RIP' || jobState === 'CD_RIPPING' || jobState === 'CD_ENCODING') ? (
+                              <CdRipConfigPanel
+                                pipeline={pipelineForJob}
+                                onStart={(ripConfig) => handleCdRipStart(jobId, ripConfig)}
+                                onCancel={() => handleCancel(jobId, jobState)}
+                                busy={busyJobIds.has(jobId)}
+                              />
+                            ) : null}
+                          </>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {!String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase().startsWith('CD_') ? (
                     <PipelineStatusCard
                       pipeline={pipelineForJob}
                       onAnalyze={handleAnalyze}
@@ -2051,6 +2147,7 @@ export default function DashboardPage({
                       busy={busyJobIds.has(jobId)}
                       liveJobLog={isCurrentSession ? liveJobLog : ''}
                     />
+                    ) : null}
                   </div>
                 );
               }
@@ -2162,6 +2259,18 @@ export default function DashboardPage({
         }}
         onSubmit={handleMetadataSubmit}
         onSearch={handleOmdbSearch}
+        busy={busy}
+      />
+
+      <CdMetadataDialog
+        visible={cdMetadataDialogVisible}
+        context={cdMetadataDialogContext || pipeline?.context || {}}
+        onHide={() => {
+          setCdMetadataDialogVisible(false);
+          setCdMetadataDialogContext(null);
+        }}
+        onSubmit={handleCdMetadataSubmit}
+        onSearch={handleMusicBrainzSearch}
         busy={busy}
       />
 

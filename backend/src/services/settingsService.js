@@ -36,17 +36,19 @@ const SUBTITLE_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-subtitles', '--first-s
 const SUBTITLE_FLAG_KEYS_WITH_VALUE = new Set(['--subtitle-burned', '--subtitle-default', '--subtitle-forced']);
 const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
 const LOG_DIR_SETTING_KEY = 'log_dir';
-const MEDIA_PROFILES = ['bluray', 'dvd', 'other'];
+const MEDIA_PROFILES = ['bluray', 'dvd', 'other', 'cd'];
 const PROFILED_SETTINGS = {
   raw_dir: {
     bluray: 'raw_dir_bluray',
     dvd: 'raw_dir_dvd',
-    other: 'raw_dir_other'
+    other: 'raw_dir_other',
+    cd: 'raw_dir_cd'
   },
   raw_dir_owner: {
     bluray: 'raw_dir_bluray_owner',
     dvd: 'raw_dir_dvd_owner',
-    other: 'raw_dir_other_owner'
+    other: 'raw_dir_other_owner',
+    cd: 'raw_dir_cd_owner'
   },
   movie_dir: {
     bluray: 'movie_dir_bluray',

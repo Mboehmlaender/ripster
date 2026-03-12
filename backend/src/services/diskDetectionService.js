@@ -52,14 +52,17 @@ function normalizeMediaProfile(rawValue) {
   ) {
     return 'dvd';
   }
-  if (value === 'disc' || value === 'other' || value === 'sonstiges' || value === 'cd') {
+  if (value === 'cd' || value === 'audio_cd') {
+    return 'cd';
+  }
+  if (value === 'disc' || value === 'other' || value === 'sonstiges') {
     return 'other';
   }
   return null;
 }
 
 function isSpecificMediaProfile(value) {
-  return value === 'bluray' || value === 'dvd';
+  return value === 'bluray' || value === 'dvd' || value === 'cd';
 }
 
 function inferMediaProfileFromTextParts(parts) {
@@ -82,6 +85,9 @@ function inferMediaProfileFromTextParts(parts) {
 
 function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
   const fstype = String(rawFsType || '').trim().toLowerCase();
+  if (fstype === 'audio_cd') {
+    return 'cd';
+  }
   const model = String(rawModel || '').trim().toLowerCase();
   const hasBlurayModelMarker = /(blu[\s-]?ray|bd[\s_-]?rom|bd-r|bd-re)/.test(model);
   const hasDvdModelMarker = /dvd/.test(model);
@@ -142,7 +148,7 @@ function inferMediaProfileFromUdevProperties(properties = {}) {
     return 'dvd';
   }
   if (hasFlag('ID_CDROM_MEDIA_CD')) {
-    return 'other';
+    return 'cd';
   }
   return null;
 }
@@ -493,22 +499,48 @@ class DiskDetectionService extends EventEmitter {
   }
 
   async checkMediaPresent(devicePath) {
+    let blkidType = null;
     try {
       const { stdout } = await execFileAsync('blkid', ['-o', 'value', '-s', 'TYPE', devicePath]);
-      const type = String(stdout || '').trim().toLowerCase();
-      const has = type.length > 0;
-      logger.debug('blkid:result', { devicePath, hasMedia: has, type });
-      return {
-        hasMedia: has,
-        type: type || null
-      };
-    } catch (error) {
-      logger.debug('blkid:no-media-or-fail', { devicePath, error: errorToMeta(error) });
-      return {
-        hasMedia: false,
-        type: null
-      };
+      blkidType = String(stdout || '').trim().toLowerCase() || null;
+    } catch (_error) {
+      // blkid failed – could mean no disc, or an audio CD (no filesystem type)
     }
+
+    if (blkidType) {
+      logger.debug('blkid:result', { devicePath, hasMedia: true, type: blkidType });
+      return { hasMedia: true, type: blkidType };
+    }
+
+    // blkid found nothing – audio CDs have no filesystem, so fall back to udevadm
+    try {
+      const { stdout } = await execFileAsync('udevadm', [
+        'info',
+        '--query=property',
+        '--name',
+        devicePath
+      ]);
+      const props = {};
+      for (const line of String(stdout || '').split(/\r?\n/)) {
+        const idx = line.indexOf('=');
+        if (idx <= 0) {
+          continue;
+        }
+        props[line.slice(0, idx).trim().toUpperCase()] = line.slice(idx + 1).trim();
+      }
+      const hasBD = Object.keys(props).some((k) => k.startsWith('ID_CDROM_MEDIA_BD') && props[k] === '1');
+      const hasDVD = Object.keys(props).some((k) => k.startsWith('ID_CDROM_MEDIA_DVD') && props[k] === '1');
+      const hasCD = props['ID_CDROM_MEDIA_CD'] === '1';
+      if (hasCD && !hasDVD && !hasBD) {
+        logger.debug('udevadm:audio-cd', { devicePath });
+        return { hasMedia: true, type: 'audio_cd' };
+      }
+    } catch (_udevError) {
+      // udevadm not available or failed – ignore
+    }
+
+    logger.debug('blkid:no-media-or-fail', { devicePath });
+    return { hasMedia: false, type: null };
   }
 
   async getDiscLabel(devicePath) {
@@ -560,6 +592,11 @@ class DiskDetectionService extends EventEmitter {
   }
 
   async inferMediaProfile(devicePath, hints = {}) {
+    // Audio CDs have no filesystem – short-circuit immediately
+    if (String(hints?.fstype || '').trim().toLowerCase() === 'audio_cd') {
+      return 'cd';
+    }
+
     const explicit = normalizeMediaProfile(hints?.mediaProfile);
     if (isSpecificMediaProfile(explicit)) {
       return explicit;

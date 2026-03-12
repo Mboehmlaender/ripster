@@ -63,7 +63,38 @@ function parseHandBrakeProgress(line) {
   return null;
 }
 
+function parseCdParanoiaProgress(line) {
+  // cdparanoia writes progress to stderr with \r overwrites.
+  // Formats seen in the wild:
+  //   "Ripping track  1 of 12  progress: ( 34.21%)"
+  //   "###: 14 [wrote  ]  (track  3 of 12  [  0:12.33])"
+  const normalized = String(line || '').replace(/\s+/g, ' ').trim();
+
+  const progressMatch = normalized.match(/progress:\s*\(\s*(\d+(?:\.\d+)?)\s*%\s*\)/i);
+  if (progressMatch) {
+    const trackMatch = normalized.match(/track\s+(\d+)\s+of\s+(\d+)/i);
+    const currentTrack = trackMatch ? Number(trackMatch[1]) : null;
+    const totalTracks = trackMatch ? Number(trackMatch[2]) : null;
+    return {
+      percent: clampPercent(Number(progressMatch[1])),
+      currentTrack,
+      totalTracks,
+      eta: null
+    };
+  }
+
+  // "###: 14 [wrote  ]  (track  3 of 12 [ 0:12.33])" style – no clear percent here
+  // Fall back to generic percent match
+  const percent = parseGenericPercent(normalized);
+  if (percent !== null) {
+    return { percent, currentTrack: null, totalTracks: null, eta: null };
+  }
+
+  return null;
+}
+
 module.exports = {
   parseMakeMkvProgress,
-  parseHandBrakeProgress
+  parseHandBrakeProgress,
+  parseCdParanoiaProgress
 };

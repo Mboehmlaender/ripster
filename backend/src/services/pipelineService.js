@@ -5,6 +5,8 @@ const { getDb } = require('../db/database');
 const settingsService = require('./settingsService');
 const historyService = require('./historyService');
 const omdbService = require('./omdbService');
+const musicBrainzService = require('./musicBrainzService');
+const cdRipService = require('./cdRipService');
 const scriptService = require('./scriptService');
 const scriptChainService = require('./scriptChainService');
 const runtimeActivityService = require('./runtimeActivityService');
@@ -20,7 +22,7 @@ const { analyzePlaylistObfuscation, normalizePlaylistId } = require('../utils/pl
 const { errorToMeta } = require('../utils/errorMeta');
 const userPresetService = require('./userPresetService');
 
-const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK']);
+const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING']);
 const REVIEW_REFRESH_SETTING_PREFIXES = [
   'handbrake_',
   'mediainfo_',
@@ -101,14 +103,17 @@ function normalizeMediaProfile(value) {
   ) {
     return 'dvd';
   }
-  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
+  if (raw === 'cd' || raw === 'audio_cd') {
+    return 'cd';
+  }
+  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges') {
     return 'other';
   }
   return null;
 }
 
 function isSpecificMediaProfile(value) {
-  return value === 'bluray' || value === 'dvd';
+  return value === 'bluray' || value === 'dvd' || value === 'cd';
 }
 
 function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
@@ -5114,6 +5119,11 @@ class PipelineService extends EventEmitter {
       mediaProfile
     };
 
+    // Route audio CDs to the dedicated CD pipeline
+    if (mediaProfile === 'cd') {
+      return this.analyzeCd(deviceWithProfile);
+    }
+
     const job = await historyService.createJob({
       discDevice: device.path,
       status: 'METADATA_SELECTION',
@@ -9750,6 +9760,347 @@ class PipelineService extends EventEmitter {
       title: isCancelled ? 'Ripster - Job abgebrochen' : 'Ripster - Job Fehler',
       message: `${title} (${stage}): ${message}`
     });
+  }
+
+  // ── CD Pipeline ─────────────────────────────────────────────────────────────
+
+  async analyzeCd(device) {
+    const devicePath = String(device?.path || '').trim();
+    const detectedTitle = String(
+      device?.discLabel || device?.label || device?.model || 'Audio CD'
+    ).trim();
+
+    logger.info('cd:analyze:start', { devicePath, detectedTitle });
+
+    const job = await historyService.createJob({
+      discDevice: devicePath,
+      status: 'CD_METADATA_SELECTION',
+      detectedTitle
+    });
+
+    try {
+      const settings = await settingsService.getSettingsMap();
+      const cdparanoiaCmd = String(settings.cdparanoia_command || 'cdparanoia').trim() || 'cdparanoia';
+
+      // Read TOC
+      await this.setState('CD_ANALYZING', {
+        activeJobId: job.id,
+        progress: 0,
+        eta: null,
+        statusText: 'CD wird analysiert …',
+        context: { jobId: job.id, device, mediaProfile: 'cd' }
+      });
+
+      const tracks = await cdRipService.readToc(devicePath, cdparanoiaCmd);
+      logger.info('cd:analyze:toc', { jobId: job.id, trackCount: tracks.length });
+
+      // Search MusicBrainz
+      const mbCandidates = await musicBrainzService
+        .searchByDiscLabel(detectedTitle)
+        .catch(() => []);
+
+      const cdInfo = {
+        phase: 'PREPARE',
+        mediaProfile: 'cd',
+        preparedAt: nowIso(),
+        tracks,
+        detectedTitle
+      };
+
+      await historyService.updateJob(job.id, {
+        status: 'CD_METADATA_SELECTION',
+        last_state: 'CD_METADATA_SELECTION',
+        detected_title: detectedTitle,
+        makemkv_info_json: JSON.stringify(cdInfo)
+      });
+      await historyService.appendLog(
+        job.id,
+        'SYSTEM',
+        `CD analysiert: ${tracks.length} Track(s) gefunden. MusicBrainz: ${mbCandidates.length} Treffer.`
+      );
+
+      const runningJobs = await historyService.getRunningJobs();
+      const foreignRunningJobs = runningJobs.filter((item) => Number(item?.id) !== Number(job.id));
+      if (!foreignRunningJobs.length) {
+        await this.setState('CD_METADATA_SELECTION', {
+          activeJobId: job.id,
+          progress: 0,
+          eta: null,
+          statusText: 'CD-Metadaten auswählen',
+          context: {
+            jobId: job.id,
+            device,
+            mediaProfile: 'cd',
+            detectedTitle,
+            tracks,
+            mbCandidates
+          }
+        });
+      }
+
+      return { jobId: job.id, detectedTitle, tracks, mbCandidates };
+    } catch (error) {
+      logger.error('cd:analyze:failed', { jobId: job.id, error: errorToMeta(error) });
+      await this.failJob(job.id, 'CD_ANALYZING', error);
+      throw error;
+    }
+  }
+
+  async searchMusicBrainz(query) {
+    logger.info('musicbrainz:search', { query });
+    const results = await musicBrainzService.searchByTitle(query);
+    logger.info('musicbrainz:search:done', { query, count: results.length });
+    return results;
+  }
+
+  async selectCdMetadata(payload) {
+    const {
+      jobId,
+      title,
+      artist,
+      year,
+      mbId,
+      coverUrl,
+      tracks: selectedTracks
+    } = payload || {};
+
+    if (!jobId) {
+      const error = new Error('jobId fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await historyService.getJobById(jobId);
+    if (!job) {
+      const error = new Error(`Job ${jobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    logger.info('cd:select-metadata', { jobId, title, artist, year, mbId });
+
+    const cdInfo = this.safeParseJson(job.makemkv_info_json) || {};
+
+    // Merge track metadata from selection into existing TOC tracks
+    const tocTracks = Array.isArray(cdInfo.tracks) ? cdInfo.tracks : [];
+    const mergedTracks = tocTracks.map((t) => {
+      const selected = Array.isArray(selectedTracks)
+        ? selectedTracks.find((st) => Number(st.position) === Number(t.position))
+        : null;
+      return {
+        ...t,
+        title: selected?.title || t.title || `Track ${t.position}`,
+        selected: selected ? Boolean(selected.selected) : true
+      };
+    });
+
+    const updatedCdInfo = {
+      ...cdInfo,
+      tracks: mergedTracks,
+      selectedMetadata: { title, artist, year, mbId, coverUrl }
+    };
+
+    await historyService.updateJob(jobId, {
+      title: title || null,
+      year: year ? Number(year) : null,
+      poster_url: coverUrl || null,
+      status: 'CD_READY_TO_RIP',
+      last_state: 'CD_READY_TO_RIP',
+      makemkv_info_json: JSON.stringify(updatedCdInfo)
+    });
+    await historyService.appendLog(
+      jobId,
+      'SYSTEM',
+      `Metadaten gesetzt: "${title}" (${artist || '-'}, ${year || '-'}).`
+    );
+
+    if (this.isPrimaryJob(jobId)) {
+      await this.setState('CD_READY_TO_RIP', {
+        activeJobId: jobId,
+        progress: 0,
+        eta: null,
+        statusText: 'CD bereit zum Rippen',
+        context: {
+          ...(this.snapshot.context || {}),
+          jobId,
+          mediaProfile: 'cd',
+          tracks: mergedTracks,
+          selectedMetadata: { title, artist, year, mbId, coverUrl }
+        }
+      });
+    }
+
+    return historyService.getJobById(jobId);
+  }
+
+  async startCdRip(jobId, ripConfig) {
+    this.ensureNotBusy('startCdRip', jobId);
+
+    const job = await historyService.getJobById(jobId);
+    if (!job) {
+      const error = new Error(`Job ${jobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const cdInfo = this.safeParseJson(job.makemkv_info_json) || {};
+    const device = this.detectedDisc || this.snapshot.context?.device;
+    const devicePath = String(device?.path || job.disc_device || '').trim();
+
+    if (!devicePath) {
+      const error = new Error('Kein CD-Laufwerk bekannt.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const format = String(ripConfig?.format || 'flac').trim().toLowerCase();
+    const formatOptions = ripConfig?.formatOptions || {};
+    const selectedTrackPositions = Array.isArray(ripConfig?.selectedTracks)
+      ? ripConfig.selectedTracks.map(Number).filter(Number.isFinite)
+      : [];
+
+    const tocTracks = Array.isArray(cdInfo.tracks) ? cdInfo.tracks : [];
+    const selectedMeta = cdInfo.selectedMetadata || {};
+
+    const settings = await settingsService.getEffectiveSettingsMap('cd');
+    const cdparanoiaCmd = String(settings.cdparanoia_command || 'cdparanoia').trim() || 'cdparanoia';
+    const rawBaseDir = String(settings.raw_dir || 'data/output/raw').trim();
+    const jobDir = `CD_Job${jobId}_${Date.now()}`;
+    const rawWavDir = path.join(rawBaseDir, jobDir, 'wav');
+    const outputDir = cdRipService.buildOutputDir(selectedMeta, path.join(rawBaseDir, jobDir));
+
+    await historyService.updateJob(jobId, {
+      status: 'CD_RIPPING',
+      last_state: 'CD_RIPPING',
+      error_message: null,
+      raw_path: rawWavDir,
+      output_path: outputDir,
+      encode_plan_json: JSON.stringify({ format, formatOptions, selectedTracks: selectedTrackPositions })
+    });
+
+    await this.setState('CD_RIPPING', {
+      activeJobId: jobId,
+      progress: 0,
+      eta: null,
+      statusText: 'CD wird gerippt …',
+      context: {
+        ...(this.snapshot.context || {}),
+        jobId,
+        mediaProfile: 'cd',
+        selectedMetadata: selectedMeta
+      }
+    });
+
+    logger.info('cd:rip:start', { jobId, devicePath, format, trackCount: selectedTrackPositions.length });
+    await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip gestartet: Format=${format}, Tracks=${selectedTrackPositions.join(',') || 'alle'}`);
+
+    // Run asynchronously so the HTTP response returns immediately
+    this._runCdRip({
+      job,
+      jobId,
+      devicePath,
+      cdparanoiaCmd,
+      rawWavDir,
+      outputDir,
+      format,
+      formatOptions,
+      selectedTrackPositions,
+      tocTracks,
+      selectedMeta
+    }).catch((error) => {
+      logger.error('cd:rip:unhandled', { jobId, error: errorToMeta(error) });
+    });
+
+    return { jobId, started: true };
+  }
+
+  async _runCdRip({
+    job,
+    jobId,
+    devicePath,
+    cdparanoiaCmd,
+    rawWavDir,
+    outputDir,
+    format,
+    formatOptions,
+    selectedTrackPositions,
+    tocTracks,
+    selectedMeta
+  }) {
+    const processKey = Number(jobId);
+    this.activeProcesses.set(processKey, { cancel: () => {} });
+
+    try {
+      await cdRipService.ripAndEncode({
+        jobId,
+        devicePath,
+        cdparanoiaCmd,
+        rawWavDir,
+        outputDir,
+        format,
+        formatOptions,
+        selectedTracks: selectedTrackPositions,
+        tracks: tocTracks,
+        meta: selectedMeta,
+        onProgress: async ({ phase, percent }) => {
+          const clampedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+          const statusText = phase === 'rip' ? 'CD wird gerippt …' : 'Tracks werden encodiert …';
+          const newState = phase === 'rip' ? 'CD_RIPPING' : 'CD_ENCODING';
+
+          if (phase === 'encode' && this.snapshot.state === 'CD_RIPPING') {
+            await historyService.updateJob(jobId, {
+              status: 'CD_ENCODING',
+              last_state: 'CD_ENCODING'
+            });
+          }
+
+          await this.setState(newState, {
+            activeJobId: jobId,
+            progress: clampedPercent,
+            eta: null,
+            statusText,
+            context: this.snapshot.context
+          });
+        },
+        onLog: async (level, msg) => {
+          await historyService.appendLog(jobId, 'SYSTEM', msg).catch(() => {});
+        },
+        context: { jobId: processKey }
+      });
+
+      // Success
+      await historyService.updateJob(jobId, {
+        status: 'FINISHED',
+        last_state: 'FINISHED',
+        end_time: nowIso(),
+        rip_successful: 1,
+        output_path: outputDir
+      });
+      await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip abgeschlossen. Ausgabe: ${outputDir}`);
+
+      await this.setState('FINISHED', {
+        activeJobId: jobId,
+        progress: 100,
+        eta: null,
+        statusText: 'CD-Rip abgeschlossen',
+        context: {
+          jobId,
+          mediaProfile: 'cd',
+          outputDir,
+          selectedMetadata: selectedMeta
+        }
+      });
+
+      void this.notifyPushover('job_finished', {
+        title: 'Ripster - CD Rip erfolgreich',
+        message: `Job #${jobId}: ${selectedMeta?.title || 'Audio CD'}`
+      });
+    } catch (error) {
+      logger.error('cd:rip:failed', { jobId, error: errorToMeta(error) });
+      await this.failJob(jobId, this.snapshot.state === 'CD_ENCODING' ? 'CD_ENCODING' : 'CD_RIPPING', error);
+    } finally {
+      this.activeProcesses.delete(processKey);
+    }
   }
 
 }
