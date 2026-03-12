@@ -49,10 +49,11 @@ function normalizeRelease(release) {
     }));
   });
 
-  let coverArtUrl = null;
-  if (release['cover-art-archive'] && release['cover-art-archive'].front) {
-    coverArtUrl = `https://coverartarchive.org/release/${release.id}/front-250`;
-  }
+  // Always generate the CAA URL when an id is present; the browser/onError
+  // handles 404s for releases that have no front cover.
+  const coverArtUrl = release.id
+    ? `https://coverartarchive.org/release/${release.id}/front-250`
+    : null;
 
   return {
     mbId: String(release.id || ''),
@@ -92,7 +93,7 @@ class MusicBrainzService {
     url.searchParams.set('query', q);
     url.searchParams.set('fmt', 'json');
     url.searchParams.set('limit', '10');
-    url.searchParams.set('inc', 'artist-credits+labels+recordings+cover-art-archive');
+    url.searchParams.set('inc', 'artist-credits+labels+recordings');
 
     try {
       const data = await mbFetch(url.toString());

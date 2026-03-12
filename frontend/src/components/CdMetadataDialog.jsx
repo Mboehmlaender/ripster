@@ -7,6 +7,21 @@ import { InputText } from 'primereact/inputtext';
 import { InputNumber } from 'primereact/inputnumber';
 import { Checkbox } from 'primereact/checkbox';
 
+function CoverThumb({ url, alt }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) {
+    return <div className="poster-thumb-lg poster-fallback">-</div>;
+  }
+  return (
+    <img
+      src={url}
+      alt={alt}
+      className="poster-thumb-lg"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function formatDurationMs(ms) {
   const totalSec = Math.round((ms || 0) / 1000);
   const min = Math.floor(totalSec / 60);
@@ -135,11 +150,7 @@ export default function CdMetadataDialog({
 
   const mbTitleBody = (row) => (
     <div className="mb-result-row">
-      {row.coverArtUrl ? (
-        <img src={row.coverArtUrl} alt={row.title} className="poster-thumb-lg" />
-      ) : (
-        <div className="poster-thumb-lg poster-fallback">-</div>
-      )}
+      <CoverThumb url={row.coverArtUrl} alt={row.title} />
       <div>
         <div><strong>{row.title}</strong></div>
         <small>{row.artist}{row.year ? ` | ${row.year}` : ''}</small>
