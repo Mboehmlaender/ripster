@@ -27,6 +27,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/Mboehmlaender/ripster.git"
+REPO_RAW_BASE="https://raw.githubusercontent.com/Mboehmlaender/ripster"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 BUNDLED_HANDBRAKE_CLI="${SCRIPT_DIR}/bin/HandBrakeCLI"
 
@@ -105,6 +106,23 @@ info "Frontend-Host:         $FRONTEND_HOST"
 # --- Hilfsfunktionen ----------------------------------------------------------
 
 command_exists() { command -v "$1" &>/dev/null; }
+
+download_file() {
+  local url="$1"
+  local target="$2"
+
+  if command_exists curl; then
+    curl -fsSL "$url" -o "$target"
+    return 0
+  fi
+
+  if command_exists wget; then
+    wget -q "$url" -O "$target"
+    return 0
+  fi
+
+  return 1
+}
 
 install_node() {
   header "Node.js installieren"
@@ -234,13 +252,28 @@ install_handbrake_standard() {
 
 install_handbrake_gpu_bundled() {
   info "Installiere gebündeltes HandBrakeCLI mit NVDEC..."
+  local bundled_source="$BUNDLED_HANDBRAKE_CLI"
+  local downloaded_tmp=""
 
-  if [[ ! -f "$BUNDLED_HANDBRAKE_CLI" ]]; then
-    fatal "Bundled Binary fehlt: ./bin/HandBrakeCLI (aufgelöst zu: $BUNDLED_HANDBRAKE_CLI)"
+  if [[ ! -f "$bundled_source" ]]; then
+    local remote_url="${REPO_RAW_BASE}/${GIT_BRANCH}/bin/HandBrakeCLI"
+    downloaded_tmp=$(mktemp)
+    info "Lokale Binary fehlt – lade aus Branch '$GIT_BRANCH' nach..."
+    if download_file "$remote_url" "$downloaded_tmp"; then
+      chmod 0755 "$downloaded_tmp"
+      bundled_source="$downloaded_tmp"
+      ok "Bundled HandBrakeCLI temporär heruntergeladen"
+    else
+      rm -f "$downloaded_tmp" 2>/dev/null || true
+      fatal "Bundled Binary fehlt lokal ($BUNDLED_HANDBRAKE_CLI) und Download schlug fehl: $remote_url"
+    fi
   fi
 
-  install -m 0755 "$BUNDLED_HANDBRAKE_CLI" /usr/local/bin/HandBrakeCLI
+  install -m 0755 "$bundled_source" /usr/local/bin/HandBrakeCLI
   hash -r 2>/dev/null || true
+  if [[ -n "$downloaded_tmp" ]]; then
+    rm -f "$downloaded_tmp" 2>/dev/null || true
+  fi
 
   ok "Bundled HandBrakeCLI installiert nach /usr/local/bin/HandBrakeCLI"
   if command_exists HandBrakeCLI; then
