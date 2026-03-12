@@ -4,6 +4,13 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 
 ---
 
+## Statushinweis: CD-Ripping (experimentell)
+
+- Die grundlegende CD-Ripping-Funktion im ersten Durchgang funktioniert.
+- Das Frontend ist dafür noch nicht vollständig angepasst.
+- Funktionen wie Restart, bestimmte Ansichten und Folge-Workflows können aktuell eingeschränkt sein oder fehlschlagen.
+- CD-Ripping wird weiterentwickelt und sollte derzeit als experimentell betrachtet werden.
+
 ## Was Ripster kann
 
 - Disc-Erkennung mit Pipeline-Status in Echtzeit (WebSocket)
