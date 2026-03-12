@@ -425,7 +425,7 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
     # (z.B. ripster-Serviceuser nach erstem Install)
     git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     git -C "$INSTALL_DIR" fetch --quiet origin
-    git -C "$INSTALL_DIR" checkout --quiet "$GIT_BRANCH"
+    git -C "$INSTALL_DIR" checkout --quiet -B "$GIT_BRANCH" "origin/$GIT_BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$GIT_BRANCH"
     ok "Repository aktualisiert auf Branch '$GIT_BRANCH'"
   else
