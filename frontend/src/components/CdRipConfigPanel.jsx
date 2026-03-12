@@ -494,7 +494,7 @@ export default function CdRipConfigPanel({
           {encodeCommandPreview ? <small>2) {encodeCommandPreview}</small> : null}
           {!isFinished ? (
             <>
-              <ProgressBar value={clampedProgress} />
+              <ProgressBar value={clampedProgress} showValue={false} />
               <small>{Math.round(clampedProgress)}%{eta ? ` | ETA ${eta}` : ''}</small>
             </>
           ) : null}
