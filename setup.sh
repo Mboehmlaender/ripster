@@ -9,15 +9,41 @@ BRANCHES_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/branch
 usage() {
   cat <<'EOF'
 Verwendung:
-  bash init.sh
+  bash setup.sh [Optionen]
 
-Optionen:
-  -h, --help          Hilfe anzeigen
+Optionen (wie install.sh):
+  --branch <branch>     Branch direkt setzen (ohne Auswahlmenue)
+  --dir <pfad>          Installationsverzeichnis
+  --user <benutzer>     Systembenutzer fuer den Dienst
+  --port <port>         Backend-Port
+  --host <hostname>     Hostname/IP fuer die Weboberflaeche
+  --no-makemkv          MakeMKV-Installation ueberspringen
+  --no-handbrake        HandBrake-Installation ueberspringen
+  --no-nginx            Nginx-Einrichtung ueberspringen
+  --reinstall           Vorhandene Installation aktualisieren
+  -h, --help            Hilfe anzeigen
 EOF
 }
 
+SELECTED_BRANCH=""
+FORWARDED_ARGS=()
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --branch)
+      [[ $# -ge 2 ]] || { echo "Fehlender Wert fuer --branch" >&2; exit 1; }
+      SELECTED_BRANCH="$2"
+      shift 2
+      ;;
+    --dir|--user|--port|--host)
+      [[ $# -ge 2 ]] || { echo "Fehlender Wert fuer $1" >&2; exit 1; }
+      FORWARDED_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --no-makemkv|--no-handbrake|--no-nginx|--reinstall)
+      FORWARDED_ARGS+=("$1")
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -70,6 +96,21 @@ select_branch() {
     exit 1
   fi
 
+  if [[ -n "$SELECTED_BRANCH" ]]; then
+    local found=false
+    for branch in "${branches[@]}"; do
+      if [[ "$branch" == "$SELECTED_BRANCH" ]]; then
+        found=true
+        break
+      fi
+    done
+    if [[ "$found" == false ]]; then
+      echo "Branch '$SELECTED_BRANCH' nicht gefunden." >&2
+      exit 1
+    fi
+    return
+  fi
+
   if [[ ! -t 0 ]]; then
     echo "Kein interaktives Terminal für die Branch-Auswahl verfügbar." >&2
     exit 1
@@ -93,7 +134,6 @@ select_branch() {
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-SELECTED_BRANCH=""
 select_branch
 
 INSTALL_SCRIPT="${TMP_DIR}/install.sh"
@@ -104,11 +144,11 @@ download_file "$INSTALL_URL" "$INSTALL_SCRIPT"
 chmod +x "$INSTALL_SCRIPT"
 
 if [[ $EUID -eq 0 ]]; then
-  bash "$INSTALL_SCRIPT" --branch "$SELECTED_BRANCH"
+  bash "$INSTALL_SCRIPT" --branch "$SELECTED_BRANCH" "${FORWARDED_ARGS[@]}"
 else
   if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo nicht gefunden. Bitte als root ausführen." >&2
     exit 1
   fi
-  sudo bash "$INSTALL_SCRIPT" --branch "$SELECTED_BRANCH"
+  sudo bash "$INSTALL_SCRIPT" --branch "$SELECTED_BRANCH" "${FORWARDED_ARGS[@]}"
 fi
