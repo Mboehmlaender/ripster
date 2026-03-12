@@ -949,9 +949,7 @@ class SettingsService {
     const ripMode = String(map.makemkv_rip_mode || 'mkv').trim().toLowerCase() === 'backup'
       ? 'backup'
       : 'mkv';
-    const sourceArg = ripMode === 'backup'
-      ? this.resolveBackupSourceArg(map, deviceInfo)
-      : this.resolveSourceArg(map, deviceInfo);
+    const sourceArg = this.resolveSourceArg(map, deviceInfo);
     const rawSelectedTitleId = normalizeNonNegativeInteger(options?.selectedTitleId);
     const parsedExtra = splitArgs(map.makemkv_rip_extra_args);
     let extra = [];
@@ -1008,20 +1006,6 @@ class SettingsService {
         : null
     });
     return { cmd, args: [...baseArgs, ...extra] };
-  }
-
-  resolveBackupSourceArg(map, deviceInfo = null) {
-    const rawDeviceIndex = Number(deviceInfo?.index);
-    if (Number.isFinite(rawDeviceIndex) && rawDeviceIndex >= 0) {
-      return `disc:${Math.trunc(rawDeviceIndex)}`;
-    }
-
-    const rawConfiguredIndex = Number(map?.makemkv_source_index);
-    if (Number.isFinite(rawConfiguredIndex) && rawConfiguredIndex >= 0) {
-      return `disc:${Math.trunc(rawConfiguredIndex)}`;
-    }
-
-    return 'disc:0';
   }
 
   async buildMakeMKVRegisterConfig() {
