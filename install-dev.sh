@@ -143,7 +143,12 @@ install_makemkv() {
   header "MakeMKV installieren"
 
   if command_exists makemkvcon; then
-    ok "makemkvcon bereits installiert ($(makemkvcon --version 2>&1 | head -1))"
+    local mk_version_line
+    mk_version_line="$(makemkvcon --version 2>&1 | head -1 || true)"
+    if [[ -z "$mk_version_line" || "$mk_version_line" == *"unrecognized option"* ]]; then
+      mk_version_line="$(makemkvcon 2>&1 | head -1 || true)"
+    fi
+    ok "makemkvcon bereits installiert (${mk_version_line:-Version unbekannt})"
     return
   fi
 
