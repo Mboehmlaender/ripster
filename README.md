@@ -61,9 +61,9 @@ curl -fsSL https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.
 - Node.js 20 (falls nötig)
 - Basistools inkl. `mediainfo`
 - CD-Ripping-Tools (`cdparanoia`, `flac`, `lame`, `opus-tools`, `vorbis-tools`)
-- MakeMKV (optional)
-- HandBrake CLI (optional; Auswahl Standard oder GPU/NVDEC-Binary)
-- nginx (optional)
+- MakeMKV 
+- HandBrake CLI (Auswahl Standard/CPU oder GPU/NVDEC-Binary für HW-Encoding)
+- nginx
 - Repository-Checkout, npm-Install, Frontend-Build, systemd-Service (`ripster-backend`)
 
 Danach ist Ripster unter `http://<Server-IP>` erreichbar.
