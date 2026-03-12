@@ -539,6 +539,19 @@ class DiskDetectionService extends EventEmitter {
       // udevadm not available or failed – ignore
     }
 
+    // Last resort: cdparanoia can read the TOC of audio CDs directly.
+    // Useful when udev media flags are not propagated (e.g. VM passthrough).
+    // blkid already returned nothing above, so a successful cdparanoia -Q
+    // means an audio CD is present (data discs have no filesystem but blkid
+    // would still have caught them via sector probing).
+    try {
+      await execFileAsync('cdparanoia', ['-Q', '-d', devicePath], { timeout: 10000 });
+      logger.debug('cdparanoia:audio-cd', { devicePath });
+      return { hasMedia: true, type: 'audio_cd' };
+    } catch (_cdError) {
+      // cdparanoia failed – no audio CD present (or cdparanoia not installed)
+    }
+
     logger.debug('blkid:no-media-or-fail', { devicePath });
     return { hasMedia: false, type: null };
   }
