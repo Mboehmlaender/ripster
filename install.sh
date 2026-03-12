@@ -44,7 +44,7 @@ header()  { echo -e "\n${BOLD}${BLUE}══════════════�
 fatal()   { error "$*"; exit 1; }
 
 # --- Standard-Optionen --------------------------------------------------------
-GIT_BRANCH="dev"
+GIT_BRANCH="cd-ripping"
 INSTALL_DIR="/opt/ripster"
 SERVICE_USER="ripster"
 BACKEND_PORT="3001"
