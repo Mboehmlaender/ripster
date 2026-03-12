@@ -31,21 +31,17 @@ Ripster ist eine lokale Web-Anwendung für halbautomatisches Disc-Ripping mit Ma
 - Frontend: React, Vite, PrimeReact
 - Externe Tools: `makemkvcon`, `HandBrakeCLI`, `mediainfo`
 
+## Dokumentation
+
+- Ausführliche Dokumentation: https://mboehmlaender.github.io/ripster/
+
 ## Voraussetzungen
 
-- **Produktion (empfohlen mit `install.sh`)**:
-  - unterstütztes Debian/Ubuntu-System
-  - root-Rechte + Internetzugang
-  - optisches Laufwerk (oder gemountete Quelle)
-  - `install.sh` installiert Node.js und die benötigten Tools automatisch
-- **Entwicklung (`./start.sh`, `npm run dev`)**:
-  - Node.js `>= 20.19.0` (siehe [.nvmrc](.nvmrc))
-  - installierte CLI-Tools im `PATH`:
-    - `makemkvcon`
-    - `HandBrakeCLI`
-    - `mediainfo`
+- Debian 11/12 oder Ubuntu 22.04/24.04
+- root-Rechte + Internetzugang
+- optisches Laufwerk (oder gemountete Quelle)
 
-## Schnellstart (Produktion)
+## Schnellstart (`install.sh`)
 
 Auf Debian 11/12 oder Ubuntu 22.04/24.04 (root erforderlich):
 
@@ -54,65 +50,37 @@ wget -qO install.sh https://raw.githubusercontent.com/Mboehmlaender/ripster/main
 sudo bash install.sh
 ```
 
-Das Skript fragt interaktiv, ob HandBrake als Standard-Version (apt) oder mit GPU/NVDEC-Unterstützung (gebündeltes Binary) installiert werden soll.
+Alternativ direkt per Pipe:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mboehmlaender/ripster/main/install.sh | sudo bash
+```
+
+`install.sh` übernimmt u. a.:
+
+- Node.js 20 (falls nötig)
+- Basistools inkl. `mediainfo`
+- CD-Ripping-Tools (`cdparanoia`, `flac`, `lame`, `opus-tools`, `vorbis-tools`)
+- MakeMKV (optional)
+- HandBrake CLI (optional; Auswahl Standard oder GPU/NVDEC-Binary)
+- nginx (optional)
+- Repository-Checkout, npm-Install, Frontend-Build, systemd-Service (`ripster-backend`)
 
 Danach ist Ripster unter `http://<Server-IP>` erreichbar.
 
 Wichtige Optionen:
 
 ```bash
-sudo bash install.sh --branch dev          # anderen Branch installieren
+sudo bash install.sh --branch dev          # Branch wählen (Default im Skript: dev)
+sudo bash install.sh --dir /opt/ripster    # Installationspfad
+sudo bash install.sh --user ripster        # Service-User
+sudo bash install.sh --port 3001           # Backend-Port
+sudo bash install.sh --host 192.168.1.10   # Host/IP für nginx/CORS
 sudo bash install.sh --no-makemkv          # MakeMKV überspringen
+sudo bash install.sh --no-handbrake        # HandBrake überspringen
+sudo bash install.sh --no-nginx            # nginx-Setup überspringen
 sudo bash install.sh --reinstall           # Update (Daten bleiben erhalten)
-```
-
-## Entwicklungsumgebung
-
-Für lokale Entwicklung mit Hot-Reload:
-
-```bash
-./start.sh
-```
-
-`start.sh` erledigt:
-
-1. Node-Version prüfen/umschalten (`nvm`/`npx node@20` Fallback)
-2. Dependencies installieren (Root, Backend, Frontend)
-3. Dev-Umgebung starten (`backend` + `frontend`)
-
-Danach:
-
-- Frontend: `http://localhost:5173`
-- Backend API: `http://localhost:3001/api`
-
-Stoppen: laufenden Prozess mit `Ctrl+C` im Terminal beenden.
-
-## Manueller Start
-
-```bash
-npm install
-npm --prefix backend install
-npm --prefix frontend install
-npm run dev
-```
-
-Einzeln starten:
-
-```bash
-npm run dev:backend
-npm run dev:frontend
-```
-
-Frontend Build:
-
-```bash
-npm run build:frontend
-```
-
-Backend (ohne Dev-Mode):
-
-```bash
-npm run start
+sudo bash install.sh --help                # Hilfe anzeigen
 ```
 
 ## Konfiguration
