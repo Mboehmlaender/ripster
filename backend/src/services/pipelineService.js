@@ -9794,11 +9794,6 @@ class PipelineService extends EventEmitter {
       const tracks = await cdRipService.readToc(devicePath, cdparanoiaCmd);
       logger.info('cd:analyze:toc', { jobId: job.id, trackCount: tracks.length });
 
-      // Search MusicBrainz
-      const mbCandidates = await musicBrainzService
-        .searchByDiscLabel(detectedTitle)
-        .catch(() => []);
-
       const cdInfo = {
         phase: 'PREPARE',
         mediaProfile: 'cd',
@@ -9816,7 +9811,7 @@ class PipelineService extends EventEmitter {
       await historyService.appendLog(
         job.id,
         'SYSTEM',
-        `CD analysiert: ${tracks.length} Track(s) gefunden. MusicBrainz: ${mbCandidates.length} Treffer.`
+        `CD analysiert: ${tracks.length} Track(s) gefunden.`
       );
 
       const runningJobs = await historyService.getRunningJobs();
@@ -9832,13 +9827,12 @@ class PipelineService extends EventEmitter {
             device,
             mediaProfile: 'cd',
             detectedTitle,
-            tracks,
-            mbCandidates
+            tracks
           }
         });
       }
 
-      return { jobId: job.id, detectedTitle, tracks, mbCandidates };
+      return { jobId: job.id, detectedTitle, tracks };
     } catch (error) {
       logger.error('cd:analyze:failed', { jobId: job.id, error: errorToMeta(error) });
       await this.failJob(job.id, 'CD_ANALYZING', error);

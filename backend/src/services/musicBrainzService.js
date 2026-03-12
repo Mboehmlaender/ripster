@@ -92,7 +92,7 @@ class MusicBrainzService {
     url.searchParams.set('query', q);
     url.searchParams.set('fmt', 'json');
     url.searchParams.set('limit', '10');
-    url.searchParams.set('inc', 'artist-credits+labels+recordings');
+    url.searchParams.set('inc', 'artist-credits+labels+recordings+cover-art-archive');
 
     try {
       const data = await mbFetch(url.toString());

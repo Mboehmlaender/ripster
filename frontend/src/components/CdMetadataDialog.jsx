@@ -24,7 +24,7 @@ export default function CdMetadataDialog({
 }) {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
-  const [extraResults, setExtraResults] = useState([]);
+  const [results, setResults] = useState([]);
 
   // Manual metadata inputs
   const [manualTitle, setManualTitle] = useState('');
@@ -46,7 +46,7 @@ export default function CdMetadataDialog({
     setManualTitle(context?.detectedTitle || '');
     setManualArtist('');
     setManualYear(null);
-    setExtraResults([]);
+    setResults([]);
 
     const titles = {};
     const positions = new Set();
@@ -84,27 +84,13 @@ export default function CdMetadataDialog({
     }
   }, [selected]);
 
-  const allMbRows = [
-    ...(Array.isArray(context?.mbCandidates) ? context.mbCandidates : []),
-    ...extraResults
-  ].filter(Boolean);
-
-  // Deduplicate by mbId
-  const mbRows = [];
-  const seen = new Set();
-  for (const r of allMbRows) {
-    if (r.mbId && !seen.has(r.mbId)) {
-      seen.add(r.mbId);
-      mbRows.push(r);
-    }
-  }
-
   const handleSearch = async () => {
     if (!query.trim()) {
       return;
     }
-    const results = await onSearch(query.trim());
-    setExtraResults(results || []);
+    const searchResults = await onSearch(query.trim());
+    setResults(searchResults || []);
+    setSelected(null);
   };
 
   const handleToggleTrack = (position) => {
@@ -163,7 +149,7 @@ export default function CdMetadataDialog({
   );
 
   const allSelected = tocTracks.length > 0 && selectedTrackPositions.size === tocTracks.length;
-  const noneSelected = selectedTrackPositions.size === 0;
+  const tracksBlocking = tocTracks.length > 0 && selectedTrackPositions.size === 0;
 
   return (
     <Dialog
@@ -186,10 +172,10 @@ export default function CdMetadataDialog({
         <Button label="MusicBrainz Suche" icon="pi pi-search" onClick={handleSearch} loading={busy} />
       </div>
 
-      {mbRows.length > 0 ? (
+      {results.length > 0 ? (
         <div className="table-scroll-wrap table-scroll-medium">
           <DataTable
-            value={mbRows}
+            value={results}
             selectionMode="single"
             selection={selected}
             onSelectionChange={(e) => setSelected(e.value)}
@@ -274,7 +260,7 @@ export default function CdMetadataDialog({
           icon="pi pi-arrow-right"
           onClick={handleSubmit}
           loading={busy}
-          disabled={noneSelected || (!manualTitle.trim() && !context?.detectedTitle)}
+          disabled={tracksBlocking || (!manualTitle.trim() && !context?.detectedTitle)}
         />
       </div>
     </Dialog>
