@@ -10377,10 +10377,10 @@ class PipelineService extends EventEmitter {
       logger.error('command:failed', { jobId, stage, source, error: errorToMeta(error) });
       throw error;
     } finally {
-      await historyService.closeProcessLog(jobId);
       this.activeProcesses.delete(Number(normalizedJobId));
-      this.syncPrimaryActiveProcess();
       this.cancelRequestedByJob.delete(Number(normalizedJobId));
+      this.syncPrimaryActiveProcess();
+      await historyService.closeProcessLog(jobId);
       await this.emitQueueChanged();
       void this.pumpQueue();
     }
@@ -10430,16 +10430,16 @@ class PipelineService extends EventEmitter {
       hasRawPath = false;
     }
 
-    if (normalizedStage === 'ENCODING' && hasConfirmedPlan) {
+    if (normalizedStage === 'ENCODING' && hasConfirmedPlan && !isCancelled) {
       try {
         await historyService.appendLog(
           jobId,
           'SYSTEM',
-          `${isCancelled ? 'Abbruch' : 'Fehler'} in ${stage}: ${message}. Letzte Encode-Auswahl wird zur direkten Anpassung geladen.`
+          `Fehler in ${stage}: ${message}. Letzte Encode-Auswahl wird zur direkten Anpassung geladen.`
         );
         await this.restartEncodeWithLastSettings(jobId, {
           immediate: true,
-          triggerReason: isCancelled ? 'cancelled_encode' : 'failed_encode'
+          triggerReason: 'failed_encode'
         });
         this.cancelRequestedByJob.delete(Number(jobId));
         return;
@@ -10992,20 +10992,22 @@ class PipelineService extends EventEmitter {
     const cdOutputTemplate = String(
       settings.cd_output_template || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE
     ).trim() || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE;
-    const cdBaseDir = String(settings.raw_dir || '').trim() || settingsService.DEFAULT_CD_DIR;
-    const cdOutputOwner = String(settings.raw_dir_owner || '').trim();
+    const cdRawBaseDir = String(settings.raw_dir || '').trim() || settingsService.DEFAULT_CD_DIR;
+    const cdOutputBaseDir = String(settings.movie_dir || '').trim() || cdRawBaseDir;
+    const cdRawOwner = String(settings.raw_dir_owner || '').trim();
+    const cdOutputOwner = String(settings.movie_dir_owner || settings.raw_dir_owner || '').trim();
     const cdMetadataBase = buildRawMetadataBase({
       title: effectiveSelectedMeta?.album || effectiveSelectedMeta?.title || null,
       year: effectiveSelectedMeta?.year || null
     }, activeJobId);
     const rawDirName = buildRawDirName(cdMetadataBase, activeJobId, { state: RAW_FOLDER_STATES.INCOMPLETE });
-    const rawJobDir = path.join(cdBaseDir, rawDirName);
+    const rawJobDir = path.join(cdRawBaseDir, rawDirName);
     const rawWavDir = rawJobDir;
-    const outputDir = cdRipService.buildOutputDir(effectiveSelectedMeta, cdBaseDir, cdOutputTemplate);
-    ensureDir(cdBaseDir);
+    const outputDir = cdRipService.buildOutputDir(effectiveSelectedMeta, cdOutputBaseDir, cdOutputTemplate);
+    ensureDir(cdRawBaseDir);
     ensureDir(rawJobDir);
     ensureDir(outputDir);
-    chownRecursive(rawJobDir, cdOutputOwner);
+    chownRecursive(rawJobDir, cdRawOwner);
     chownRecursive(outputDir, cdOutputOwner);
     const previewTrackPos = effectiveSelectedTrackPositions[0] || mergedTracks[0]?.position || 1;
     const previewWavPath = path.join(rawWavDir, `track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`);
@@ -11108,12 +11110,13 @@ class PipelineService extends EventEmitter {
       devicePath,
       cdparanoiaCmd,
       rawWavDir,
-      rawBaseDir: cdBaseDir,
+      rawBaseDir: cdRawBaseDir,
       cdMetadataBase,
       outputDir,
       format,
       formatOptions,
       outputTemplate: cdOutputTemplate,
+      rawOwner: cdRawOwner,
       outputOwner: cdOutputOwner,
       selectedTrackPositions: effectiveSelectedTrackPositions,
       tocTracks: mergedTracks,
@@ -11142,6 +11145,7 @@ class PipelineService extends EventEmitter {
     format,
     formatOptions,
     outputTemplate,
+    rawOwner,
     outputOwner,
     selectedTrackPositions,
     tocTracks,
@@ -11397,7 +11401,7 @@ class PipelineService extends EventEmitter {
         await historyService.updateJob(jobId, { poster_url: cdPromotedUrl }).catch(() => {});
       }
 
-      chownRecursive(activeRawDir, outputOwner);
+      chownRecursive(activeRawDir, rawOwner || outputOwner);
       chownRecursive(outputDir, outputOwner);
       await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip abgeschlossen. Ausgabe: ${outputDir}`);
       const finishedStatusText = postEncodeScriptsSummary.failed > 0

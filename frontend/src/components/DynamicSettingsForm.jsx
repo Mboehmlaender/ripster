@@ -160,7 +160,7 @@ function buildToolSections(settings) {
 // Path keys per medium — _owner keys are rendered inline
 const BLURAY_PATH_KEYS = ['raw_dir_bluray', 'movie_dir_bluray', 'output_template_bluray'];
 const DVD_PATH_KEYS = ['raw_dir_dvd', 'movie_dir_dvd', 'output_template_dvd'];
-const CD_PATH_KEYS = ['raw_dir_cd', 'cd_output_template'];
+const CD_PATH_KEYS = ['raw_dir_cd', 'movie_dir_cd', 'cd_output_template'];
 const LOG_PATH_KEYS = ['log_dir'];
 
 function buildSectionsForCategory(categoryName, settings) {
@@ -381,6 +381,7 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const dvdRaw = ep.dvd?.raw || defaultRaw;
   const dvdMovies = ep.dvd?.movies || defaultMovies;
   const cdRaw = ep.cd?.raw || defaultCd;
+  const cdMovies = ep.cd?.movies || cdRaw;
 
   const isDefault = (path, def) => path === def;
 
@@ -424,10 +425,14 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
               </td>
             </tr>
             <tr>
-              <td><strong>CD / Audio (RAW + Output)</strong></td>
-              <td colSpan={2}>
+              <td><strong>CD / Audio</strong></td>
+              <td>
                 <code>{cdRaw}</code>
                 {isDefault(cdRaw, defaultCd) && <span className="path-default-badge">Standard</span>}
+              </td>
+              <td>
+                <code>{cdMovies}</code>
+                {isDefault(cdMovies, cdRaw) && <span className="path-default-badge">Standard</span>}
               </td>
             </tr>
           </tbody>

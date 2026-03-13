@@ -52,11 +52,13 @@ const PROFILED_SETTINGS = {
   },
   movie_dir: {
     bluray: 'movie_dir_bluray',
-    dvd: 'movie_dir_dvd'
+    dvd: 'movie_dir_dvd',
+    cd: 'movie_dir_cd'
   },
   movie_dir_owner: {
     bluray: 'movie_dir_bluray_owner',
-    dvd: 'movie_dir_dvd_owner'
+    dvd: 'movie_dir_dvd_owner',
+    cd: 'movie_dir_cd_owner'
   },
   mediainfo_extra_args: {
     bluray: 'mediainfo_extra_args_bluray',
@@ -690,7 +692,7 @@ class SettingsService {
           if (legacyKey === 'raw_dir') {
             resolvedValue = normalizedRequestedProfile === 'cd' ? DEFAULT_CD_DIR : DEFAULT_RAW_DIR;
           } else if (legacyKey === 'movie_dir') {
-            resolvedValue = DEFAULT_MOVIE_DIR;
+            resolvedValue = normalizedRequestedProfile === 'cd' ? DEFAULT_CD_DIR : DEFAULT_MOVIE_DIR;
           }
         }
         effective[legacyKey] = resolvedValue;
@@ -725,7 +727,7 @@ class SettingsService {
     return {
       bluray: { raw: bluray.raw_dir, movies: bluray.movie_dir },
       dvd: { raw: dvd.raw_dir, movies: dvd.movie_dir },
-      cd: { raw: cd.raw_dir },
+      cd: { raw: cd.raw_dir, movies: cd.movie_dir },
       defaults: {
         raw: DEFAULT_RAW_DIR,
         movies: DEFAULT_MOVIE_DIR,

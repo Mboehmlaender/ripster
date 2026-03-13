@@ -857,7 +857,7 @@ async function migrateSettingsSchemaMetadata(db) {
   }
 
   const rawDirCdLabel = 'CD RAW-Ordner';
-  const rawDirCdDescription = 'Basisordner für CD-Rips. Enthält die WAV-Rohdaten (RAW) sowie den encodierten Audio-Output. Leer = Standardpfad (data/output/cd).';
+  const rawDirCdDescription = 'Basisordner für rohe CD-WAV-Dateien (cdparanoia-Output). Leer = Standardpfad (data/output/cd).';
   const rawDirCdResult = await db.run(
     `UPDATE settings_schema
      SET label = ?, description = ?, updated_at = CURRENT_TIMESTAMP
@@ -870,6 +870,26 @@ async function migrateSettingsSchemaMetadata(db) {
       label: rawDirCdLabel
     });
   }
+
+  // Migrate raw_dir_cd_owner label
+  await db.run(
+    `UPDATE settings_schema SET label = 'Eigentümer CD RAW-Ordner', updated_at = CURRENT_TIMESTAMP
+     WHERE key = 'raw_dir_cd_owner' AND label != 'Eigentümer CD RAW-Ordner'`
+  );
+
+  // Add movie_dir_cd if not already present
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('movie_dir_cd', 'Pfade', 'CD Output-Ordner', 'path', 0, 'Zielordner für encodierte CD-Ausgaben (FLAC, MP3 usw.). Leer = gleicher Ordner wie CD RAW-Ordner.', NULL, '[]', '{}', 114)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_cd', NULL)`);
+
+  // Add movie_dir_cd_owner if not already present
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('movie_dir_cd_owner', 'Pfade', 'Eigentümer CD Output-Ordner', 'string', 0, 'Eigentümer der encodierten CD-Ausgaben im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1145)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_cd_owner', NULL)`);
 }
 
 async function getDb() {

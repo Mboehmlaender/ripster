@@ -161,6 +161,41 @@ function hasBlurayStructure(rawPath) {
   return false;
 }
 
+function hasCdStructure(rawPath) {
+  const basePath = String(rawPath || '').trim();
+  if (!basePath) {
+    return false;
+  }
+
+  try {
+    if (!fs.existsSync(basePath)) {
+      return false;
+    }
+    const stat = fs.statSync(basePath);
+    if (!stat.isDirectory()) {
+      return false;
+    }
+    const entries = fs.readdirSync(basePath);
+    const audioExtensions = new Set(['.flac', '.wav', '.mp3', '.opus', '.ogg', '.aiff', '.aif']);
+    return entries.some((entry) => audioExtensions.has(path.extname(entry).toLowerCase()));
+  } catch (_error) {
+    return false;
+  }
+}
+
+function detectOrphanMediaType(rawPath) {
+  if (hasBlurayStructure(rawPath)) {
+    return 'bluray';
+  }
+  if (hasDvdStructure(rawPath)) {
+    return 'dvd';
+  }
+  if (hasCdStructure(rawPath)) {
+    return 'cd';
+  }
+  return 'other';
+}
+
 function hasDvdStructure(rawPath) {
   const basePath = String(rawPath || '').trim();
   if (!basePath) {
@@ -439,17 +474,16 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
   const effectiveSettings = settingsService.resolveEffectiveToolSettings(settings || {}, mediaType);
   const rawDir = String(effectiveSettings?.raw_dir || '').trim();
   const configuredMovieDir = String(effectiveSettings?.movie_dir || '').trim();
-  const movieDir = mediaType === 'cd' ? rawDir : configuredMovieDir;
+  const movieDir = configuredMovieDir || rawDir;
   const rawLookupDirs = getConfiguredMediaPathList(settings || {}, 'raw_dir')
     .filter((candidate) => normalizeComparablePath(candidate) !== normalizeComparablePath(rawDir));
   const effectiveRawPath = job?.raw_path
     ? resolveEffectiveRawPath(job.raw_path, rawDir, rawLookupDirs)
     : (job?.raw_path || null);
-  const effectiveOutputPath = mediaType === 'cd'
-    ? (job?.output_path || null)
-    : (configuredMovieDir && job?.output_path
-      ? resolveEffectiveOutputPath(job.output_path, configuredMovieDir)
-      : (job?.output_path || null));
+  // For CD, output_path is a directory (album folder) — skip path-relocation heuristic
+  const effectiveOutputPath = (mediaType !== 'cd' && configuredMovieDir && job?.output_path)
+    ? resolveEffectiveOutputPath(job.output_path, configuredMovieDir)
+    : (job?.output_path || null);
 
   return {
     mediaType,
@@ -1398,6 +1432,7 @@ class HistoryService {
 
         const stat = fs.statSync(rawPath);
         const metadata = parseRawFolderMetadata(entry.name);
+        const detectedMediaType = detectOrphanMediaType(rawPath);
         orphanRows.push({
           rawPath,
           folderName: entry.name,
@@ -1406,7 +1441,10 @@ class HistoryService {
           imdbId: metadata.imdbId,
           folderJobId: metadata.folderJobId,
           entryCount: Number(dirInfo.entryCount || 0),
-          hasBlurayStructure: fs.existsSync(path.join(rawPath, 'BDMV', 'STREAM')),
+          detectedMediaType,
+          hasBlurayStructure: detectedMediaType === 'bluray',
+          hasDvdStructure: detectedMediaType === 'dvd',
+          hasCdStructure: detectedMediaType === 'cd',
           lastModifiedAt: stat.mtime.toISOString()
         });
         seenOrphanPaths.add(normalizedPath);
@@ -1543,6 +1581,7 @@ class HistoryService {
       }
     }
 
+    const detectedMediaType = detectOrphanMediaType(finalRawPath);
     const orphanPosterUrl = omdbById?.poster || null;
     await this.updateJob(created.id, {
       status: 'FINISHED',
@@ -1567,7 +1606,8 @@ class HistoryService {
         status: 'SUCCESS',
         source: 'orphan_raw_import',
         importedAt,
-        rawPath: finalRawPath
+        rawPath: finalRawPath,
+        mediaProfile: detectedMediaType
       })
     });
 
@@ -1585,8 +1625,8 @@ class HistoryService {
       created.id,
       'SYSTEM',
       renameSteps.length > 0
-        ? `Historieneintrag aus RAW erstellt. Ordner umbenannt: ${renameSteps.map((step) => `${step.from} -> ${step.to}`).join(' | ')}`
-        : `Historieneintrag aus bestehendem RAW-Ordner erstellt: ${finalRawPath}`
+        ? `Historieneintrag aus RAW erstellt (Medientyp: ${detectedMediaType}). Ordner umbenannt: ${renameSteps.map((step) => `${step.from} -> ${step.to}`).join(' | ')}`
+        : `Historieneintrag aus bestehendem RAW-Ordner erstellt: ${finalRawPath} (Medientyp: ${detectedMediaType})`
     );
     if (metadata.imdbId) {
       await this.appendLog(
@@ -1600,7 +1640,8 @@ class HistoryService {
 
     logger.info('job:import-orphan-raw', {
       jobId: created.id,
-      rawPath: absRawPath
+      rawPath: absRawPath,
+      detectedMediaType
     });
 
     const imported = await this.getJobById(created.id);

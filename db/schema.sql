@@ -373,12 +373,20 @@ VALUES ('cd_output_template', '{artist} - {album} ({year})/{trackNr} {artist} - 
 
 -- Pfade – CD
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_cd', 'Pfade', 'CD RAW-Ordner', 'path', 0, 'Basisordner für CD-Rips. Enthält die WAV-Rohdaten (RAW) sowie den encodierten Audio-Output. Leer = Standardpfad (data/output/cd).', NULL, '[]', '{}', 104);
+VALUES ('raw_dir_cd', 'Pfade', 'CD RAW-Ordner', 'path', 0, 'Basisordner für rohe CD-WAV-Dateien (cdparanoia-Output). Leer = Standardpfad (data/output/cd).', NULL, '[]', '{}', 104);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_cd_owner', 'Pfade', 'Eigentümer CD-Ordner', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1045);
+VALUES ('raw_dir_cd_owner', 'Pfade', 'Eigentümer CD RAW-Ordner', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1045);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd_owner', NULL);
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('movie_dir_cd', 'Pfade', 'CD Output-Ordner', 'path', 0, 'Zielordner für encodierte CD-Ausgaben (FLAC, MP3 usw.). Leer = gleicher Ordner wie CD RAW-Ordner.', NULL, '[]', '{}', 114);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_cd', NULL);
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('movie_dir_cd_owner', 'Pfade', 'Eigentümer CD Output-Ordner', 'string', 0, 'Eigentümer der encodierten CD-Ausgaben im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1145);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_cd_owner', NULL);
 
 -- Metadaten
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)

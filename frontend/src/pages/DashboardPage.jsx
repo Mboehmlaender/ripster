@@ -768,6 +768,20 @@ export default function DashboardPage({
   const memoryMetrics = monitoringSample?.memory || null;
   const gpuMetrics = monitoringSample?.gpu || null;
   const storageMetrics = Array.isArray(monitoringSample?.storage) ? monitoringSample.storage : [];
+  const storageGroups = useMemo(() => {
+    const groups = [];
+    const mountMap = new Map();
+    for (const entry of storageMetrics) {
+      const groupKey = entry?.mountPoint || `__no_mount_${entry?.key}`;
+      if (!mountMap.has(groupKey)) {
+        const group = { mountPoint: entry?.mountPoint || null, entries: [], representative: entry };
+        mountMap.set(groupKey, group);
+        groups.push(group);
+      }
+      mountMap.get(groupKey).entries.push(entry);
+    }
+    return groups;
+  }, [storageMetrics]);
   const cpuPerCoreMetrics = Array.isArray(cpuMetrics?.perCore) ? cpuMetrics.perCore : [];
   const gpuDevices = Array.isArray(gpuMetrics?.devices) ? gpuMetrics.devices : [];
 
@@ -1854,57 +1868,55 @@ export default function DashboardPage({
             <section className="hardware-monitor-block">
               <h4>Freier Speicher in Pfaden</h4>
               <div className="hardware-storage-list">
-                {storageMetrics.map((entry) => {
-                  const tone = getStorageUsageTone(entry?.usagePercent);
-                  const usagePercent = Number(entry?.usagePercent);
+                {storageGroups.map((group) => {
+                  const rep = group.representative;
+                  const tone = getStorageUsageTone(rep?.usagePercent);
+                  const usagePercent = Number(rep?.usagePercent);
                   const barValue = Number.isFinite(usagePercent)
                     ? Math.max(0, Math.min(100, usagePercent))
                     : 0;
-                  const hasError = Boolean(entry?.error);
-                  const entryKey = entry?.key || entry?.path || 'storage-entry';
+                  const hasError = group.entries.every((e) => e?.error);
+                  const groupKey = group.mountPoint || group.entries.map((e) => e?.key).join('-');
                   return (
                     <div
-                      key={`storage-entry-${entryKey}`}
+                      key={`storage-group-${groupKey}`}
                       className={`hardware-storage-item compact${hasError ? ' has-error' : ''}`}
                     >
                       <div className="hardware-storage-head">
-                        <strong>{entry?.label || entry?.key || 'Pfad'}</strong>
+                        <strong>{group.entries.map((e) => e?.label || e?.key || 'Pfad').join(' · ')}</strong>
                         <span className={`hardware-storage-percent tone-${tone}`}>
-                          {hasError ? 'Fehler' : formatPercent(entry?.usagePercent)}
+                          {hasError ? 'Fehler' : formatPercent(rep?.usagePercent)}
                         </span>
                       </div>
 
                       {hasError ? (
-                        <small className="error-text">{entry?.error}</small>
+                        <small className="error-text">{rep?.error}</small>
                       ) : (
                         <>
                           <div className={`hardware-storage-bar tone-${tone}`}>
                             <ProgressBar value={barValue} showValue={false} />
                           </div>
                           <div className="hardware-storage-summary">
-                            <small>Frei: {formatBytes(entry?.freeBytes)}</small>
-                            <small>Gesamt: {formatBytes(entry?.totalBytes)}</small>
+                            <small>Frei: {formatBytes(rep?.freeBytes)}</small>
+                            <small>Gesamt: {formatBytes(rep?.totalBytes)}</small>
                           </div>
                         </>
                       )}
 
-                      <div className="hardware-storage-paths">
-                        <small className="hardware-storage-label-tag">Pfad:</small>
-                        <small className="hardware-storage-path" title={entry?.path || '-'}>
-                          {entry?.path || '-'}
-                        </small>
-                        {entry?.mountPoint ? (
-                          <small className="hardware-storage-path" title={entry.mountPoint}>
-                            Mount: {entry.mountPoint}
+                      {group.entries.map((entry) => (
+                        <div key={entry?.key} className="hardware-storage-paths">
+                          <small className="hardware-storage-label-tag">{entry?.label || entry?.key}:</small>
+                          <small className="hardware-storage-path" title={entry?.path || '-'}>
+                            {entry?.path || '-'}
                           </small>
-                        ) : null}
-                        {entry?.queryPath && entry.queryPath !== entry.path ? (
-                          <small className="hardware-storage-path" title={entry.queryPath}>
-                            Parent: {entry.queryPath}
-                          </small>
-                        ) : null}
-                        {entry?.note ? <small className="hardware-storage-path">{entry.note}</small> : null}
-                      </div>
+                          {entry?.queryPath && entry.queryPath !== entry.path ? (
+                            <small className="hardware-storage-path" title={entry.queryPath}>
+                              (Parent: {entry.queryPath})
+                            </small>
+                          ) : null}
+                          {entry?.note ? <small className="hardware-storage-path">{entry.note}</small> : null}
+                        </div>
+                      ))}
                     </div>
                   );
                 })}
