@@ -92,7 +92,7 @@ export default function CdMetadataDialog({
     }
     setSelected(null);
     setQuery('');
-    setManualTitle(context?.detectedTitle || '');
+    setManualTitle('');
     setManualArtist('');
     setManualYear(null);
     setResults([]);
