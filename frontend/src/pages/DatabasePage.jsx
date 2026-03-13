@@ -42,6 +42,9 @@ function resolveMediaType(row) {
     if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
       return 'dvd';
     }
+    if (['cd', 'audio_cd'].includes(raw)) {
+      return 'cd';
+    }
   }
   return 'other';
 }
@@ -467,7 +470,7 @@ export default function DatabasePage() {
 
   const handleImportOrphanRaw = async (row) => {
     const target = row?.rawPath || row?.folderName || '-';
-    const confirmed = window.confirm(`Für RAW-Ordner "${target}" einen neuen Historienjob anlegen?`);
+    const confirmed = window.confirm(`Für RAW-Ordner "${target}" einen neuen Historienjob anlegen und direkt scannen?`);
     if (!confirmed) {
       return;
     }
@@ -475,12 +478,32 @@ export default function DatabasePage() {
     setOrphanImportBusyPath(row.rawPath);
     try {
       const response = await api.importOrphanRawFolder(row.rawPath);
-      toastRef.current?.show({
-        severity: 'success',
-        summary: 'Job angelegt',
-        detail: `Historieneintrag #${response?.job?.id || '-'} wurde erstellt.`,
-        life: 3500
-      });
+      const newJobId = response?.job?.id;
+      if (newJobId) {
+        try {
+          await api.reencodeJob(newJobId);
+          toastRef.current?.show({
+            severity: 'success',
+            summary: 'Job angelegt & Scan gestartet',
+            detail: `Historieneintrag #${newJobId} erstellt, Mediainfo-Scan läuft.`,
+            life: 4000
+          });
+        } catch (scanError) {
+          toastRef.current?.show({
+            severity: 'info',
+            summary: 'Job angelegt',
+            detail: `Historieneintrag #${newJobId} erstellt. Scan konnte nicht automatisch gestartet werden: ${scanError.message}`,
+            life: 6000
+          });
+        }
+      } else {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Job angelegt',
+          detail: `Historieneintrag wurde erstellt.`,
+          life: 3500
+        });
+      }
       await load();
     } catch (error) {
       toastRef.current?.show({

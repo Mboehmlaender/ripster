@@ -9887,11 +9887,9 @@ class PipelineService extends EventEmitter {
       encode_plan_json: null,
       encode_input_path: normalizedReviewInputPath || null,
       encode_review_confirmed: 0,
-      makemkv_info_json: nextMakemkvInfoJson
+      makemkv_info_json: nextMakemkvInfoJson,
+      raw_path: resolvedReviewRawPath
     };
-    if (resolvedReviewRawPath !== sourceJob.raw_path) {
-      jobUpdatePayload.raw_path = resolvedReviewRawPath;
-    }
 
     const replacementJob = await historyService.createJob({
       discDevice: sourceJob.disc_device || null,

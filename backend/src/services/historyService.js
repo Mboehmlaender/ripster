@@ -1607,7 +1607,10 @@ class HistoryService {
         source: 'orphan_raw_import',
         importedAt,
         rawPath: finalRawPath,
-        mediaProfile: detectedMediaType
+        mediaProfile: detectedMediaType,
+        analyzeContext: {
+          mediaProfile: detectedMediaType
+        }
       })
     });
 
