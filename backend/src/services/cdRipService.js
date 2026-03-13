@@ -321,6 +321,20 @@ function formatCommandLine(cmd, args = []) {
   return [quoteShellArg(cmd), ...normalizedArgs.map((arg) => quoteShellArg(arg))].join(' ');
 }
 
+function copyFilePreservingRaw(sourcePath, targetPath) {
+  const rawSource = String(sourcePath || '').trim();
+  const rawTarget = String(targetPath || '').trim();
+  if (!rawSource || !rawTarget) {
+    return;
+  }
+  const source = path.resolve(rawSource);
+  const target = path.resolve(rawTarget);
+  if (source === target) {
+    return;
+  }
+  fs.copyFileSync(source, target);
+}
+
 async function runProcessTracked({
   cmd,
   args,
@@ -492,7 +506,7 @@ async function ripAndEncode(options) {
 
   // ── Phase 2: Encode WAVs to target format ─────────────────────────────────
   if (format === 'wav') {
-    // Just move WAV files to output dir with proper names
+    // Keep RAW WAVs in place and copy them to the final output structure.
     for (let i = 0; i < tracksToRip.length; i++) {
       assertNotCancelled(isCancelled);
       const track = tracksToRip[i];
@@ -508,8 +522,8 @@ async function ripAndEncode(options) {
         percent: 50 + ((i / tracksToRip.length) * 50)
       });
       ensureDir(path.dirname(outFile));
-      log('info', `Promptkette [Move ${i + 1}/${tracksToRip.length}]: mv ${quoteShellArg(wavFile)} ${quoteShellArg(outFile)}`);
-      fs.renameSync(wavFile, outFile);
+      log('info', `Promptkette [Copy ${i + 1}/${tracksToRip.length}]: cp ${quoteShellArg(wavFile)} ${quoteShellArg(outFile)}`);
+      copyFilePreservingRaw(wavFile, outFile);
       onProgress && onProgress({
         phase: 'encode',
         trackEvent: 'complete',

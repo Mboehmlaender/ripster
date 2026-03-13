@@ -3694,6 +3694,46 @@ class PipelineService extends EventEmitter {
     return existingDirectories[0];
   }
 
+  buildRawPathLookupConfig(settingsMap = {}, mediaProfile = null) {
+    const sourceMap = settingsMap && typeof settingsMap === 'object' ? settingsMap : {};
+    const normalizedMediaProfile = normalizeMediaProfile(mediaProfile);
+    const effectiveSettings = settingsService.resolveEffectiveToolSettings(sourceMap, normalizedMediaProfile);
+    const preferredDefaultRawDir = normalizedMediaProfile === 'cd'
+      ? settingsService.DEFAULT_CD_DIR
+      : settingsService.DEFAULT_RAW_DIR;
+    const uniqueRawDirs = Array.from(
+      new Set(
+        [
+          effectiveSettings?.raw_dir,
+          sourceMap?.raw_dir,
+          sourceMap?.raw_dir_bluray,
+          sourceMap?.raw_dir_dvd,
+          sourceMap?.raw_dir_cd,
+          preferredDefaultRawDir,
+          settingsService.DEFAULT_RAW_DIR,
+          settingsService.DEFAULT_CD_DIR
+        ]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    return {
+      effectiveSettings,
+      rawBaseDir: uniqueRawDirs[0] || String(preferredDefaultRawDir || '').trim() || null,
+      rawExtraDirs: uniqueRawDirs.slice(1)
+    };
+  }
+
+  resolveCurrentRawPathForSettings(settingsMap = {}, mediaProfile = null, storedRawPath = null) {
+    const stored = String(storedRawPath || '').trim();
+    if (!stored) {
+      return null;
+    }
+    const { rawBaseDir, rawExtraDirs } = this.buildRawPathLookupConfig(settingsMap, mediaProfile);
+    return this.resolveCurrentRawPath(rawBaseDir, stored, rawExtraDirs);
+  }
+
   async migrateRawFolderNamingOnStartup(db) {
     const settings = await settingsService.getSettingsMap();
     const rawBaseDir = String(settings?.raw_dir || settingsService.DEFAULT_RAW_DIR || '').trim();
@@ -5385,15 +5425,17 @@ class PipelineService extends EventEmitter {
       };
     }
 
+    const existingPlan = this.safeParseJson(job.encode_plan_json);
     const refreshSettings = await settingsService.getSettingsMap();
-    const refreshRawBaseDir = settingsService.DEFAULT_RAW_DIR;
-    const refreshRawExtraDirs = [
-      refreshSettings?.raw_dir_bluray,
-      refreshSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedRefreshRawPath = job.raw_path
-      ? this.resolveCurrentRawPath(refreshRawBaseDir, job.raw_path, refreshRawExtraDirs)
-      : null;
+    const refreshMediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan: existingPlan,
+      rawPath: job.raw_path
+    });
+    const resolvedRefreshRawPath = this.resolveCurrentRawPathForSettings(
+      refreshSettings,
+      refreshMediaProfile,
+      job.raw_path
+    );
 
     if (!resolvedRefreshRawPath) {
       return {
@@ -5409,7 +5451,6 @@ class PipelineService extends EventEmitter {
       await historyService.updateJob(activeJobId, { raw_path: resolvedRefreshRawPath });
     }
 
-    const existingPlan = this.safeParseJson(job.encode_plan_json);
     const mode = existingPlan?.mode || this.snapshot.context?.mode || 'rip';
     const sourceJobId = existingPlan?.sourceJobId || this.snapshot.context?.sourceJobId || null;
 
@@ -7339,14 +7380,11 @@ class PipelineService extends EventEmitter {
       encodePlan: confirmedPlan
     });
     const confirmSettings = await settingsService.getEffectiveSettingsMap(readyMediaProfile);
-    const confirmRawBaseDir = String(confirmSettings?.raw_dir || '').trim();
-    const confirmRawExtraDirs = [
-      confirmSettings?.raw_dir_bluray,
-      confirmSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedConfirmRawPath = job.raw_path
-      ? this.resolveCurrentRawPath(confirmRawBaseDir, job.raw_path, confirmRawExtraDirs)
-      : null;
+    const resolvedConfirmRawPath = this.resolveCurrentRawPathForSettings(
+      confirmSettings,
+      readyMediaProfile,
+      job.raw_path
+    );
     const activeConfirmRawPath = resolvedConfirmRawPath || String(job.raw_path || '').trim() || null;
 
     let inputPath = isPreRipMode
@@ -7460,13 +7498,16 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    const reencodeMediaProfile = this.resolveMediaProfileForJob(sourceJob, {
+      makemkvInfo: mkInfo,
+      rawPath: sourceJob.raw_path
+    });
     const reencodeSettings = await settingsService.getSettingsMap();
-    const reencodeRawBaseDir = settingsService.DEFAULT_RAW_DIR;
-    const reencodeRawExtraDirs = [
-      reencodeSettings?.raw_dir_bluray,
-      reencodeSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedReencodeRawPath = this.resolveCurrentRawPath(reencodeRawBaseDir, sourceJob.raw_path, reencodeRawExtraDirs);
+    const resolvedReencodeRawPath = this.resolveCurrentRawPathForSettings(
+      reencodeSettings,
+      reencodeMediaProfile,
+      sourceJob.raw_path
+    );
     if (!resolvedReencodeRawPath) {
       const error = new Error(`Re-Encode nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;
@@ -8339,14 +8380,7 @@ class PipelineService extends EventEmitter {
       rawPath: job.raw_path
     });
     const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
-    const rawBaseDir = String(settings.raw_dir || '').trim();
-    const rawExtraDirs = [
-      settings.raw_dir_bluray,
-      settings.raw_dir_dvd
-    ].map((item) => String(item || '').trim()).filter(Boolean);
-    const resolvedRawPath = job.raw_path
-      ? this.resolveCurrentRawPath(rawBaseDir, job.raw_path, rawExtraDirs)
-      : null;
+    const resolvedRawPath = this.resolveCurrentRawPathForSettings(settings, mediaProfile, job.raw_path);
     const activeRawPath = resolvedRawPath || String(job.raw_path || '').trim() || null;
     if (activeRawPath && normalizeComparablePath(activeRawPath) !== normalizeComparablePath(job.raw_path)) {
       await historyService.updateJob(jobId, { raw_path: activeRawPath });
@@ -9251,14 +9285,15 @@ class PipelineService extends EventEmitter {
       };
     } else {
       const retrySettings = await settingsService.getEffectiveSettingsMap(mediaProfile);
-      const retryRawBaseDir = String(retrySettings?.raw_dir || '').trim();
-      const retryRawExtraDirs = [
-        retrySettings?.raw_dir_bluray,
-        retrySettings?.raw_dir_dvd
-      ].map((dirPath) => String(dirPath || '').trim()).filter(Boolean);
-      const resolvedOldRawPath = sourceJob.raw_path
-        ? this.resolveCurrentRawPath(retryRawBaseDir, sourceJob.raw_path, retryRawExtraDirs)
-        : null;
+      const { rawBaseDir: retryRawBaseDir, rawExtraDirs: retryRawExtraDirs } = this.buildRawPathLookupConfig(
+        retrySettings,
+        mediaProfile
+      );
+      const resolvedOldRawPath = this.resolveCurrentRawPathForSettings(
+        retrySettings,
+        mediaProfile,
+        sourceJob.raw_path
+      );
 
       if (resolvedOldRawPath) {
         const oldRawFolderName = path.basename(resolvedOldRawPath);
@@ -9419,15 +9454,13 @@ class PipelineService extends EventEmitter {
     const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
     const isPreRipMode = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
     const reviewConfirmed = Boolean(Number(job.encode_review_confirmed || 0) || encodePlan?.reviewConfirmed);
-    const resumeSettings = await settingsService.getEffectiveSettingsMap(this.resolveMediaProfileForJob(job, { encodePlan }));
-    const resumeRawBaseDir = String(resumeSettings?.raw_dir || '').trim();
-    const resumeRawExtraDirs = [
-      resumeSettings?.raw_dir_bluray,
-      resumeSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedResumeRawPath = job.raw_path
-      ? this.resolveCurrentRawPath(resumeRawBaseDir, job.raw_path, resumeRawExtraDirs)
-      : null;
+    const readyMediaProfile = this.resolveMediaProfileForJob(job, { encodePlan });
+    const resumeSettings = await settingsService.getEffectiveSettingsMap(readyMediaProfile);
+    const resolvedResumeRawPath = this.resolveCurrentRawPathForSettings(
+      resumeSettings,
+      readyMediaProfile,
+      job.raw_path
+    );
     const activeResumeRawPath = resolvedResumeRawPath || String(job.raw_path || '').trim() || null;
 
     let inputPath = isPreRipMode
@@ -9463,10 +9496,6 @@ class PipelineService extends EventEmitter {
       imdbId: job.imdb_id || null,
       poster: job.poster_url || null
     };
-    const readyMediaProfile = this.resolveMediaProfileForJob(job, {
-      encodePlan
-    });
-
     await this.setState('READY_TO_ENCODE', {
       activeJobId: jobId,
       progress: 0,
@@ -9613,14 +9642,11 @@ class PipelineService extends EventEmitter {
       encodePlan: restartPlan
     });
     const restartSettings = await settingsService.getEffectiveSettingsMap(readyMediaProfile);
-    const restartRawBaseDir = String(restartSettings?.raw_dir || '').trim();
-    const restartRawExtraDirs = [
-      restartSettings?.raw_dir_bluray,
-      restartSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedRestartRawPath = job.raw_path
-      ? this.resolveCurrentRawPath(restartRawBaseDir, job.raw_path, restartRawExtraDirs)
-      : null;
+    const resolvedRestartRawPath = this.resolveCurrentRawPathForSettings(
+      restartSettings,
+      readyMediaProfile,
+      job.raw_path
+    );
     const activeRestartRawPath = resolvedRestartRawPath || String(job.raw_path || '').trim() || null;
 
     let inputPath = isPreRipMode
@@ -9761,13 +9787,19 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    const reviewMakemkvInfo = this.safeParseJson(sourceJob.makemkv_info_json);
+    const reviewEncodePlan = this.safeParseJson(sourceJob.encode_plan_json);
+    const reviewMediaProfile = this.resolveMediaProfileForJob(sourceJob, {
+      makemkvInfo: reviewMakemkvInfo,
+      encodePlan: reviewEncodePlan,
+      rawPath: sourceJob.raw_path
+    });
     const reviewSettings = await settingsService.getSettingsMap();
-    const reviewRawBaseDir = settingsService.DEFAULT_RAW_DIR;
-    const reviewRawExtraDirs = [
-      reviewSettings?.raw_dir_bluray,
-      reviewSettings?.raw_dir_dvd
-    ].map((d) => String(d || '').trim()).filter(Boolean);
-    const resolvedReviewRawPath = this.resolveCurrentRawPath(reviewRawBaseDir, sourceJob.raw_path, reviewRawExtraDirs);
+    const resolvedReviewRawPath = this.resolveCurrentRawPathForSettings(
+      reviewSettings,
+      reviewMediaProfile,
+      sourceJob.raw_path
+    );
     if (!resolvedReviewRawPath) {
       const error = new Error(`Review-Neustart nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
       error.statusCode = 400;

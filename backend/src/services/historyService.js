@@ -21,7 +21,7 @@ function parseJsonSafe(raw, fallback = null) {
 
 const PROCESS_LOG_TAIL_MAX_BYTES = 1024 * 1024;
 const processLogStreams = new Map();
-const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'other'];
+const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'cd', 'other'];
 const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
 const RAW_RIP_COMPLETE_PREFIX = 'Rip_Complete_';
 
@@ -356,12 +356,46 @@ function toProcessLogStreamKey(jobId) {
   return String(Math.trunc(normalizedId));
 }
 
-function resolveEffectiveRawPath(storedPath, rawDir) {
+function resolveEffectiveRawPath(storedPath, rawDir, extraDirs = []) {
   const stored = String(storedPath || '').trim();
-  if (!stored || !rawDir) return stored;
+  if (!stored) return stored;
   const folderName = path.basename(stored);
   if (!folderName) return stored;
-  return path.join(String(rawDir).trim(), folderName);
+
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = (candidatePath) => {
+    const normalized = String(candidatePath || '').trim();
+    if (!normalized) {
+      return;
+    }
+    const comparable = normalizeComparablePath(normalized);
+    if (!comparable || seen.has(comparable)) {
+      return;
+    }
+    seen.add(comparable);
+    candidates.push(normalized);
+  };
+
+  pushCandidate(stored);
+  if (rawDir) {
+    pushCandidate(path.join(String(rawDir).trim(), folderName));
+  }
+  for (const extraDir of Array.isArray(extraDirs) ? extraDirs : []) {
+    pushCandidate(path.join(String(extraDir || '').trim(), folderName));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch (_error) {
+      // ignore fs errors and continue with fallbacks
+    }
+  }
+
+  return rawDir ? path.join(String(rawDir).trim(), folderName) : stored;
 }
 
 function resolveEffectiveOutputPath(storedPath, movieDir) {
@@ -406,11 +440,11 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
   const rawDir = String(effectiveSettings?.raw_dir || '').trim();
   const configuredMovieDir = String(effectiveSettings?.movie_dir || '').trim();
   const movieDir = mediaType === 'cd' ? rawDir : configuredMovieDir;
-  const effectiveRawPath = mediaType === 'cd'
-    ? (job?.raw_path || null)
-    : (rawDir && job?.raw_path
-      ? resolveEffectiveRawPath(job.raw_path, rawDir)
-      : (job?.raw_path || null));
+  const rawLookupDirs = getConfiguredMediaPathList(settings || {}, 'raw_dir')
+    .filter((candidate) => normalizeComparablePath(candidate) !== normalizeComparablePath(rawDir));
+  const effectiveRawPath = job?.raw_path
+    ? resolveEffectiveRawPath(job.raw_path, rawDir, rawLookupDirs)
+    : (job?.raw_path || null);
   const effectiveOutputPath = mediaType === 'cd'
     ? (job?.output_path || null)
     : (configuredMovieDir && job?.output_path

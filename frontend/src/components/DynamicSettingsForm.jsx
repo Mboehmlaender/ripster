@@ -380,7 +380,7 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const blurayMovies = ep.bluray?.movies || defaultMovies;
   const dvdRaw = ep.dvd?.raw || defaultRaw;
   const dvdMovies = ep.dvd?.movies || defaultMovies;
-  const cdOutput = ep.cd?.raw || defaultCd;
+  const cdRaw = ep.cd?.raw || defaultCd;
 
   const isDefault = (path, def) => path === def;
 
@@ -424,10 +424,10 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
               </td>
             </tr>
             <tr>
-              <td><strong>CD / Audio</strong></td>
+              <td><strong>CD / Audio (RAW + Output)</strong></td>
               <td colSpan={2}>
-                <code>{cdOutput}</code>
-                {isDefault(cdOutput, defaultCd) && <span className="path-default-badge">Standard</span>}
+                <code>{cdRaw}</code>
+                {isDefault(cdRaw, defaultCd) && <span className="path-default-badge">Standard</span>}
               </td>
             </tr>
           </tbody>

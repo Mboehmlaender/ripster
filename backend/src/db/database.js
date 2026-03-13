@@ -855,6 +855,21 @@ async function migrateSettingsSchemaMetadata(db) {
       logger.info('migrate:settings-schema-category-moved', { key: move.key, category: move.category });
     }
   }
+
+  const rawDirCdLabel = 'CD RAW-Ordner';
+  const rawDirCdDescription = 'Basisordner für CD-Rips. Enthält die WAV-Rohdaten (RAW) sowie den encodierten Audio-Output. Leer = Standardpfad (data/output/cd).';
+  const rawDirCdResult = await db.run(
+    `UPDATE settings_schema
+     SET label = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE key = 'raw_dir_cd' AND (label != ? OR description != ?)`,
+    [rawDirCdLabel, rawDirCdDescription, rawDirCdLabel, rawDirCdDescription]
+  );
+  if (rawDirCdResult?.changes > 0) {
+    logger.info('migrate:settings-schema-cd-raw-updated', {
+      key: 'raw_dir_cd',
+      label: rawDirCdLabel
+    });
+  }
 }
 
 async function getDb() {

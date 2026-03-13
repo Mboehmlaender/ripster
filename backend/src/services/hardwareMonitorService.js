@@ -421,7 +421,7 @@ class HardwareMonitorService {
     } else {
       addPath('raw_dir', 'RAW-Verzeichnis', blurayRawPath || dvdRawPath || sourceMap.raw_dir);
     }
-    addPath('raw_dir_cd', 'CD-Verzeichnis', cdRawPath || sourceMap.raw_dir_cd);
+    addPath('raw_dir_cd', 'CD RAW-Ordner', cdRawPath || sourceMap.raw_dir_cd);
 
     if (blurayMoviePath && dvdMoviePath && blurayMoviePath !== dvdMoviePath) {
       addPath('movie_dir_bluray', 'Movie-Verzeichnis (Blu-ray)', blurayMoviePath);
