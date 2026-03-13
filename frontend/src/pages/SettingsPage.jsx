@@ -7,9 +7,12 @@ import { TabView, TabPanel } from 'primereact/tabview';
 import { InputText } from 'primereact/inputtext';
 import { InputTextarea } from 'primereact/inputtextarea';
 import { Dropdown } from 'primereact/dropdown';
+import { InputSwitch } from 'primereact/inputswitch';
 import { api } from '../api/client';
 import DynamicSettingsForm from '../components/DynamicSettingsForm';
 import CronJobsTab from '../components/CronJobsTab';
+
+const EXPERT_MODE_SETTING_KEY = 'ui_expert_mode';
 
 function buildValuesMap(categories) {
   const next = {};
@@ -26,6 +29,17 @@ function isSameValue(a, b) {
     return Number(a) === Number(b);
   }
   return a === b;
+}
+
+function toBoolean(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 }
 
 function reorderListById(items, sourceId, targetIndex) {
@@ -138,6 +152,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingPushover, setTestingPushover] = useState(false);
+  const [updatingExpertMode, setUpdatingExpertMode] = useState(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [initialValues, setInitialValues] = useState({});
   const [draftValues, setDraftValues] = useState({});
@@ -184,6 +199,7 @@ export default function SettingsPage() {
   });
   const [userPresetErrors, setUserPresetErrors] = useState({});
   const [handBrakePresetSourceOptions, setHandBrakePresetSourceOptions] = useState([]);
+  const [effectivePaths, setEffectivePaths] = useState(null);
 
   const toastRef = useRef(null);
 
@@ -317,6 +333,17 @@ export default function SettingsPage() {
     }
   };
 
+  const loadEffectivePaths = async ({ silent = false } = {}) => {
+    try {
+      const paths = await api.getEffectivePaths({ forceRefresh: true });
+      setEffectivePaths(paths || null);
+    } catch (_error) {
+      if (!silent) {
+        setEffectivePaths(null);
+      }
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -327,6 +354,7 @@ export default function SettingsPage() {
       setInitialValues(values);
       setDraftValues(values);
       setErrors({});
+      loadEffectivePaths({ silent: true });
 
       const presetsPromise = api.getHandBrakePresets();
       const scriptsPromise = api.getScripts();
@@ -389,10 +417,39 @@ export default function SettingsPage() {
   }, [initialValues, draftValues]);
 
   const hasUnsavedChanges = dirtyKeys.size > 0;
+  const expertModeEnabled = toBoolean(draftValues?.[EXPERT_MODE_SETTING_KEY]);
 
   const handleFieldChange = (key, value) => {
     setDraftValues((prev) => ({ ...prev, [key]: value }));
     setErrors((prev) => ({ ...prev, [key]: null }));
+  };
+
+  const handleExpertModeToggle = async (checked) => {
+    const previousDraftValue = draftValues?.[EXPERT_MODE_SETTING_KEY];
+    const previousInitialValue = initialValues?.[EXPERT_MODE_SETTING_KEY];
+    const nextValue = Boolean(checked);
+    const currentValue = toBoolean(previousDraftValue);
+    if (nextValue === currentValue) {
+      return;
+    }
+
+    setUpdatingExpertMode(true);
+    setDraftValues((prev) => ({ ...prev, [EXPERT_MODE_SETTING_KEY]: nextValue }));
+    setInitialValues((prev) => ({ ...prev, [EXPERT_MODE_SETTING_KEY]: nextValue }));
+    setErrors((prev) => ({ ...prev, [EXPERT_MODE_SETTING_KEY]: null }));
+    try {
+      await api.updateSetting(EXPERT_MODE_SETTING_KEY, nextValue);
+    } catch (error) {
+      setDraftValues((prev) => ({ ...prev, [EXPERT_MODE_SETTING_KEY]: previousDraftValue }));
+      setInitialValues((prev) => ({ ...prev, [EXPERT_MODE_SETTING_KEY]: previousInitialValue }));
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Expertenmodus',
+        detail: error.message
+      });
+    } finally {
+      setUpdatingExpertMode(false);
+    }
   };
 
   const handleSave = async () => {
@@ -415,6 +472,7 @@ export default function SettingsPage() {
       const response = await api.updateSettingsBulk(patch);
       setInitialValues((prev) => ({ ...prev, ...patch }));
       setErrors({});
+      loadEffectivePaths({ silent: true });
       const reviewRefresh = response?.reviewRefresh || null;
       const reviewRefreshHint = reviewRefresh?.triggered
         ? ' Mediainfo-Prüfung wird mit den neuen Settings automatisch neu berechnet.'
@@ -946,7 +1004,7 @@ export default function SettingsPage() {
                 icon="pi pi-save"
                 onClick={handleSave}
                 loading={saving}
-                disabled={!hasUnsavedChanges}
+                disabled={!hasUnsavedChanges || updatingExpertMode}
               />
               <Button
                 label="Änderungen verwerfen"
@@ -954,7 +1012,7 @@ export default function SettingsPage() {
                 severity="secondary"
                 outlined
                 onClick={handleDiscard}
-                disabled={!hasUnsavedChanges || saving}
+                disabled={!hasUnsavedChanges || saving || updatingExpertMode}
               />
               <Button
                 label="Neu laden"
@@ -962,7 +1020,7 @@ export default function SettingsPage() {
                 severity="secondary"
                 onClick={load}
                 loading={loading}
-                disabled={saving}
+                disabled={saving || updatingExpertMode}
               />
               <Button
                 label="PushOver Test"
@@ -970,8 +1028,16 @@ export default function SettingsPage() {
                 severity="info"
                 onClick={handlePushoverTest}
                 loading={testingPushover}
-                disabled={saving}
+                disabled={saving || updatingExpertMode}
               />
+              <div className="settings-expert-toggle">
+                <span>Expertenmodus</span>
+                <InputSwitch
+                  checked={expertModeEnabled}
+                  onChange={(event) => handleExpertModeToggle(event.value)}
+                  disabled={loading || saving || updatingExpertMode}
+                />
+              </div>
             </div>
 
             {loading ? (
@@ -983,6 +1049,7 @@ export default function SettingsPage() {
                 errors={errors}
                 dirtyKeys={dirtyKeys}
                 onChange={handleFieldChange}
+                effectivePaths={effectivePaths}
               />
             )}
           </TabPanel>
@@ -1526,7 +1593,7 @@ export default function SettingsPage() {
 
             <small>
               Encode-Presets fassen ein HandBrake-Preset und zusätzliche CLI-Argumente zusammen.
-              Sie sind medienbezogen (Blu-ray, DVD, Sonstiges oder Universell) und können vor dem Encode
+              Sie sind medienbezogen (Blu-ray, DVD oder Universell) und können vor dem Encode
               in der Mediainfo-Prüfung ausgewählt werden. Kein Preset gewählt = Fallback aus Einstellungen.
             </small>
 
@@ -1544,7 +1611,6 @@ export default function SettingsPage() {
                         <span className="preset-media-type-tag">
                           {preset.mediaType === 'bluray' ? 'Blu-ray'
                             : preset.mediaType === 'dvd' ? 'DVD'
-                            : preset.mediaType === 'other' ? 'Sonstiges'
                             : 'Universell'}
                         </span>
                       </div>
@@ -1604,7 +1670,6 @@ export default function SettingsPage() {
                     <option value="all">Universell (alle Medien)</option>
                     <option value="bluray">Blu-ray</option>
                     <option value="dvd">DVD</option>
-                    <option value="other">Sonstiges</option>
                   </select>
                 </div>
 

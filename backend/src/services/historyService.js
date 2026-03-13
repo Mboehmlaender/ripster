@@ -5,6 +5,7 @@ const path = require('path');
 const settingsService = require('./settingsService');
 const omdbService = require('./omdbService');
 const { getJobLogDir } = require('./logPathService');
+const thumbnailService = require('./thumbnailService');
 
 function parseJsonSafe(raw, fallback = null) {
   if (!raw) {
@@ -230,16 +231,17 @@ function normalizeMediaTypeValue(value) {
   ) {
     return 'dvd';
   }
-  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
-    return 'other';
+  if (raw === 'cd' || raw === 'audio_cd') {
+    return 'cd';
   }
   return null;
 }
 
-function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan) {
+function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan, handbrakeInfo = null) {
   const mkInfo = parseInfoFromValue(makemkvInfo, null);
   const miInfo = parseInfoFromValue(mediainfoInfo, null);
   const plan = parseInfoFromValue(encodePlan, null);
+  const hbInfo = parseInfoFromValue(handbrakeInfo, null);
   const rawPath = String(job?.raw_path || '').trim();
   const encodeInputPath = String(job?.encode_input_path || plan?.encodeInputPath || '').trim();
   const profileHint = normalizeMediaTypeValue(
@@ -251,8 +253,29 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan) {
     || job?.mediaType
   );
 
-  if (profileHint === 'bluray' || profileHint === 'dvd') {
+  if (profileHint === 'bluray' || profileHint === 'dvd' || profileHint === 'cd') {
     return profileHint;
+  }
+
+  const statusCandidates = [
+    job?.status,
+    job?.last_state,
+    mkInfo?.lastState
+  ];
+  if (statusCandidates.some((value) => String(value || '').trim().toUpperCase().startsWith('CD_'))) {
+    return 'cd';
+  }
+
+  const planFormat = String(plan?.format || '').trim().toLowerCase();
+  const hasCdTracksInPlan = Array.isArray(plan?.selectedTracks) && plan.selectedTracks.length > 0;
+  if (hasCdTracksInPlan && ['flac', 'wav', 'mp3', 'opus', 'ogg'].includes(planFormat)) {
+    return 'cd';
+  }
+  if (String(hbInfo?.mode || '').trim().toLowerCase() === 'cd_rip') {
+    return 'cd';
+  }
+  if (Array.isArray(mkInfo?.tracks) && mkInfo.tracks.length > 0) {
+    return 'cd';
   }
 
   if (hasBlurayStructure(rawPath)) {
@@ -377,16 +400,22 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
   const mkInfo = parsed?.makemkvInfo || parseJsonSafe(job?.makemkv_info_json, null);
   const miInfo = parsed?.mediainfoInfo || parseJsonSafe(job?.mediainfo_info_json, null);
   const plan = parsed?.encodePlan || parseJsonSafe(job?.encode_plan_json, null);
-  const mediaType = inferMediaType(job, mkInfo, miInfo, plan);
+  const handbrakeInfo = parsed?.handbrakeInfo || parseJsonSafe(job?.handbrake_info_json, null);
+  const mediaType = inferMediaType(job, mkInfo, miInfo, plan, handbrakeInfo);
   const effectiveSettings = settingsService.resolveEffectiveToolSettings(settings || {}, mediaType);
   const rawDir = String(effectiveSettings?.raw_dir || '').trim();
-  const movieDir = String(effectiveSettings?.movie_dir || '').trim();
-  const effectiveRawPath = rawDir && job?.raw_path
-    ? resolveEffectiveRawPath(job.raw_path, rawDir)
-    : (job?.raw_path || null);
-  const effectiveOutputPath = movieDir && job?.output_path
-    ? resolveEffectiveOutputPath(job.output_path, movieDir)
-    : (job?.output_path || null);
+  const configuredMovieDir = String(effectiveSettings?.movie_dir || '').trim();
+  const movieDir = mediaType === 'cd' ? rawDir : configuredMovieDir;
+  const effectiveRawPath = mediaType === 'cd'
+    ? (job?.raw_path || null)
+    : (rawDir && job?.raw_path
+      ? resolveEffectiveRawPath(job.raw_path, rawDir)
+      : (job?.raw_path || null));
+  const effectiveOutputPath = mediaType === 'cd'
+    ? (job?.output_path || null)
+    : (configuredMovieDir && job?.output_path
+      ? resolveEffectiveOutputPath(job.output_path, configuredMovieDir)
+      : (job?.output_path || null));
 
   return {
     mediaType,
@@ -396,6 +425,7 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
     effectiveOutputPath,
     makemkvInfo: mkInfo,
     mediainfoInfo: miInfo,
+    handbrakeInfo,
     encodePlan: plan
   };
 }
@@ -421,15 +451,19 @@ function buildUnknownFileStatus(filePath = null) {
 
 function enrichJobRow(job, settings = null, options = {}) {
   const includeFsChecks = options?.includeFsChecks !== false;
-  const handbrakeInfo = parseJsonSafe(job.handbrake_info_json, null);
   const omdbInfo = parseJsonSafe(job.omdb_json, null);
   const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
+  const handbrakeInfo = resolvedPaths.handbrakeInfo;
+  const outputStatus = includeFsChecks
+    ? (resolvedPaths.mediaType === 'cd'
+      ? inspectDirectory(resolvedPaths.effectiveOutputPath)
+      : inspectOutputFile(resolvedPaths.effectiveOutputPath))
+    : (resolvedPaths.mediaType === 'cd'
+      ? buildUnknownDirectoryStatus(resolvedPaths.effectiveOutputPath)
+      : buildUnknownFileStatus(resolvedPaths.effectiveOutputPath));
   const rawStatus = includeFsChecks
     ? inspectDirectory(resolvedPaths.effectiveRawPath)
     : buildUnknownDirectoryStatus(resolvedPaths.effectiveRawPath);
-  const outputStatus = includeFsChecks
-    ? inspectOutputFile(resolvedPaths.effectiveOutputPath)
-    : buildUnknownFileStatus(resolvedPaths.effectiveOutputPath);
   const movieDirPath = resolvedPaths.effectiveOutputPath ? path.dirname(resolvedPaths.effectiveOutputPath) : null;
   const movieDirStatus = includeFsChecks
     ? inspectDirectory(movieDirPath)
@@ -441,7 +475,9 @@ function enrichJobRow(job, settings = null, options = {}) {
   const ripSuccessful = Number(job?.rip_successful || 0) === 1
     || String(makemkvInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
   const backupSuccess = ripSuccessful;
-  const encodeSuccess = String(handbrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
+  const encodeSuccess = mediaType === 'cd'
+    ? (String(job?.status || '').trim().toUpperCase() === 'FINISHED' && Boolean(outputStatus?.exists))
+    : String(handbrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
 
   return {
     ...job,
@@ -584,6 +620,94 @@ function deleteFilesRecursively(rootPath, keepRoot = true) {
   return result;
 }
 
+function normalizeJobIdValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function parseSourceJobIdFromPlan(encodePlanRaw) {
+  const plan = parseInfoFromValue(encodePlanRaw, null);
+  const sourceJobId = normalizeJobIdValue(plan?.sourceJobId);
+  return sourceJobId || null;
+}
+
+function parseRetryLinkedJobIdsFromLogLines(lines = []) {
+  const jobIds = new Set();
+  const list = Array.isArray(lines) ? lines : [];
+  for (const line of list) {
+    const text = String(line || '');
+    if (!text) {
+      continue;
+    }
+    if (!/retry/i.test(text)) {
+      continue;
+    }
+    const regex = /job\s*#(\d+)/ig;
+    let match = regex.exec(text);
+    while (match) {
+      const id = normalizeJobIdValue(match?.[1]);
+      if (id) {
+        jobIds.add(id);
+      }
+      match = regex.exec(text);
+    }
+  }
+  return Array.from(jobIds);
+}
+
+function normalizeLineageReason(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function inspectDeletionPath(targetPath) {
+  const normalized = normalizeComparablePath(targetPath);
+  if (!normalized) {
+    return {
+      path: null,
+      exists: false,
+      isDirectory: false,
+      isFile: false
+    };
+  }
+  try {
+    const stat = fs.lstatSync(normalized);
+    return {
+      path: normalized,
+      exists: true,
+      isDirectory: stat.isDirectory(),
+      isFile: stat.isFile()
+    };
+  } catch (_error) {
+    return {
+      path: normalized,
+      exists: false,
+      isDirectory: false,
+      isFile: false
+    };
+  }
+}
+
+function buildJobDisplayTitle(job = null) {
+  if (!job || typeof job !== 'object') {
+    return '-';
+  }
+  return String(job.title || job.detected_title || `Job #${job.id || '-'}`).trim() || '-';
+}
+
+function isFilesystemRootPath(inputPath) {
+  const raw = String(inputPath || '').trim();
+  if (!raw) {
+    return false;
+  }
+  const resolved = normalizeComparablePath(raw);
+  const parsedRoot = path.parse(resolved).root;
+  return Boolean(parsedRoot && resolved === normalizeComparablePath(parsedRoot));
+}
+
 class HistoryService {
   async createJob({ discDevice = null, status = 'ANALYZING', detectedTitle = null }) {
     const db = await getDb();
@@ -640,6 +764,186 @@ class HistoryService {
     );
     logger.info('job:raw-path-bulk-updated', { oldRawPath, newRawPath, changes: result.changes });
     return result.changes;
+  }
+
+  async listJobLineageArtifactsByJobIds(jobIds = []) {
+    const normalizedIds = Array.isArray(jobIds)
+      ? jobIds
+        .map((value) => normalizeJobIdValue(value))
+        .filter(Boolean)
+      : [];
+    if (normalizedIds.length === 0) {
+      return new Map();
+    }
+
+    const db = await getDb();
+    const placeholders = normalizedIds.map(() => '?').join(', ');
+    const rows = await db.all(
+      `
+        SELECT id, job_id, source_job_id, media_type, raw_path, output_path, reason, note, created_at
+        FROM job_lineage_artifacts
+        WHERE job_id IN (${placeholders})
+        ORDER BY id ASC
+      `,
+      normalizedIds
+    );
+
+    const byJobId = new Map();
+    for (const row of rows) {
+      const ownerJobId = normalizeJobIdValue(row?.job_id);
+      if (!ownerJobId) {
+        continue;
+      }
+      if (!byJobId.has(ownerJobId)) {
+        byJobId.set(ownerJobId, []);
+      }
+      byJobId.get(ownerJobId).push({
+        id: normalizeJobIdValue(row?.id),
+        jobId: ownerJobId,
+        sourceJobId: normalizeJobIdValue(row?.source_job_id),
+        mediaType: normalizeMediaTypeValue(row?.media_type),
+        rawPath: String(row?.raw_path || '').trim() || null,
+        outputPath: String(row?.output_path || '').trim() || null,
+        reason: normalizeLineageReason(row?.reason),
+        note: String(row?.note || '').trim() || null,
+        createdAt: String(row?.created_at || '').trim() || null
+      });
+    }
+
+    return byJobId;
+  }
+
+  async transferJobLineageArtifacts(sourceJobId, replacementJobId, options = {}) {
+    const fromJobId = normalizeJobIdValue(sourceJobId);
+    const toJobId = normalizeJobIdValue(replacementJobId);
+    if (!fromJobId || !toJobId || fromJobId === toJobId) {
+      const error = new Error('Ungültige Job-IDs für Lineage-Transfer.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const reason = normalizeLineageReason(options?.reason) || 'job_replaced';
+    const note = String(options?.note || '').trim() || null;
+    const sourceJob = await this.getJobById(fromJobId);
+    if (!sourceJob) {
+      const error = new Error(`Quell-Job ${fromJobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const settings = await settingsService.getSettingsMap();
+    const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, sourceJob);
+    const rawPath = String(resolvedPaths?.effectiveRawPath || sourceJob?.raw_path || '').trim() || null;
+    const outputPath = String(resolvedPaths?.effectiveOutputPath || sourceJob?.output_path || '').trim() || null;
+    const mediaType = normalizeMediaTypeValue(resolvedPaths?.mediaType) || 'other';
+
+    const db = await getDb();
+    await db.exec('BEGIN');
+    try {
+      await db.run(
+        `
+          INSERT INTO job_lineage_artifacts (
+            job_id, source_job_id, media_type, raw_path, output_path, reason, note, created_at
+          )
+          SELECT ?, source_job_id, media_type, raw_path, output_path, reason, note, created_at
+          FROM job_lineage_artifacts
+          WHERE job_id = ?
+        `,
+        [toJobId, fromJobId]
+      );
+
+      if (rawPath || outputPath) {
+        await db.run(
+          `
+            INSERT INTO job_lineage_artifacts (
+              job_id, source_job_id, media_type, raw_path, output_path, reason, note, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `,
+          [toJobId, fromJobId, mediaType, rawPath, outputPath, reason, note]
+        );
+      }
+
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+
+    logger.info('job:lineage:transferred', {
+      sourceJobId: fromJobId,
+      replacementJobId: toJobId,
+      mediaType,
+      reason,
+      hasRawPath: Boolean(rawPath),
+      hasOutputPath: Boolean(outputPath)
+    });
+  }
+
+  async retireJobInFavorOf(sourceJobId, replacementJobId, options = {}) {
+    const fromJobId = normalizeJobIdValue(sourceJobId);
+    const toJobId = normalizeJobIdValue(replacementJobId);
+    if (!fromJobId || !toJobId || fromJobId === toJobId) {
+      const error = new Error('Ungültige Job-IDs für Job-Ersatz.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const reason = normalizeLineageReason(options?.reason) || 'job_replaced';
+    const note = String(options?.note || '').trim() || null;
+
+    await this.transferJobLineageArtifacts(fromJobId, toJobId, { reason, note });
+
+    const db = await getDb();
+    const pipelineRow = await db.get('SELECT active_job_id FROM pipeline_state WHERE id = 1');
+    const activeJobId = normalizeJobIdValue(pipelineRow?.active_job_id);
+    const sourceIsActive = activeJobId === fromJobId;
+
+    await db.exec('BEGIN');
+    try {
+      if (sourceIsActive) {
+        await db.run(
+          `
+            UPDATE pipeline_state
+            SET active_job_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+          `,
+          [toJobId]
+        );
+      } else {
+        await db.run(
+          `
+            UPDATE pipeline_state
+            SET active_job_id = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1 AND active_job_id = ?
+          `,
+          [fromJobId]
+        );
+      }
+
+      await db.run('DELETE FROM jobs WHERE id = ?', [fromJobId]);
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+
+    await this.closeProcessLog(fromJobId);
+    this._deleteProcessLogFile(fromJobId);
+
+    logger.warn('job:retired', {
+      sourceJobId: fromJobId,
+      replacementJobId: toJobId,
+      reason,
+      sourceWasActive: sourceIsActive
+    });
+
+    return {
+      retired: true,
+      sourceJobId: fromJobId,
+      replacementJobId: toJobId,
+      reason
+    };
   }
 
   appendLog(jobId, source, message) {
@@ -822,8 +1126,8 @@ class HistoryService {
     }
 
     if (filters.search) {
-      where.push('(title LIKE ? OR imdb_id LIKE ? OR detected_title LIKE ?)');
-      values.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`);
+      where.push('(title LIKE ? OR imdb_id LIKE ? OR detected_title LIKE ? OR makemkv_info_json LIKE ?)');
+      values.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`);
     }
 
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -884,7 +1188,7 @@ class HistoryService {
         `
         SELECT *
         FROM jobs
-        WHERE status IN ('RIPPING', 'ENCODING')
+        WHERE status IN ('RIPPING', 'ENCODING', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING')
         ORDER BY updated_at ASC, id ASC
       `
       ),
@@ -903,7 +1207,7 @@ class HistoryService {
         `
         SELECT *
         FROM jobs
-        WHERE status = 'ENCODING'
+        WHERE status IN ('ENCODING', 'CD_ENCODING')
         ORDER BY updated_at ASC, id ASC
       `
       ),
@@ -913,6 +1217,22 @@ class HistoryService {
       ...enrichJobRow(job, settings),
       log_count: hasProcessLogFile(job.id) ? 1 : 0
     }));
+  }
+
+  async getRunningFilmEncodeJobs() {
+    const db = await getDb();
+    const rows = await db.all(
+      `SELECT id, status FROM jobs WHERE status = 'ENCODING' ORDER BY updated_at ASC, id ASC`
+    );
+    return rows;
+  }
+
+  async getRunningCdEncodeJobs() {
+    const db = await getDb();
+    const rows = await db.all(
+      `SELECT id, status FROM jobs WHERE status IN ('CD_RIPPING', 'CD_ENCODING') ORDER BY updated_at ASC, id ASC`
+    );
+    return rows;
   }
 
   async getJobWithLogs(jobId, options = {}) {
@@ -1189,13 +1509,14 @@ class HistoryService {
       }
     }
 
+    const orphanPosterUrl = omdbById?.poster || null;
     await this.updateJob(created.id, {
       status: 'FINISHED',
       last_state: 'FINISHED',
       title: omdbById?.title || metadata.title || null,
       year: Number.isFinite(Number(omdbById?.year)) ? Number(omdbById.year) : metadata.year,
       imdb_id: omdbById?.imdbId || metadata.imdbId || null,
-      poster_url: omdbById?.poster || null,
+      poster_url: orphanPosterUrl,
       omdb_json: omdbById?.raw ? JSON.stringify(omdbById.raw) : null,
       selected_from_omdb: omdbById ? 1 : 0,
       rip_successful: 1,
@@ -1215,6 +1536,16 @@ class HistoryService {
         rawPath: finalRawPath
       })
     });
+
+    // Bild direkt persistieren (kein Rip-Prozess, daher kein Cache-Zwischenschritt)
+    if (orphanPosterUrl) {
+      thumbnailService.cacheJobThumbnail(created.id, orphanPosterUrl)
+        .then(() => {
+          const promotedUrl = thumbnailService.promoteJobThumbnail(created.id);
+          if (promotedUrl) return this.updateJob(created.id, { poster_url: promotedUrl });
+        })
+        .catch(() => {});
+    }
 
     await this.appendLog(
       created.id,
@@ -1289,6 +1620,11 @@ class HistoryService {
       selected_from_omdb: selectedFromOmdb
     });
 
+    // Bild in Cache laden (async, blockiert nicht)
+    if (posterUrl && !thumbnailService.isLocalUrl(posterUrl)) {
+      thumbnailService.cacheJobThumbnail(jobId, posterUrl).catch(() => {});
+    }
+
     await this.appendLog(
       jobId,
       'USER_ACTION',
@@ -1302,6 +1638,514 @@ class HistoryService {
       settingsService.getSettingsMap()
     ]);
     return enrichJobRow(updated, settings);
+  }
+
+  async _resolveRelatedJobsForDeletion(jobId, options = {}) {
+    const includeRelated = options?.includeRelated !== false;
+    const normalizedJobId = normalizeJobIdValue(jobId);
+    if (!normalizedJobId) {
+      const error = new Error('Ungültige Job-ID.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const db = await getDb();
+    const rows = await db.all('SELECT * FROM jobs ORDER BY id ASC');
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    const primary = byId.get(normalizedJobId);
+    if (!primary) {
+      const error = new Error('Job nicht gefunden.');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!includeRelated) {
+      return [primary];
+    }
+
+    const childrenByParent = new Map();
+    const childrenBySource = new Map();
+    for (const row of rows) {
+      const rowId = normalizeJobIdValue(row?.id);
+      if (!rowId) {
+        continue;
+      }
+      const parentJobId = normalizeJobIdValue(row?.parent_job_id);
+      if (parentJobId) {
+        if (!childrenByParent.has(parentJobId)) {
+          childrenByParent.set(parentJobId, new Set());
+        }
+        childrenByParent.get(parentJobId).add(rowId);
+      }
+      const sourceJobId = parseSourceJobIdFromPlan(row?.encode_plan_json);
+      if (sourceJobId) {
+        if (!childrenBySource.has(sourceJobId)) {
+          childrenBySource.set(sourceJobId, new Set());
+        }
+        childrenBySource.get(sourceJobId).add(rowId);
+      }
+    }
+
+    const pending = [normalizedJobId];
+    const visited = new Set();
+    const enqueue = (value) => {
+      const id = normalizeJobIdValue(value);
+      if (!id || visited.has(id)) {
+        return;
+      }
+      pending.push(id);
+    };
+
+    while (pending.length > 0) {
+      const currentId = normalizeJobIdValue(pending.shift());
+      if (!currentId || visited.has(currentId)) {
+        continue;
+      }
+      visited.add(currentId);
+
+      const row = byId.get(currentId);
+      if (!row) {
+        continue;
+      }
+
+      enqueue(row.parent_job_id);
+      enqueue(parseSourceJobIdFromPlan(row.encode_plan_json));
+
+      for (const childId of (childrenByParent.get(currentId) || [])) {
+        enqueue(childId);
+      }
+      for (const childId of (childrenBySource.get(currentId) || [])) {
+        enqueue(childId);
+      }
+
+      try {
+        const processLog = await this.readProcessLogLines(currentId, { includeAll: true });
+        const linkedJobIds = parseRetryLinkedJobIdsFromLogLines(processLog.lines);
+        for (const linkedId of linkedJobIds) {
+          enqueue(linkedId);
+        }
+      } catch (_error) {
+        // optional fallback links from process logs; ignore read errors
+      }
+    }
+
+    return Array.from(visited)
+      .map((id) => byId.get(id))
+      .filter(Boolean)
+      .sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+  }
+
+  _collectDeleteCandidatesForJob(job, settings = null, options = {}) {
+    const normalizedJobId = normalizeJobIdValue(job?.id);
+    const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
+    const lineageArtifacts = Array.isArray(options?.lineageArtifacts) ? options.lineageArtifacts : [];
+    const toNormalizedPath = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) {
+        return null;
+      }
+      return normalizeComparablePath(raw);
+    };
+    const unique = (values = []) => Array.from(new Set((Array.isArray(values) ? values : []).filter(Boolean)));
+    const sanitizeRoots = (values = []) => unique(values).filter((root) => !isFilesystemRootPath(root));
+
+    const artifactRawPaths = lineageArtifacts
+      .map((artifact) => toNormalizedPath(artifact?.rawPath))
+      .filter(Boolean);
+    const artifactMoviePaths = lineageArtifacts
+      .map((artifact) => toNormalizedPath(artifact?.outputPath))
+      .filter(Boolean);
+
+    const explicitRawPaths = unique([
+      toNormalizedPath(job?.raw_path),
+      toNormalizedPath(resolvedPaths?.effectiveRawPath),
+      ...artifactRawPaths
+    ]);
+    const explicitMoviePaths = unique([
+      toNormalizedPath(job?.output_path),
+      toNormalizedPath(resolvedPaths?.effectiveOutputPath),
+      ...artifactMoviePaths
+    ]);
+
+    const rawRoots = sanitizeRoots([
+      ...getConfiguredMediaPathList(settings || {}, 'raw_dir'),
+      toNormalizedPath(resolvedPaths?.rawDir),
+      ...explicitRawPaths.map((candidatePath) => toNormalizedPath(path.dirname(candidatePath)))
+    ]);
+    const movieRoots = sanitizeRoots([
+      ...getConfiguredMediaPathList(settings || {}, 'movie_dir'),
+      toNormalizedPath(resolvedPaths?.movieDir),
+      ...explicitMoviePaths.map((candidatePath) => toNormalizedPath(path.dirname(candidatePath)))
+    ]);
+
+    const rawCandidates = [];
+    const movieCandidates = [];
+    const addCandidate = (bucket, target, candidatePath, source, allowedRoots = []) => {
+      const normalizedPath = toNormalizedPath(candidatePath);
+      if (!normalizedPath) {
+        return;
+      }
+      if (isFilesystemRootPath(normalizedPath)) {
+        return;
+      }
+      const roots = Array.isArray(allowedRoots) ? allowedRoots.filter(Boolean) : [];
+      if (roots.length > 0 && !roots.some((root) => isPathInside(root, normalizedPath))) {
+        return;
+      }
+      bucket.push({
+        target,
+        path: normalizedPath,
+        source,
+        jobId: normalizedJobId
+      });
+    };
+
+    const artifactRawPathSet = new Set(artifactRawPaths);
+    for (const rawPath of explicitRawPaths) {
+      addCandidate(
+        rawCandidates,
+        'raw',
+        rawPath,
+        artifactRawPathSet.has(rawPath) ? 'lineage_raw_path' : 'raw_path',
+        rawRoots
+      );
+    }
+
+    const rawFolderNames = new Set();
+    for (const rawPath of explicitRawPaths) {
+      const folderName = String(path.basename(rawPath || '') || '').trim();
+      if (!folderName || folderName === '.' || folderName === path.sep) {
+        continue;
+      }
+      rawFolderNames.add(folderName);
+      const stripped = stripRawFolderStatePrefix(folderName);
+      if (stripped) {
+        rawFolderNames.add(stripped);
+        rawFolderNames.add(applyRawFolderPrefix(stripped, RAW_INCOMPLETE_PREFIX));
+        rawFolderNames.add(applyRawFolderPrefix(stripped, RAW_RIP_COMPLETE_PREFIX));
+      }
+    }
+    for (const rootPath of rawRoots) {
+      for (const folderName of rawFolderNames) {
+        addCandidate(rawCandidates, 'raw', path.join(rootPath, folderName), 'raw_variant', rawRoots);
+      }
+    }
+
+    if (normalizedJobId) {
+      for (const rootPath of rawRoots) {
+        try {
+          if (!fs.existsSync(rootPath) || !fs.lstatSync(rootPath).isDirectory()) {
+            continue;
+          }
+          const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry?.isDirectory?.()) {
+              continue;
+            }
+            const metadata = parseRawFolderMetadata(entry.name);
+            if (normalizeJobIdValue(metadata?.folderJobId) === normalizedJobId) {
+              addCandidate(
+                rawCandidates,
+                'raw',
+                path.join(rootPath, entry.name),
+                'raw_jobid_scan',
+                rawRoots
+              );
+            }
+          }
+        } catch (_error) {
+          // ignore fs errors while collecting optional candidates
+        }
+      }
+    }
+
+    const artifactMoviePathSet = new Set(artifactMoviePaths);
+    for (const outputPath of explicitMoviePaths) {
+      addCandidate(
+        movieCandidates,
+        'movie',
+        outputPath,
+        artifactMoviePathSet.has(outputPath) ? 'lineage_output_path' : 'output_path',
+        movieRoots
+      );
+      const parentDir = toNormalizedPath(path.dirname(outputPath));
+      if (parentDir && !movieRoots.includes(parentDir)) {
+        addCandidate(
+          movieCandidates,
+          'movie',
+          parentDir,
+          artifactMoviePathSet.has(outputPath) ? 'lineage_output_parent' : 'output_parent',
+          movieRoots
+        );
+      }
+    }
+
+    if (normalizedJobId) {
+      const incompleteName = `Incomplete_job-${normalizedJobId}`;
+      for (const rootPath of movieRoots) {
+        addCandidate(movieCandidates, 'movie', path.join(rootPath, incompleteName), 'movie_incomplete_folder', movieRoots);
+        try {
+          if (!fs.existsSync(rootPath) || !fs.lstatSync(rootPath).isDirectory()) {
+            continue;
+          }
+          const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry?.isDirectory?.()) {
+              continue;
+            }
+            const match = String(entry.name || '').match(/^incomplete_job-(\d+)\s*$/i);
+            if (normalizeJobIdValue(match?.[1]) !== normalizedJobId) {
+              continue;
+            }
+            addCandidate(
+              movieCandidates,
+              'movie',
+              path.join(rootPath, entry.name),
+              'movie_incomplete_scan',
+              movieRoots
+            );
+          }
+        } catch (_error) {
+          // ignore fs errors while collecting optional candidates
+        }
+      }
+    }
+
+    return {
+      rawCandidates,
+      movieCandidates,
+      rawRoots,
+      movieRoots
+    };
+  }
+
+  _buildDeletePreviewFromJobs(jobs = [], settings = null, lineageArtifactsByJobId = null) {
+    const rows = Array.isArray(jobs) ? jobs : [];
+    const artifactsMap = lineageArtifactsByJobId instanceof Map ? lineageArtifactsByJobId : new Map();
+    const candidateMap = new Map();
+    const protectedRoots = {
+      raw: new Set(),
+      movie: new Set()
+    };
+    const upsertCandidate = (candidate) => {
+      const target = String(candidate?.target || '').trim().toLowerCase();
+      const candidatePath = String(candidate?.path || '').trim();
+      if (!target || !candidatePath) {
+        return;
+      }
+      const key = `${target}:${candidatePath}`;
+      if (!candidateMap.has(key)) {
+        candidateMap.set(key, {
+          target,
+          path: candidatePath,
+          jobIds: new Set(),
+          sources: new Set()
+        });
+      }
+      const row = candidateMap.get(key);
+      const candidateJobId = normalizeJobIdValue(candidate?.jobId);
+      if (candidateJobId) {
+        row.jobIds.add(candidateJobId);
+      }
+      const source = String(candidate?.source || '').trim();
+      if (source) {
+        row.sources.add(source);
+      }
+    };
+
+    for (const job of rows) {
+      const lineageArtifacts = artifactsMap.get(normalizeJobIdValue(job?.id)) || [];
+      const collected = this._collectDeleteCandidatesForJob(job, settings, { lineageArtifacts });
+      for (const rootPath of collected.rawRoots || []) {
+        protectedRoots.raw.add(rootPath);
+      }
+      for (const rootPath of collected.movieRoots || []) {
+        protectedRoots.movie.add(rootPath);
+      }
+      for (const candidate of collected.rawCandidates || []) {
+        upsertCandidate(candidate);
+      }
+      for (const candidate of collected.movieCandidates || []) {
+        upsertCandidate(candidate);
+      }
+    }
+
+    const buildList = (target) => Array.from(candidateMap.values())
+      .filter((row) => row.target === target)
+      .map((row) => {
+        const inspection = inspectDeletionPath(row.path);
+        return {
+          target,
+          path: row.path,
+          exists: Boolean(inspection.exists),
+          isDirectory: Boolean(inspection.isDirectory),
+          isFile: Boolean(inspection.isFile),
+          jobIds: Array.from(row.jobIds).sort((left, right) => left - right),
+          sources: Array.from(row.sources).sort((left, right) => left.localeCompare(right))
+        };
+      })
+      .sort((left, right) => String(left.path || '').localeCompare(String(right.path || ''), 'de'));
+
+    return {
+      pathCandidates: {
+        raw: buildList('raw'),
+        movie: buildList('movie')
+      },
+      protectedRoots: {
+        raw: Array.from(protectedRoots.raw).sort((left, right) => left.localeCompare(right)),
+        movie: Array.from(protectedRoots.movie).sort((left, right) => left.localeCompare(right))
+      }
+    };
+  }
+
+  async getJobDeletePreview(jobId, options = {}) {
+    const includeRelated = options?.includeRelated !== false;
+    const normalizedJobId = normalizeJobIdValue(jobId);
+    if (!normalizedJobId) {
+      const error = new Error('Ungültige Job-ID.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const jobs = await this._resolveRelatedJobsForDeletion(normalizedJobId, { includeRelated });
+    const settings = await settingsService.getSettingsMap();
+    const lineageArtifactsByJobId = await this.listJobLineageArtifactsByJobIds(
+      jobs.map((job) => normalizeJobIdValue(job?.id)).filter(Boolean)
+    );
+    const preview = this._buildDeletePreviewFromJobs(jobs, settings, lineageArtifactsByJobId);
+    const relatedJobs = jobs.map((job) => ({
+      id: Number(job.id),
+      parentJobId: normalizeJobIdValue(job.parent_job_id),
+      title: buildJobDisplayTitle(job),
+      status: String(job.status || '').trim() || null,
+      isPrimary: Number(job.id) === normalizedJobId,
+      createdAt: String(job.created_at || '').trim() || null
+    }));
+    const existingRawCandidates = preview.pathCandidates.raw.filter((row) => row.exists).length;
+    const existingMovieCandidates = preview.pathCandidates.movie.filter((row) => row.exists).length;
+
+    return {
+      jobId: normalizedJobId,
+      includeRelated,
+      relatedJobs,
+      pathCandidates: preview.pathCandidates,
+      protectedRoots: preview.protectedRoots,
+      counts: {
+        relatedJobs: relatedJobs.length,
+        rawCandidates: preview.pathCandidates.raw.length,
+        movieCandidates: preview.pathCandidates.movie.length,
+        existingRawCandidates,
+        existingMovieCandidates
+      }
+    };
+  }
+
+  _deletePathsFromPreview(preview, target = 'both') {
+    const normalizedTarget = String(target || 'both').trim().toLowerCase();
+    const includesRaw = normalizedTarget === 'raw' || normalizedTarget === 'both';
+    const includesMovie = normalizedTarget === 'movie' || normalizedTarget === 'both';
+
+    const summary = {
+      target: normalizedTarget,
+      raw: { attempted: includesRaw, deleted: false, filesDeleted: 0, dirsRemoved: 0, pathsDeleted: 0, reason: null },
+      movie: { attempted: includesMovie, deleted: false, filesDeleted: 0, dirsRemoved: 0, pathsDeleted: 0, reason: null },
+      deletedPaths: []
+    };
+
+    const applyTarget = (targetKey) => {
+      const candidates = (Array.isArray(preview?.pathCandidates?.[targetKey]) ? preview.pathCandidates[targetKey] : [])
+        .filter((item) => Boolean(item?.exists) && (Boolean(item?.isDirectory) || Boolean(item?.isFile)));
+      if (candidates.length === 0) {
+        summary[targetKey].reason = 'Keine passenden Dateien/Ordner gefunden.';
+        return;
+      }
+
+      const protectedRoots = new Set(
+        (Array.isArray(preview?.protectedRoots?.[targetKey]) ? preview.protectedRoots[targetKey] : [])
+          .map((rootPath) => String(rootPath || '').trim())
+          .filter(Boolean)
+          .map((rootPath) => normalizeComparablePath(rootPath))
+      );
+
+      const orderedCandidates = [...candidates].sort(
+        (left, right) => String(right?.path || '').length - String(left?.path || '').length
+      );
+      for (const candidate of orderedCandidates) {
+        const candidatePath = String(candidate?.path || '').trim();
+        if (!candidatePath) {
+          continue;
+        }
+        const inspection = inspectDeletionPath(candidatePath);
+        if (!inspection.exists) {
+          continue;
+        }
+
+        if (inspection.isDirectory) {
+          const keepRoot = protectedRoots.has(inspection.path);
+          const result = deleteFilesRecursively(inspection.path, keepRoot);
+          const filesDeleted = Number(result?.filesDeleted || 0);
+          const dirsRemoved = Number(result?.dirsRemoved || 0);
+          const directoryRemoved = !keepRoot && !fs.existsSync(inspection.path);
+          const changed = filesDeleted > 0 || dirsRemoved > 0 || directoryRemoved;
+          summary[targetKey].filesDeleted += filesDeleted;
+          summary[targetKey].dirsRemoved += dirsRemoved;
+          if (changed) {
+            summary[targetKey].pathsDeleted += 1;
+            summary.deletedPaths.push({
+              target: targetKey,
+              path: inspection.path,
+              type: 'directory',
+              keepRoot,
+              jobIds: Array.isArray(candidate?.jobIds) ? candidate.jobIds : []
+            });
+          }
+          continue;
+        }
+
+        fs.unlinkSync(inspection.path);
+        summary[targetKey].filesDeleted += 1;
+        summary[targetKey].pathsDeleted += 1;
+        summary.deletedPaths.push({
+          target: targetKey,
+          path: inspection.path,
+          type: 'file',
+          keepRoot: false,
+          jobIds: Array.isArray(candidate?.jobIds) ? candidate.jobIds : []
+        });
+      }
+
+      summary[targetKey].deleted = summary[targetKey].pathsDeleted > 0
+        || summary[targetKey].filesDeleted > 0
+        || summary[targetKey].dirsRemoved > 0;
+      if (!summary[targetKey].deleted) {
+        summary[targetKey].reason = 'Keine vorhandenen Dateien/Ordner gelöscht.';
+      }
+    };
+
+    if (includesRaw) {
+      applyTarget('raw');
+    }
+    if (includesMovie) {
+      applyTarget('movie');
+    }
+
+    return summary;
+  }
+
+  _deleteProcessLogFile(jobId) {
+    const processLogPath = toProcessLogPath(jobId);
+    if (!processLogPath || !fs.existsSync(processLogPath)) {
+      return;
+    }
+    try {
+      fs.unlinkSync(processLogPath);
+    } catch (error) {
+      logger.warn('job:process-log:delete-failed', {
+        jobId,
+        path: processLogPath,
+        error: error?.message || String(error)
+      });
+    }
   }
 
   async deleteJobFiles(jobId, target = 'both') {
@@ -1346,7 +2190,10 @@ class HistoryService {
       } else if (!fs.existsSync(effectiveRawPath)) {
         summary.raw.reason = 'RAW-Pfad existiert nicht.';
       } else {
-        const result = deleteFilesRecursively(effectiveRawPath, true);
+        const rawPath = normalizeComparablePath(effectiveRawPath);
+        const rawRoot = normalizeComparablePath(effectiveRawDir);
+        const keepRoot = rawPath === rawRoot;
+        const result = deleteFilesRecursively(effectiveRawPath, keepRoot);
         summary.raw.deleted = true;
         summary.raw.filesDeleted = result.filesDeleted;
         summary.raw.dirsRemoved = result.dirsRemoved;
@@ -1417,7 +2264,7 @@ class HistoryService {
     };
   }
 
-  async deleteJob(jobId, fileTarget = 'none') {
+  async deleteJob(jobId, fileTarget = 'none', options = {}) {
     const allowedTargets = new Set(['none', 'raw', 'movie', 'both']);
     if (!allowedTargets.has(fileTarget)) {
       const error = new Error(`Ungültiges target '${fileTarget}'. Erlaubt: none, raw, movie, both.`);
@@ -1425,36 +2272,131 @@ class HistoryService {
       throw error;
     }
 
-    const existing = await this.getJobById(jobId);
-    if (!existing) {
-      const error = new Error('Job nicht gefunden.');
+    const includeRelated = Boolean(options?.includeRelated);
+    if (!includeRelated) {
+      const existing = await this.getJobById(jobId);
+      if (!existing) {
+        const error = new Error('Job nicht gefunden.');
+        error.statusCode = 404;
+        throw error;
+      }
+
+      let fileSummary = null;
+      if (fileTarget !== 'none') {
+        const preview = await this.getJobDeletePreview(jobId, { includeRelated: false });
+        fileSummary = this._deletePathsFromPreview(preview, fileTarget);
+      }
+
+      const db = await getDb();
+      const pipelineRow = await db.get(
+        'SELECT state, active_job_id FROM pipeline_state WHERE id = 1'
+      );
+
+      const isActivePipelineJob = Number(pipelineRow?.active_job_id || 0) === Number(jobId);
+      const runningStates = new Set(['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING']);
+
+      if (isActivePipelineJob && runningStates.has(String(pipelineRow?.state || ''))) {
+        const error = new Error('Aktiver Pipeline-Job kann nicht gelöscht werden. Bitte zuerst abbrechen.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      await db.exec('BEGIN');
+      try {
+        if (isActivePipelineJob) {
+          await db.run(
+            `
+              UPDATE pipeline_state
+              SET
+                state = 'IDLE',
+                active_job_id = NULL,
+                progress = 0,
+                eta = NULL,
+                status_text = 'Bereit',
+                context_json = '{}',
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = 1
+            `
+          );
+        } else {
+          await db.run(
+            `
+              UPDATE pipeline_state
+              SET
+                active_job_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = 1 AND active_job_id = ?
+            `,
+            [jobId]
+          );
+        }
+
+        await db.run('DELETE FROM jobs WHERE id = ?', [jobId]);
+        await db.exec('COMMIT');
+      } catch (error) {
+        await db.exec('ROLLBACK');
+        throw error;
+      }
+
+      await this.closeProcessLog(jobId);
+      this._deleteProcessLogFile(jobId);
+      thumbnailService.deleteThumbnail(jobId);
+
+      logger.warn('job:deleted', {
+        jobId,
+        fileTarget,
+        includeRelated: false,
+        pipelineStateReset: isActivePipelineJob,
+        filesDeleted: fileSummary
+          ? {
+            raw: fileSummary.raw?.filesDeleted ?? 0,
+            movie: fileSummary.movie?.filesDeleted ?? 0
+          }
+          : { raw: 0, movie: 0 }
+      });
+
+      return {
+        deleted: true,
+        jobId,
+        fileTarget,
+        includeRelated: false,
+        deletedJobIds: [Number(jobId)],
+        fileSummary
+      };
+    }
+
+    const normalizedJobId = normalizeJobIdValue(jobId);
+    const preview = await this.getJobDeletePreview(normalizedJobId, { includeRelated: true });
+    const deleteJobIds = Array.isArray(preview?.relatedJobs)
+      ? preview.relatedJobs
+        .map((row) => normalizeJobIdValue(row?.id))
+        .filter(Boolean)
+      : [];
+    if (deleteJobIds.length === 0) {
+      const error = new Error('Keine löschbaren Historien-Einträge gefunden.');
       error.statusCode = 404;
       throw error;
     }
 
-    let fileSummary = null;
-    if (fileTarget !== 'none') {
-      const fileResult = await this.deleteJobFiles(jobId, fileTarget);
-      fileSummary = fileResult.summary;
-    }
-
     const db = await getDb();
-    const pipelineRow = await db.get(
-      'SELECT state, active_job_id FROM pipeline_state WHERE id = 1'
-    );
-
-    const isActivePipelineJob = Number(pipelineRow?.active_job_id || 0) === Number(jobId);
-    const runningStates = new Set(['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING']);
-
-    if (isActivePipelineJob && runningStates.has(String(pipelineRow?.state || ''))) {
+    const pipelineRow = await db.get('SELECT state, active_job_id FROM pipeline_state WHERE id = 1');
+    const activePipelineJobId = normalizeJobIdValue(pipelineRow?.active_job_id);
+    const activeJobIncluded = Boolean(activePipelineJobId && deleteJobIds.includes(activePipelineJobId));
+    const runningStates = new Set(['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING']);
+    if (activeJobIncluded && runningStates.has(String(pipelineRow?.state || ''))) {
       const error = new Error('Aktiver Pipeline-Job kann nicht gelöscht werden. Bitte zuerst abbrechen.');
       error.statusCode = 409;
       throw error;
     }
 
+    let fileSummary = null;
+    if (fileTarget !== 'none') {
+      fileSummary = this._deletePathsFromPreview(preview, fileTarget);
+    }
+
     await db.exec('BEGIN');
     try {
-      if (isActivePipelineJob) {
+      if (activeJobIncluded) {
         await db.run(
           `
             UPDATE pipeline_state
@@ -1470,43 +2412,40 @@ class HistoryService {
           `
         );
       } else {
+        const placeholders = deleteJobIds.map(() => '?').join(', ');
         await db.run(
           `
             UPDATE pipeline_state
             SET
               active_job_id = NULL,
               updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1 AND active_job_id = ?
+            WHERE id = 1 AND active_job_id IN (${placeholders})
           `,
-          [jobId]
+          deleteJobIds
         );
       }
 
-      await db.run('DELETE FROM jobs WHERE id = ?', [jobId]);
+      const deletePlaceholders = deleteJobIds.map(() => '?').join(', ');
+      await db.run(`DELETE FROM jobs WHERE id IN (${deletePlaceholders})`, deleteJobIds);
       await db.exec('COMMIT');
     } catch (error) {
       await db.exec('ROLLBACK');
       throw error;
     }
 
-    await this.closeProcessLog(jobId);
-    const processLogPath = toProcessLogPath(jobId);
-    if (processLogPath && fs.existsSync(processLogPath)) {
-      try {
-        fs.unlinkSync(processLogPath);
-      } catch (error) {
-        logger.warn('job:process-log:delete-failed', {
-          jobId,
-          path: processLogPath,
-          error: error?.message || String(error)
-        });
-      }
+    for (const deletedJobId of deleteJobIds) {
+      await this.closeProcessLog(deletedJobId);
+      this._deleteProcessLogFile(deletedJobId);
+      thumbnailService.deleteThumbnail(deletedJobId);
     }
 
     logger.warn('job:deleted', {
-      jobId,
+      jobId: normalizedJobId,
       fileTarget,
-      pipelineStateReset: isActivePipelineJob,
+      includeRelated: true,
+      deletedJobIds: deleteJobIds,
+      deletedJobCount: deleteJobIds.length,
+      pipelineStateReset: activeJobIncluded,
       filesDeleted: fileSummary
         ? {
           raw: fileSummary.raw?.filesDeleted ?? 0,
@@ -1517,8 +2456,11 @@ class HistoryService {
 
     return {
       deleted: true,
-      jobId,
+      jobId: normalizedJobId,
       fileTarget,
+      includeRelated: true,
+      deletedJobIds: deleteJobIds,
+      deletedJobs: preview.relatedJobs,
       fileSummary
     };
   }

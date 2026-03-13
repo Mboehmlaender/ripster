@@ -99,8 +99,28 @@ router.post(
   asyncHandler(async (req, res) => {
     const jobId = Number(req.params.jobId);
     const ripConfig = req.body || {};
-    logger.info('post:cd:start', { reqId: req.reqId, jobId, format: ripConfig.format });
-    const result = await pipelineService.startCdRip(jobId, ripConfig);
+    logger.info('post:cd:start', {
+      reqId: req.reqId,
+      jobId,
+      format: ripConfig.format,
+      selectedPreEncodeScriptIdsCount: Array.isArray(ripConfig?.selectedPreEncodeScriptIds)
+        ? ripConfig.selectedPreEncodeScriptIds.length
+        : 0,
+      selectedPostEncodeScriptIdsCount: Array.isArray(ripConfig?.selectedPostEncodeScriptIds)
+        ? ripConfig.selectedPostEncodeScriptIds.length
+        : 0,
+      selectedPreEncodeChainIdsCount: Array.isArray(ripConfig?.selectedPreEncodeChainIds)
+        ? ripConfig.selectedPreEncodeChainIds.length
+        : 0,
+      selectedPostEncodeChainIdsCount: Array.isArray(ripConfig?.selectedPostEncodeChainIds)
+        ? ripConfig.selectedPostEncodeChainIds.length
+        : 0
+    });
+    const result = await pipelineService.enqueueOrStartCdAction(
+      jobId,
+      ripConfig,
+      () => pipelineService.startCdRip(jobId, ripConfig)
+    );
     res.json({ result });
   })
 );

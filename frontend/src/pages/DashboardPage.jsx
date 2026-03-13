@@ -220,7 +220,11 @@ function normalizeQueue(queue) {
   const queuedJobs = Array.isArray(payload.queuedJobs) ? payload.queuedJobs : [];
   return {
     maxParallelJobs: Number(payload.maxParallelJobs || 1),
+    maxParallelCdEncodes: Number(payload.maxParallelCdEncodes || 2),
+    maxTotalEncodes: Number(payload.maxTotalEncodes || 3),
+    cdBypassesQueue: Boolean(payload.cdBypassesQueue),
     runningCount: Number(payload.runningCount || runningJobs.length || 0),
+    runningCdCount: Number(payload.runningCdCount || 0),
     runningJobs,
     queuedJobs,
     queuedCount: Number(payload.queuedCount || queuedJobs.length || 0),
@@ -348,12 +352,13 @@ function getAnalyzeContext(job) {
 }
 
 function resolveMediaType(job) {
+  const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const candidates = [
     job?.mediaType,
     job?.media_type,
     job?.mediaProfile,
     job?.media_profile,
-    job?.encodePlan?.mediaProfile,
+    encodePlan?.mediaProfile,
     job?.makemkvInfo?.analyzeContext?.mediaProfile,
     job?.makemkvInfo?.mediaProfile,
     job?.mediainfoInfo?.mediaProfile
@@ -372,6 +377,25 @@ function resolveMediaType(job) {
     if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
       return 'cd';
     }
+  }
+  const statusCandidates = [
+    job?.status,
+    job?.last_state,
+    job?.makemkvInfo?.lastState
+  ];
+  if (statusCandidates.some((value) => String(value || '').trim().toUpperCase().startsWith('CD_'))) {
+    return 'cd';
+  }
+  const planFormat = String(encodePlan?.format || '').trim().toLowerCase();
+  const hasCdTracksInPlan = Array.isArray(encodePlan?.selectedTracks) && encodePlan.selectedTracks.length > 0;
+  if (hasCdTracksInPlan && ['flac', 'wav', 'mp3', 'opus', 'ogg'].includes(planFormat)) {
+    return 'cd';
+  }
+  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'cd_rip') {
+    return 'cd';
+  }
+  if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
+    return 'cd';
   }
   return 'other';
 }
@@ -425,6 +449,84 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
   const analyzeContext = getAnalyzeContext(job);
+  const normalizePlanIdList = (values) => {
+    const list = Array.isArray(values) ? values : [];
+    const seen = new Set();
+    const output = [];
+    for (const value of list) {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        continue;
+      }
+      const id = Math.trunc(parsed);
+      const key = String(id);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      output.push(id);
+    }
+    return output;
+  };
+  const buildNamedSelection = (ids, entries, fallbackLabel) => {
+    const source = Array.isArray(entries) ? entries : [];
+    const namesById = new Map(
+      source
+        .map((entry) => {
+          const id = Number(entry?.id ?? entry?.scriptId ?? entry?.chainId);
+          const normalized = Number.isFinite(id) && id > 0 ? Math.trunc(id) : null;
+          const name = String(entry?.name || entry?.scriptName || entry?.chainName || '').trim();
+          if (!normalized) {
+            return null;
+          }
+          return [normalized, name || null];
+        })
+        .filter(Boolean)
+    );
+    return ids.map((id) => ({
+      id,
+      name: namesById.get(id) || `${fallbackLabel} #${id}`
+    }));
+  };
+  const planPreScriptIds = normalizePlanIdList([
+    ...(Array.isArray(encodePlan?.preEncodeScriptIds) ? encodePlan.preEncodeScriptIds : []),
+    ...(Array.isArray(encodePlan?.preEncodeScripts) ? encodePlan.preEncodeScripts.map((entry) => entry?.id ?? entry?.scriptId) : [])
+  ]);
+  const planPostScriptIds = normalizePlanIdList([
+    ...(Array.isArray(encodePlan?.postEncodeScriptIds) ? encodePlan.postEncodeScriptIds : []),
+    ...(Array.isArray(encodePlan?.postEncodeScripts) ? encodePlan.postEncodeScripts.map((entry) => entry?.id ?? entry?.scriptId) : [])
+  ]);
+  const planPreChainIds = normalizePlanIdList([
+    ...(Array.isArray(encodePlan?.preEncodeChainIds) ? encodePlan.preEncodeChainIds : []),
+    ...(Array.isArray(encodePlan?.preEncodeChains) ? encodePlan.preEncodeChains.map((entry) => entry?.id ?? entry?.chainId) : [])
+  ]);
+  const planPostChainIds = normalizePlanIdList([
+    ...(Array.isArray(encodePlan?.postEncodeChainIds) ? encodePlan.postEncodeChainIds : []),
+    ...(Array.isArray(encodePlan?.postEncodeChains) ? encodePlan.postEncodeChains.map((entry) => entry?.id ?? entry?.chainId) : [])
+  ]);
+  const cdRipConfig = encodePlan && typeof encodePlan === 'object'
+    ? {
+      format: String(encodePlan?.format || '').trim().toLowerCase() || null,
+      formatOptions: encodePlan?.formatOptions && typeof encodePlan.formatOptions === 'object'
+        ? encodePlan.formatOptions
+        : {},
+      selectedTracks: Array.isArray(encodePlan?.selectedTracks)
+        ? encodePlan.selectedTracks
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .map((value) => Math.trunc(value))
+        : [],
+      preEncodeScriptIds: planPreScriptIds,
+      postEncodeScriptIds: planPostScriptIds,
+      preEncodeChainIds: planPreChainIds,
+      postEncodeChainIds: planPostChainIds,
+      preEncodeScripts: buildNamedSelection(planPreScriptIds, encodePlan?.preEncodeScripts, 'Skript'),
+      postEncodeScripts: buildNamedSelection(planPostScriptIds, encodePlan?.postEncodeScripts, 'Skript'),
+      preEncodeChains: buildNamedSelection(planPreChainIds, encodePlan?.preEncodeChains, 'Kette'),
+      postEncodeChains: buildNamedSelection(planPostChainIds, encodePlan?.postEncodeChains, 'Kette'),
+      outputTemplate: String(encodePlan?.outputTemplate || '').trim() || null
+    }
+    : null;
   const cdTracks = Array.isArray(makemkvInfo?.tracks)
     ? makemkvInfo.tracks
       .map((track) => {
@@ -443,6 +545,23 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const cdSelectedMeta = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
     ? makemkvInfo.selectedMetadata
     : {};
+  const fallbackCdArtist = cdTracks
+    .map((track) => String(track?.artist || '').trim())
+    .find(Boolean) || null;
+  const resolvedCdMbId = String(
+    cdSelectedMeta?.mbId
+    || cdSelectedMeta?.musicBrainzId
+    || cdSelectedMeta?.musicbrainzId
+    || cdSelectedMeta?.mbid
+    || ''
+  ).trim() || null;
+  const resolvedCdCoverUrl = String(
+    cdSelectedMeta?.coverUrl
+    || cdSelectedMeta?.poster
+    || cdSelectedMeta?.posterUrl
+    || job?.poster_url
+    || ''
+  ).trim() || null;
   const cdparanoiaCmd = String(makemkvInfo?.cdparanoiaCmd || 'cdparanoia').trim() || 'cdparanoia';
   const devicePath = String(job?.disc_device || '').trim() || null;
   const firstConfiguredTrack = Array.isArray(encodePlan?.selectedTracks) && encodePlan.selectedTracks.length > 0
@@ -458,12 +577,12 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} ${previewWavPath}`;
   const selectedMetadata = {
     title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
-    artist: cdSelectedMeta?.artist || null,
+    artist: cdSelectedMeta?.artist || fallbackCdArtist || null,
     year: cdSelectedMeta?.year ?? job?.year ?? null,
-    mbId: cdSelectedMeta?.mbId || null,
-    coverUrl: cdSelectedMeta?.coverUrl || null,
+    mbId: resolvedCdMbId,
+    coverUrl: resolvedCdCoverUrl,
     imdbId: job?.imdb_id || null,
-    poster: job?.poster_url || cdSelectedMeta?.coverUrl || null
+    poster: job?.poster_url || resolvedCdCoverUrl || null
   };
   const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
   const isPreRip = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
@@ -508,11 +627,14 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const computedContext = {
     jobId,
     rawPath: job?.raw_path || null,
+    outputPath: job?.output_path || null,
     detectedTitle: job?.detected_title || null,
     mediaProfile: resolveMediaType(job),
+    lastState,
     devicePath,
     cdparanoiaCmd,
     cdparanoiaCommandPreview,
+    cdRipConfig,
     tracks: cdTracks,
     inputPath,
     hasEncodableTitle,
@@ -543,6 +665,7 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
         ...computedContext,
         ...existingContext,
         rawPath: existingContext.rawPath || computedContext.rawPath,
+        outputPath: existingContext.outputPath || computedContext.outputPath,
         tracks: (Array.isArray(existingContext.tracks) && existingContext.tracks.length > 0)
           ? existingContext.tracks
           : computedContext.tracks,
@@ -559,6 +682,20 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const liveJobProgress = currentPipeline?.jobProgress && jobId
     ? (currentPipeline.jobProgress[jobId] || null)
     : null;
+  const liveContext = liveJobProgress?.context && typeof liveJobProgress.context === 'object'
+    ? liveJobProgress.context
+    : null;
+  const mergedContext = liveContext
+    ? {
+      ...computedContext,
+      ...liveContext,
+      tracks: (Array.isArray(liveContext.tracks) && liveContext.tracks.length > 0)
+        ? liveContext.tracks
+        : computedContext.tracks,
+      selectedMetadata: liveContext.selectedMetadata || computedContext.selectedMetadata,
+      cdRipConfig: liveContext.cdRipConfig || computedContext.cdRipConfig
+    }
+    : computedContext;
 
   return {
     state: liveJobProgress?.state || jobStatus,
@@ -566,7 +703,7 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     progress: liveJobProgress != null ? Number(liveJobProgress.progress ?? 0) : 0,
     eta: liveJobProgress?.eta || null,
     statusText: liveJobProgress?.statusText || job?.error_message || null,
-    context: computedContext
+    context: mergedContext
   };
 }
 
@@ -1184,12 +1321,13 @@ export default function DashboardPage({
     try {
       const response = await api.retryJob(jobId);
       const result = getQueueActionResult(response);
+      const retryJobId = normalizeJobId(result?.jobId) || normalizedJobId;
       await refreshPipeline();
       await loadDashboardJobs();
       if (result.queued) {
         showQueuedToast(toastRef, 'Retry', result);
       } else {
-        setExpandedJobId(normalizedJobId);
+        setExpandedJobId(retryJobId);
       }
     } catch (error) {
       showError(error);
@@ -1216,12 +1354,13 @@ export default function DashboardPage({
     try {
       const response = await api.restartEncodeWithLastSettings(jobId);
       const result = getQueueActionResult(response);
+      const replacementJobId = normalizeJobId(result?.jobId) || normalizedJobId;
       await refreshPipeline();
       await loadDashboardJobs();
       if (result.queued) {
         showQueuedToast(toastRef, 'Encode-Neustart', result);
       } else {
-        setExpandedJobId(normalizedJobId);
+        setExpandedJobId(replacementJobId);
       }
     } catch (error) {
       showError(error);
@@ -1238,10 +1377,12 @@ export default function DashboardPage({
 
     setJobBusy(normalizedJobId, true);
     try {
-      await api.restartReviewFromRaw(normalizedJobId);
+      const response = await api.restartReviewFromRaw(normalizedJobId);
+      const result = getQueueActionResult(response);
+      const replacementJobId = normalizeJobId(result?.jobId) || normalizedJobId;
       await refreshPipeline();
       await loadDashboardJobs();
-      setExpandedJobId(normalizedJobId);
+      setExpandedJobId(replacementJobId);
     } catch (error) {
       showError(error);
     } finally {
@@ -1426,15 +1567,28 @@ export default function DashboardPage({
     if (!jobId) {
       return;
     }
-    setJobBusy(jobId, true);
+    const normalizedJobId = normalizeJobId(jobId);
+    if (normalizedJobId) {
+      setJobBusy(normalizedJobId, true);
+    }
     try {
-      await api.startCdRip(jobId, ripConfig);
+      const response = await api.startCdRip(jobId, ripConfig);
+      const result = getQueueActionResult(response);
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Audio CD', result);
+      }
+      const replacementJobId = normalizeJobId(result?.jobId) || normalizedJobId;
       await refreshPipeline();
       await loadDashboardJobs();
+      if (replacementJobId) {
+        setExpandedJobId(replacementJobId);
+      }
     } catch (error) {
       showError(error);
     } finally {
-      setJobBusy(jobId, false);
+      if (normalizedJobId) {
+        setJobBusy(normalizedJobId, false);
+      }
     }
   };
 
@@ -1772,10 +1926,14 @@ export default function DashboardPage({
         )}
       </Card>
 
-      <Card title="Job Queue" subTitle="Starts werden nach Parallel-Limit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">
+      <Card title="Job Queue" subTitle="Starts werden nach Typ- und Gesamtlimit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">
         <div className="pipeline-queue-meta">
-          <Tag value={`Parallel: ${queueState?.maxParallelJobs || 1}`} severity="info" />
-          <Tag value={`Laufend: ${queueState?.runningCount || 0}`} severity={queueRunningJobs.length > 0 ? 'warning' : 'success'} />
+          <Tag value={`Film max.: ${queueState?.maxParallelJobs || 1}`} severity="info" />
+          <Tag value={`CD max.: ${queueState?.maxParallelCdEncodes || 2}`} severity="info" />
+          <Tag value={`Gesamt max.: ${queueState?.maxTotalEncodes || 3}`} severity="info" />
+          {queueState?.cdBypassesQueue && <Tag value="CD bypass" severity="secondary" title="Audio CDs überspringen die Film-Queue-Reihenfolge" />}
+          <Tag value={`Film laufend: ${queueState?.runningCount || 0}`} severity={(queueState?.runningCount || 0) > 0 ? 'warning' : 'success'} />
+          <Tag value={`CD laufend: ${queueState?.runningCdCount || 0}`} severity={(queueState?.runningCdCount || 0) > 0 ? 'warning' : 'success'} />
           <Tag value={`Wartend: ${queueState?.queuedCount || 0}`} severity={queuedJobs.length > 0 ? 'warning' : 'success'} />
         </div>
 
@@ -2110,6 +2268,15 @@ export default function DashboardPage({
               const pipelineForJob = pipelineByJobId.get(jobId) || pipeline;
               const jobTitle = job?.title || job?.detected_title || `Job #${jobId}`;
               const mediaIndicator = mediaIndicatorMeta(job);
+              const mediaProfile = String(pipelineForJob?.context?.mediaProfile || '').trim().toLowerCase();
+              const jobState = String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase();
+              const pipelineStage = String(pipelineForJob?.context?.stage || '').trim().toUpperCase();
+              const pipelineStatusText = String(pipelineForJob?.statusText || '').trim().toUpperCase();
+              const isCdJob = jobState.startsWith('CD_')
+                || pipelineStage.startsWith('CD_')
+                || mediaProfile === 'cd'
+                || mediaIndicator.mediaType === 'cd'
+                || pipelineStatusText.includes('CD_');
               const rawProgress = Number(pipelineForJob?.progress ?? 0);
               const clampedProgress = Number.isFinite(rawProgress)
                 ? Math.max(0, Math.min(100, rawProgress))
@@ -2151,30 +2318,22 @@ export default function DashboardPage({
                       />
                     </div>
                     {(() => {
-                      const jobState = String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase();
-                      const isCdJob = jobState.startsWith('CD_');
                       if (isCdJob) {
                         return (
                           <>
-                            {jobState === 'CD_METADATA_SELECTION' ? (
-                              <Button
-                                label="CD-Metadaten auswählen"
-                                icon="pi pi-list"
-                                onClick={() => {
+                            {isCdJob ? (
+                              <CdRipConfigPanel
+                                pipeline={pipelineForJob}
+                                onStart={(ripConfig) => handleCdRipStart(jobId, ripConfig)}
+                                onCancel={() => handleCancel(jobId, jobState)}
+                                onRetry={() => handleRetry(jobId)}
+                                onOpenMetadata={() => {
                                   const ctx = pipelineForJob?.context && typeof pipelineForJob.context === 'object'
                                     ? pipelineForJob.context
                                     : pipeline?.context || {};
                                   setCdMetadataDialogContext({ ...ctx, jobId });
                                   setCdMetadataDialogVisible(true);
                                 }}
-                                disabled={busyJobIds.has(jobId)}
-                              />
-                            ) : null}
-                            {(jobState === 'CD_READY_TO_RIP' || jobState === 'CD_RIPPING' || jobState === 'CD_ENCODING') ? (
-                              <CdRipConfigPanel
-                                pipeline={pipelineForJob}
-                                onStart={(ripConfig) => handleCdRipStart(jobId, ripConfig)}
-                                onCancel={() => handleCancel(jobId, jobState)}
                                 busy={busyJobIds.has(jobId)}
                               />
                             ) : null}
@@ -2183,7 +2342,7 @@ export default function DashboardPage({
                       }
                       return null;
                     })()}
-                    {!String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase().startsWith('CD_') ? (
+                    {!isCdJob ? (
                     <PipelineStatusCard
                       pipeline={pipelineForJob}
                       onAnalyze={handleAnalyze}

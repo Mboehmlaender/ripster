@@ -34,17 +34,33 @@ function App() {
       if (message.type === 'PIPELINE_PROGRESS') {
         const payload = message.payload;
         const progressJobId = payload?.activeJobId;
+        const contextPatch = payload?.contextPatch && typeof payload.contextPatch === 'object'
+          ? payload.contextPatch
+          : null;
         setPipeline((prev) => {
           const next = { ...prev };
           // Update per-job progress map so concurrent jobs don't overwrite each other.
           if (progressJobId != null) {
+            const previousJobProgress = prev?.jobProgress?.[progressJobId] || {};
+            const mergedJobContext = contextPatch
+              ? {
+                ...(previousJobProgress?.context && typeof previousJobProgress.context === 'object'
+                  ? previousJobProgress.context
+                  : {}),
+                ...contextPatch
+              }
+              : (previousJobProgress?.context && typeof previousJobProgress.context === 'object'
+                  ? previousJobProgress.context
+                  : undefined);
             next.jobProgress = {
               ...(prev?.jobProgress || {}),
               [progressJobId]: {
+                ...previousJobProgress,
                 state: payload.state,
                 progress: payload.progress,
                 eta: payload.eta,
-                statusText: payload.statusText
+                statusText: payload.statusText,
+                ...(mergedJobContext !== undefined ? { context: mergedJobContext } : {})
               }
             };
           }
@@ -54,6 +70,12 @@ function App() {
             next.progress = payload.progress ?? prev?.progress;
             next.eta = payload.eta ?? prev?.eta;
             next.statusText = payload.statusText ?? prev?.statusText;
+            if (contextPatch) {
+              next.context = {
+                ...(prev?.context && typeof prev.context === 'object' ? prev.context : {}),
+                ...contextPatch
+              };
+            }
           }
           return next;
         });

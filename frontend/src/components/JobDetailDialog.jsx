@@ -6,6 +6,14 @@ import discIndicatorIcon from '../assets/media-disc.svg';
 import otherIndicatorIcon from '../assets/media-other.svg';
 import { getStatusLabel } from '../utils/statusPresentation';
 
+const CD_FORMAT_LABELS = {
+  flac: 'FLAC',
+  wav: 'WAV',
+  mp3: 'MP3',
+  opus: 'Opus',
+  ogg: 'Ogg Vorbis'
+};
+
 function JsonView({ title, value }) {
   return (
     <div>
@@ -19,7 +27,6 @@ function ScriptResultRow({ result }) {
   const status = String(result?.status || '').toUpperCase();
   const isSuccess = status === 'SUCCESS';
   const isError = status === 'ERROR';
-  const isSkipped = status.startsWith('SKIPPED');
   const icon = isSuccess ? 'pi-check-circle' : isError ? 'pi-times-circle' : 'pi-minus-circle';
   const tone = isSuccess ? 'success' : isError ? 'danger' : 'warning';
   return (
@@ -72,6 +79,29 @@ function normalizeIdList(values) {
     output.push(id);
   }
   return output;
+}
+
+function normalizePositiveInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function formatDurationSeconds(totalSeconds) {
+  const parsed = Number(totalSeconds);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  const rounded = Math.max(0, Math.trunc(parsed));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const seconds = rounded % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 function shellQuote(value) {
@@ -176,12 +206,13 @@ function buildConfiguredScriptAndChainSelection(job) {
 }
 
 function resolveMediaType(job) {
+  const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const candidates = [
     job?.mediaType,
     job?.media_type,
     job?.mediaProfile,
     job?.media_profile,
-    job?.encodePlan?.mediaProfile,
+    encodePlan?.mediaProfile,
     job?.makemkvInfo?.analyzeContext?.mediaProfile,
     job?.makemkvInfo?.mediaProfile,
     job?.mediainfoInfo?.mediaProfile
@@ -197,8 +228,84 @@ function resolveMediaType(job) {
     if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
       return 'dvd';
     }
+    if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
+      return 'cd';
+    }
+  }
+  const statusCandidates = [job?.status, job?.last_state, job?.makemkvInfo?.lastState];
+  if (statusCandidates.some((v) => String(v || '').trim().toUpperCase().startsWith('CD_'))) {
+    return 'cd';
+  }
+  const planFormat = String(encodePlan?.format || '').trim().toLowerCase();
+  const hasCdTracksInPlan = Array.isArray(encodePlan?.selectedTracks) && encodePlan.selectedTracks.length > 0;
+  if (hasCdTracksInPlan && ['flac', 'wav', 'mp3', 'opus', 'ogg'].includes(planFormat)) {
+    return 'cd';
+  }
+  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'cd_rip') {
+    return 'cd';
+  }
+  if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
+    return 'cd';
   }
   return 'other';
+}
+
+function resolveCdDetails(job) {
+  const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : {};
+  const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
+  const selectedMetadata = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : {};
+  const tracksSource = Array.isArray(makemkvInfo?.tracks) && makemkvInfo.tracks.length > 0
+    ? makemkvInfo.tracks
+    : (Array.isArray(encodePlan?.tracks) ? encodePlan.tracks : []);
+  const tracks = tracksSource
+    .map((track) => {
+      const position = normalizePositiveInteger(track?.position);
+      if (!position) {
+        return null;
+      }
+      return { ...track, position, selected: track?.selected !== false };
+    })
+    .filter(Boolean);
+  const selectedTracksFromPlan = Array.isArray(encodePlan?.selectedTracks)
+    ? encodePlan.selectedTracks.map((v) => normalizePositiveInteger(v)).filter(Boolean)
+    : [];
+  const selectedTrackPositions = selectedTracksFromPlan.length > 0
+    ? selectedTracksFromPlan
+    : tracks.filter((t) => t.selected !== false).map((t) => t.position);
+  const fallbackArtist = tracks.map((t) => String(t?.artist || '').trim()).find(Boolean) || null;
+  const fallbackAlbum = tracks.map((t) => String(t?.album || '').trim()).find(Boolean) || null;
+  const totalDurationSec = tracks.reduce((sum, t) => {
+    const ms = Number(t?.durationMs);
+    const sec = Number(t?.durationSec);
+    if (Number.isFinite(ms) && ms > 0) {
+      return sum + ms / 1000;
+    }
+    if (Number.isFinite(sec) && sec > 0) {
+      return sum + sec;
+    }
+    return sum;
+  }, 0);
+  const format = String(encodePlan?.format || '').trim().toLowerCase();
+  const mbId = String(
+    selectedMetadata?.mbId
+    || selectedMetadata?.musicBrainzId
+    || selectedMetadata?.musicbrainzId
+    || selectedMetadata?.mbid
+    || ''
+  ).trim() || null;
+
+  return {
+    artist: String(selectedMetadata?.artist || '').trim() || fallbackArtist || null,
+    album: String(selectedMetadata?.album || '').trim() || fallbackAlbum || null,
+    trackCount: tracks.length,
+    selectedTrackCount: selectedTrackPositions.length,
+    format,
+    formatLabel: format ? (CD_FORMAT_LABELS[format] || format.toUpperCase()) : null,
+    totalDurationLabel: formatDurationSeconds(totalDurationSec),
+    mbId
+  };
 }
 
 function statusBadgeMeta(status, queued = false) {
@@ -276,6 +383,7 @@ export default function JobDetailDialog({
   onRestartEncode,
   onRestartReview,
   onReencode,
+  onRetry,
   onDeleteFiles,
   onDeleteEntry,
   onRemoveFromQueue,
@@ -315,15 +423,22 @@ export default function JobDetailDialog({
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
   const logTruncated = Boolean(logMeta?.truncated);
   const mediaType = resolveMediaType(job);
+  const isCd = mediaType === 'cd';
+  const cdDetails = isCd ? resolveCdDetails(job) : null;
+  const canRetry = isCd && !running && typeof onRetry === 'function';
   const mediaTypeLabel = mediaType === 'bluray'
     ? 'Blu-ray'
-    : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+    : mediaType === 'dvd'
+      ? 'DVD'
+      : isCd
+        ? 'Audio CD'
+        : 'Sonstiges Medium';
   const mediaTypeIcon = mediaType === 'bluray'
     ? blurayIndicatorIcon
-    : (mediaType === 'dvd' ? discIndicatorIcon : otherIndicatorIcon);
-  const mediaTypeAlt = mediaType === 'bluray'
-    ? 'Blu-ray'
-    : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+    : mediaType === 'dvd'
+      ? discIndicatorIcon
+      : otherIndicatorIcon;
+  const mediaTypeAlt = mediaTypeLabel;
   const statusMeta = statusBadgeMeta(job?.status, queueLocked);
   const omdbInfo = job?.omdbInfo && typeof job.omdbInfo === 'object' ? job.omdbInfo : {};
   const configuredSelection = buildConfiguredScriptAndChainSelection(job);
@@ -364,68 +479,119 @@ export default function JobDetailDialog({
             {job.poster_url && job.poster_url !== 'N/A' ? (
               <img src={job.poster_url} alt={job.title || 'Poster'} className="poster-large" />
             ) : (
-              <div className="poster-large poster-fallback">Kein Poster</div>
+              <div className="poster-large poster-fallback">{isCd ? 'Kein Cover' : 'Kein Poster'}</div>
             )}
 
             <div className="job-film-info-grid">
-              <section className="job-meta-block job-meta-block-film">
-                <h4>Film-Infos</h4>
-                <div className="job-meta-list">
-                  <div className="job-meta-item">
-                    <strong>Titel:</strong>
-                    <span>{job.title || job.detected_title || '-'}</span>
+              {isCd ? (
+                <section className="job-meta-block job-meta-block-film">
+                  <h4>Musik-Infos</h4>
+                  <div className="job-meta-list">
+                    <div className="job-meta-item">
+                      <strong>Album:</strong>
+                      <span>{job.title || job.detected_title || cdDetails?.album || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Interpret:</strong>
+                      <span>{cdDetails?.artist || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Jahr:</strong>
+                      <span>{job.year || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Tracks:</strong>
+                      <span>
+                        {cdDetails?.trackCount > 0
+                          ? (cdDetails.selectedTrackCount > 0 && cdDetails.selectedTrackCount !== cdDetails.trackCount
+                            ? `${cdDetails.selectedTrackCount}/${cdDetails.trackCount}`
+                            : String(cdDetails.trackCount))
+                          : '-'}
+                      </span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Format:</strong>
+                      <span>{cdDetails?.formatLabel || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Gesamtdauer:</strong>
+                      <span>{cdDetails?.totalDurationLabel || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>MusicBrainz ID:</strong>
+                      <span>{cdDetails?.mbId || '-'}</span>
+                    </div>
+                    <div className="job-meta-item">
+                      <strong>Medium:</strong>
+                      <span className="job-step-cell">
+                        <img src={mediaTypeIcon} alt={mediaTypeAlt} title={mediaTypeLabel} className="media-indicator-icon" />
+                        <span>{mediaTypeLabel}</span>
+                      </span>
+                    </div>
                   </div>
-                  <div className="job-meta-item">
-                    <strong>Jahr:</strong>
-                    <span>{job.year || '-'}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>IMDb:</strong>
-                    <span>{job.imdb_id || '-'}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>OMDb Match:</strong>
-                    <BoolState value={job.selected_from_omdb} />
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>Medium:</strong>
-                    <span className="job-step-cell">
-                      <img src={mediaTypeIcon} alt={mediaTypeAlt} title={mediaTypeLabel} className="media-indicator-icon" />
-                      <span>{mediaTypeLabel}</span>
-                    </span>
-                  </div>
-                </div>
-              </section>
+                </section>
+              ) : (
+                <>
+                  <section className="job-meta-block job-meta-block-film">
+                    <h4>Film-Infos</h4>
+                    <div className="job-meta-list">
+                      <div className="job-meta-item">
+                        <strong>Titel:</strong>
+                        <span>{job.title || job.detected_title || '-'}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Jahr:</strong>
+                        <span>{job.year || '-'}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>IMDb:</strong>
+                        <span>{job.imdb_id || '-'}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>OMDb Match:</strong>
+                        <BoolState value={job.selected_from_omdb} />
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Medium:</strong>
+                        <span className="job-step-cell">
+                          <img src={mediaTypeIcon} alt={mediaTypeAlt} title={mediaTypeLabel} className="media-indicator-icon" />
+                          <span>{mediaTypeLabel}</span>
+                        </span>
+                      </div>
+                    </div>
+                  </section>
 
-              <section className="job-meta-block job-meta-block-film">
-                <h4>OMDb Details</h4>
-                <div className="job-meta-list">
-                  <div className="job-meta-item">
-                    <strong>Regisseur:</strong>
-                    <span>{omdbField(omdbInfo?.Director)}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>Schauspieler:</strong>
-                    <span>{omdbField(omdbInfo?.Actors)}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>Laufzeit:</strong>
-                    <span>{omdbField(omdbInfo?.Runtime)}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>Genre:</strong>
-                    <span>{omdbField(omdbInfo?.Genre)}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>Rotten Tomatoes:</strong>
-                    <span>{omdbRottenTomatoesScore(omdbInfo)}</span>
-                  </div>
-                  <div className="job-meta-item">
-                    <strong>imdbRating:</strong>
-                    <span>{omdbField(omdbInfo?.imdbRating)}</span>
-                  </div>
-                </div>
-              </section>
+                  <section className="job-meta-block job-meta-block-film">
+                    <h4>OMDb Details</h4>
+                    <div className="job-meta-list">
+                      <div className="job-meta-item">
+                        <strong>Regisseur:</strong>
+                        <span>{omdbField(omdbInfo?.Director)}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Schauspieler:</strong>
+                        <span>{omdbField(omdbInfo?.Actors)}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Laufzeit:</strong>
+                        <span>{omdbField(omdbInfo?.Runtime)}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Genre:</strong>
+                        <span>{omdbField(omdbInfo?.Genre)}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>Rotten Tomatoes:</strong>
+                        <span>{omdbRottenTomatoesScore(omdbInfo)}</span>
+                      </div>
+                      <div className="job-meta-item">
+                        <strong>imdbRating:</strong>
+                        <span>{omdbField(omdbInfo?.imdbRating)}</span>
+                      </div>
+                    </div>
+                  </section>
+                </>
+              )}
             </div>
           </div>
 
@@ -449,33 +615,43 @@ export default function JobDetailDialog({
                 <strong>Ende:</strong> {job.end_time || '-'}
               </div>
               <div>
-                <strong>RAW Pfad:</strong> {job.raw_path || '-'}
+                <strong>{isCd ? 'WAV Pfad:' : 'RAW Pfad:'}</strong> {job.raw_path || '-'}
               </div>
               <div>
                 <strong>Output:</strong> {job.output_path || '-'}
               </div>
-              <div>
-                <strong>Encode Input:</strong> {job.encode_input_path || '-'}
-              </div>
+              {!isCd ? (
+                <div>
+                  <strong>Encode Input:</strong> {job.encode_input_path || '-'}
+                </div>
+              ) : null}
               <div>
                 <strong>RAW vorhanden:</strong> <BoolState value={job.rawStatus?.exists} />
               </div>
               <div>
-                <strong>Movie Datei vorhanden:</strong> <BoolState value={job.outputStatus?.exists} />
+                <strong>{isCd ? 'Audio-Dateien vorhanden:' : 'Movie Datei vorhanden:'}</strong> <BoolState value={job.outputStatus?.exists} />
               </div>
-              <div>
-                <strong>Backup erfolgreich:</strong> <BoolState value={job?.backupSuccess} />
-              </div>
-              <div>
-                <strong>Encode erfolgreich:</strong> <BoolState value={job?.encodeSuccess} />
-              </div>
+              {isCd ? (
+                <div>
+                  <strong>Rip erfolgreich:</strong> <BoolState value={job?.ripSuccessful} />
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <strong>Backup erfolgreich:</strong> <BoolState value={job?.backupSuccess} />
+                  </div>
+                  <div>
+                    <strong>Encode erfolgreich:</strong> <BoolState value={job?.encodeSuccess} />
+                  </div>
+                </>
+              )}
               <div className="job-meta-col-span-2">
                 <strong>Letzter Fehler:</strong> {job.error_message || '-'}
               </div>
             </div>
           </section>
 
-          {hasConfiguredSelection || encodePlanUserPreset ? (
+          {!isCd && (hasConfiguredSelection || encodePlanUserPreset) ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Hinterlegte Encode-Auswahl</h4>
               <div className="job-configured-selection-grid">
@@ -501,7 +677,7 @@ export default function JobDetailDialog({
             </section>
           ) : null}
 
-          {executedHandBrakeCommand ? (
+          {!isCd && executedHandBrakeCommand ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Ausgeführter Encode-Befehl</h4>
               <div className="handbrake-command-preview">
@@ -511,7 +687,7 @@ export default function JobDetailDialog({
             </section>
           ) : null}
 
-          {(job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
+          {!isCd && (job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Skripte</h4>
               <div className="script-results-grid">
@@ -522,14 +698,14 @@ export default function JobDetailDialog({
           ) : null}
 
           <div className="job-json-grid">
-            <JsonView title="OMDb Info" value={job.omdbInfo} />
-            <JsonView title="MakeMKV Info" value={job.makemkvInfo} />
-            <JsonView title="Mediainfo Info" value={job.mediainfoInfo} />
-            <JsonView title="Encode Plan" value={job.encodePlan} />
-            <JsonView title="HandBrake Info" value={job.handbrakeInfo} />
+            {!isCd ? <JsonView title="OMDb Info" value={job.omdbInfo} /> : null}
+            <JsonView title={isCd ? 'cdparanoia Info' : 'MakeMKV Info'} value={job.makemkvInfo} />
+            {!isCd ? <JsonView title="Mediainfo Info" value={job.mediainfoInfo} /> : null}
+            <JsonView title={isCd ? 'Rip-Plan' : 'Encode Plan'} value={job.encodePlan} />
+            {!isCd ? <JsonView title="HandBrake Info" value={job.handbrakeInfo} /> : null}
           </div>
 
-          {job.encodePlan ? (
+          {!isCd && job.encodePlan ? (
             <>
               <h4>Mediainfo-Prüfung (Auswertung)</h4>
               <MediaInfoReviewPanel
@@ -562,16 +738,18 @@ export default function JobDetailDialog({
               />
             ) : (
               <>
-                <Button
-                  label="OMDb neu zuordnen"
-                  icon="pi pi-search"
-                  severity="secondary"
-                  size="small"
-                  onClick={() => onAssignOmdb?.(job)}
-                  loading={omdbAssignBusy}
-                  disabled={running || typeof onAssignOmdb !== 'function'}
-                />
-                {canResumeReady ? (
+                {!isCd ? (
+                  <Button
+                    label="OMDb neu zuordnen"
+                    icon="pi pi-search"
+                    severity="secondary"
+                    size="small"
+                    onClick={() => onAssignOmdb?.(job)}
+                    loading={omdbAssignBusy}
+                    disabled={running || typeof onAssignOmdb !== 'function'}
+                  />
+                ) : null}
+                {!isCd && canResumeReady ? (
                   <Button
                     label="Im Dashboard öffnen"
                     icon="pi pi-window-maximize"
@@ -582,7 +760,7 @@ export default function JobDetailDialog({
                     loading={actionBusy}
                   />
                 ) : null}
-                {typeof onRestartEncode === 'function' ? (
+                {!isCd && typeof onRestartEncode === 'function' ? (
                   <Button
                     label="Encode neu starten"
                     icon="pi pi-play"
@@ -593,7 +771,7 @@ export default function JobDetailDialog({
                     disabled={!canRestartEncode}
                   />
                 ) : null}
-                {typeof onRestartReview === 'function' ? (
+                {!isCd && typeof onRestartReview === 'function' ? (
                   <Button
                     label="Review neu starten"
                     icon="pi pi-refresh"
@@ -605,15 +783,17 @@ export default function JobDetailDialog({
                     disabled={!canRestartReview}
                   />
                 ) : null}
-                <Button
-                  label="RAW neu encodieren"
-                  icon="pi pi-cog"
-                  severity="info"
-                  size="small"
-                  onClick={() => onReencode?.(job)}
-                  loading={reencodeBusy}
-                  disabled={!canReencode || typeof onReencode !== 'function'}
-                />
+                {!isCd ? (
+                  <Button
+                    label="RAW neu encodieren"
+                    icon="pi pi-cog"
+                    severity="info"
+                    size="small"
+                    onClick={() => onReencode?.(job)}
+                    loading={reencodeBusy}
+                    disabled={!canReencode || typeof onReencode !== 'function'}
+                  />
+                ) : null}
                 <Button
                   label="RAW löschen"
                   icon="pi pi-trash"
@@ -625,7 +805,7 @@ export default function JobDetailDialog({
                   disabled={!job.rawStatus?.exists || typeof onDeleteFiles !== 'function'}
                 />
                 <Button
-                  label="Movie löschen"
+                  label={isCd ? 'Audio löschen' : 'Movie löschen'}
                   icon="pi pi-trash"
                   severity="warning"
                   outlined

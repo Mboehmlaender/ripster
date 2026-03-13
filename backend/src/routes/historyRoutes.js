@@ -112,19 +112,38 @@ router.post(
   })
 );
 
+router.get(
+  '/:id/delete-preview',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const includeRelated = ['1', 'true', 'yes'].includes(String(req.query.includeRelated || '1').toLowerCase());
+
+    logger.info('get:delete-preview', {
+      reqId: req.reqId,
+      id,
+      includeRelated
+    });
+
+    const preview = await historyService.getJobDeletePreview(id, { includeRelated });
+    res.json({ preview });
+  })
+);
+
 router.post(
   '/:id/delete',
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const target = String(req.body?.target || 'none');
+    const includeRelated = ['1', 'true', 'yes'].includes(String(req.body?.includeRelated || 'false').toLowerCase());
 
     logger.warn('post:delete-job', {
       reqId: req.reqId,
       id,
-      target
+      target,
+      includeRelated
     });
 
-    const result = await historyService.deleteJob(id, target);
+    const result = await historyService.deleteJob(id, target, { includeRelated });
     const uiReset = await pipelineService.resetFrontendState('history_delete');
     res.json({ ...result, uiReset });
   })

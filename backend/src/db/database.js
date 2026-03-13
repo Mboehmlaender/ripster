@@ -38,25 +38,11 @@ const LEGACY_PROFILE_SETTING_MIGRATIONS = [
     profileKeys: ['output_extension_bluray', 'output_extension_dvd']
   },
   {
-    legacyKey: 'filename_template',
-    profileKeys: ['filename_template_bluray', 'filename_template_dvd']
-  },
-  {
-    legacyKey: 'output_folder_template',
-    profileKeys: ['output_folder_template_bluray', 'output_folder_template_dvd']
+    legacyKey: 'output_template',
+    profileKeys: ['output_template_bluray', 'output_template_dvd']
   }
 ];
 const INSTALL_PATH_SETTING_DEFAULTS = [
-  {
-    key: 'raw_dir',
-    pathParts: ['output', 'raw'],
-    legacyDefaults: ['data/output/raw', './data/output/raw']
-  },
-  {
-    key: 'movie_dir',
-    pathParts: ['output', 'movies'],
-    legacyDefaults: ['data/output/movies', './data/output/movies']
-  },
   {
     key: 'log_dir',
     pathParts: ['logs'],
@@ -540,6 +526,7 @@ async function openAndPrepareDatabase() {
   await seedFromSchemaFile(dbInstance);
   await syncInstallPathSettingDefaults(dbInstance);
   await migrateLegacyProfiledToolSettings(dbInstance);
+  await migrateOutputTemplates(dbInstance);
   await removeDeprecatedSettings(dbInstance);
   await migrateSettingsSchemaMetadata(dbInstance);
   await ensurePipelineStateRow(dbInstance);
@@ -736,6 +723,49 @@ async function ensurePipelineStateRow(db) {
   );
 }
 
+async function migrateOutputTemplates(db) {
+  // Combine legacy filename_template_X + output_folder_template_X into output_template_X.
+  // Only sets the new key if it has no user value yet (preserves any existing value).
+  // The last "/" in the combined template separates folder from filename.
+  for (const profile of ['bluray', 'dvd']) {
+    const newKey = `output_template_${profile}`;
+    const filenameKey = `filename_template_${profile}`;
+    const folderKey = `output_folder_template_${profile}`;
+
+    const existing = await db.get(
+      `SELECT sv.value FROM settings_values sv WHERE sv.key = ? AND sv.value IS NOT NULL`,
+      [newKey]
+    );
+    if (existing) {
+      continue; // already set, don't overwrite
+    }
+
+    const filenameRow = await db.get(
+      `SELECT sv.value FROM settings_values sv WHERE sv.key = ? AND sv.value IS NOT NULL`,
+      [filenameKey]
+    );
+    const folderRow = await db.get(
+      `SELECT sv.value FROM settings_values sv WHERE sv.key = ? AND sv.value IS NOT NULL`,
+      [folderKey]
+    );
+
+    const filenameVal = filenameRow ? String(filenameRow.value || '').trim() : '';
+    const folderVal = folderRow ? String(folderRow.value || '').trim() : '';
+
+    if (!filenameVal) {
+      continue; // nothing to migrate
+    }
+
+    const combined = folderVal ? `${folderVal}/${filenameVal}` : `${filenameVal}/${filenameVal}`;
+    await db.run(
+      `INSERT INTO settings_values (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      [newKey, combined]
+    );
+    logger.info('migrate:output-template-combined', { profile, combined });
+  }
+}
+
 async function removeDeprecatedSettings(db) {
   const deprecatedKeys = [
     'pushover_notify_disc_detected',
@@ -748,14 +778,31 @@ async function removeDeprecatedSettings(db) {
     'output_extension',
     'filename_template',
     'output_folder_template',
-    'makemkv_backup_mode'
+    'makemkv_backup_mode',
+    'raw_dir',
+    'movie_dir',
+    'raw_dir_other',
+    'raw_dir_other_owner',
+    'movie_dir_other',
+    'movie_dir_other_owner',
+    'filename_template_bluray',
+    'filename_template_dvd',
+    'output_folder_template_bluray',
+    'output_folder_template_dvd'
   ];
   for (const key of deprecatedKeys) {
-    const result = await db.run('DELETE FROM settings_schema WHERE key = ?', [key]);
-    if (result?.changes > 0) {
+    const schemaResult = await db.run('DELETE FROM settings_schema WHERE key = ?', [key]);
+    const valuesResult = await db.run('DELETE FROM settings_values WHERE key = ?', [key]);
+    if (schemaResult?.changes > 0 || valuesResult?.changes > 0) {
       logger.info('migrate:remove-deprecated-setting', { key });
     }
   }
+
+  // Reset raw_dir_cd if it still holds the old hardcoded absolute path from a prior install
+  await db.run(
+    `UPDATE settings_values SET value = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE key = 'raw_dir_cd' AND value = '/opt/ripster/backend/data/output/cd'`
+  );
 }
 
 // Aktualisiert settings_schema-Metadaten (required, description, validation_json)
@@ -775,6 +822,13 @@ const SETTINGS_SCHEMA_METADATA_UPDATES = [
   }
 ];
 
+// Settings, die von einer Kategorie in eine andere verschoben werden
+const SETTINGS_CATEGORY_MOVES = [
+  { key: 'cd_output_template', category: 'Pfade' },
+  { key: 'output_template_bluray', category: 'Pfade' },
+  { key: 'output_template_dvd', category: 'Pfade' }
+];
+
 async function migrateSettingsSchemaMetadata(db) {
   for (const update of SETTINGS_SCHEMA_METADATA_UPDATES) {
     const result = await db.run(
@@ -789,6 +843,16 @@ async function migrateSettingsSchemaMetadata(db) {
     );
     if (result?.changes > 0) {
       logger.info('migrate:settings-schema-metadata', { key: update.key });
+    }
+  }
+  for (const move of SETTINGS_CATEGORY_MOVES) {
+    const result = await db.run(
+      `UPDATE settings_schema SET category = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE key = ? AND category != ?`,
+      [move.category, move.key, move.category]
+    );
+    if (result?.changes > 0) {
+      logger.info('migrate:settings-schema-category-moved', { key: move.key, category: move.category });
     }
   }
 }

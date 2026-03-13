@@ -431,6 +431,16 @@ async function ripAndEncode(options) {
     const wavFile = path.join(rawWavDir, `track${String(track.position).padStart(2, '0')}.cdda.wav`);
     const ripArgs = ['-d', devicePath, String(track.position), wavFile];
 
+    onProgress && onProgress({
+      phase: 'rip',
+      trackEvent: 'start',
+      trackIndex: i + 1,
+      trackTotal: tracksToRip.length,
+      trackPosition: track.position,
+      trackPercent: 0,
+      percent: (i / tracksToRip.length) * 50
+    });
+
     log('info', `Rippe Track ${track.position} von ${tracksToRip.length} …`);
     log('info', `Promptkette [Rip ${i + 1}/${tracksToRip.length}]: ${formatCommandLine(cdparanoiaCmd, ripArgs)}`);
 
@@ -445,9 +455,11 @@ async function ripAndEncode(options) {
             const overallPercent = ((i + parsed.percent / 100) / tracksToRip.length) * 50;
             onProgress && onProgress({
               phase: 'rip',
+              trackEvent: 'progress',
               trackIndex: i + 1,
               trackTotal: tracksToRip.length,
               trackPosition: track.position,
+              trackPercent: parsed.percent,
               percent: overallPercent
             });
           }
@@ -467,9 +479,11 @@ async function ripAndEncode(options) {
 
     onProgress && onProgress({
       phase: 'rip',
+      trackEvent: 'complete',
       trackIndex: i + 1,
       trackTotal: tracksToRip.length,
       trackPosition: track.position,
+      trackPercent: 100,
       percent: ((i + 1) / tracksToRip.length) * 50
     });
 
@@ -484,14 +498,25 @@ async function ripAndEncode(options) {
       const track = tracksToRip[i];
       const wavFile = path.join(rawWavDir, `track${String(track.position).padStart(2, '0')}.cdda.wav`);
       const { outFile } = buildOutputFilePath(outputDir, track, meta, 'wav', outputTemplate);
+      onProgress && onProgress({
+        phase: 'encode',
+        trackEvent: 'start',
+        trackIndex: i + 1,
+        trackTotal: tracksToRip.length,
+        trackPosition: track.position,
+        trackPercent: 0,
+        percent: 50 + ((i / tracksToRip.length) * 50)
+      });
       ensureDir(path.dirname(outFile));
       log('info', `Promptkette [Move ${i + 1}/${tracksToRip.length}]: mv ${quoteShellArg(wavFile)} ${quoteShellArg(outFile)}`);
       fs.renameSync(wavFile, outFile);
       onProgress && onProgress({
         phase: 'encode',
+        trackEvent: 'complete',
         trackIndex: i + 1,
         trackTotal: tracksToRip.length,
         trackPosition: track.position,
+        trackPercent: 100,
         percent: 50 + ((i + 1) / tracksToRip.length) * 50
       });
       log('info', `WAV für Track ${track.position} gespeichert.`);
@@ -510,6 +535,16 @@ async function ripAndEncode(options) {
 
     const { outFilename, outFile } = buildOutputFilePath(outputDir, track, meta, format, outputTemplate);
     ensureDir(path.dirname(outFile));
+
+    onProgress && onProgress({
+      phase: 'encode',
+      trackEvent: 'start',
+      trackIndex: i + 1,
+      trackTotal: tracksToRip.length,
+      trackPosition: track.position,
+      trackPercent: 0,
+      percent: 50 + ((i / tracksToRip.length) * 50)
+    });
 
     log('info', `Encodiere Track ${track.position} → ${outFilename} …`);
 
@@ -536,18 +571,13 @@ async function ripAndEncode(options) {
       );
     }
 
-    // Clean up WAV after encode
-    try {
-      fs.unlinkSync(wavFile);
-    } catch (_error) {
-      // ignore cleanup errors
-    }
-
     onProgress && onProgress({
       phase: 'encode',
+      trackEvent: 'complete',
       trackIndex: i + 1,
       trackTotal: tracksToRip.length,
       trackPosition: track.position,
+      trackPercent: 100,
       percent: 50 + ((i + 1) / tracksToRip.length) * 50
     });
 

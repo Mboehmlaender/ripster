@@ -20,14 +20,14 @@ const RELEVANT_SETTINGS_KEYS = new Set([
   'hardware_monitoring_enabled',
   'hardware_monitoring_interval_ms',
   'raw_dir',
+  'raw_dir_bluray',
+  'raw_dir_dvd',
+  'raw_dir_cd',
   'movie_dir',
+  'movie_dir_bluray',
+  'movie_dir_dvd',
   'log_dir'
 ]);
-const MONITORED_PATH_DEFINITIONS = [
-  { key: 'raw_dir', label: 'RAW-Verzeichnis' },
-  { key: 'movie_dir', label: 'Movie-Verzeichnis' },
-  { key: 'log_dir', label: 'Log-Verzeichnis' }
-];
 
 function nowIso() {
   return new Date().toISOString();
@@ -51,6 +51,10 @@ function toBoolean(value) {
     return false;
   }
   return Boolean(normalized);
+}
+
+function normalizePathSetting(value) {
+  return String(value || '').trim();
 }
 
 function clampIntervalMs(rawValue) {
@@ -392,10 +396,43 @@ class HardwareMonitorService {
   }
 
   buildMonitoredPaths(settingsMap = {}) {
-    return MONITORED_PATH_DEFINITIONS.map((definition) => ({
-      ...definition,
-      path: String(settingsMap?.[definition.key] || '').trim()
-    }));
+    const sourceMap = settingsMap && typeof settingsMap === 'object' ? settingsMap : {};
+    const bluray = settingsService.resolveEffectiveToolSettings(sourceMap, 'bluray');
+    const dvd = settingsService.resolveEffectiveToolSettings(sourceMap, 'dvd');
+    const cd = settingsService.resolveEffectiveToolSettings(sourceMap, 'cd');
+    const blurayRawPath = normalizePathSetting(bluray?.raw_dir);
+    const dvdRawPath = normalizePathSetting(dvd?.raw_dir);
+    const cdRawPath = normalizePathSetting(cd?.raw_dir);
+    const blurayMoviePath = normalizePathSetting(bluray?.movie_dir);
+    const dvdMoviePath = normalizePathSetting(dvd?.movie_dir);
+    const monitoredPaths = [];
+
+    const addPath = (key, label, monitoredPath) => {
+      monitoredPaths.push({
+        key,
+        label,
+        path: normalizePathSetting(monitoredPath)
+      });
+    };
+
+    if (blurayRawPath && dvdRawPath && blurayRawPath !== dvdRawPath) {
+      addPath('raw_dir_bluray', 'RAW-Verzeichnis (Blu-ray)', blurayRawPath);
+      addPath('raw_dir_dvd', 'RAW-Verzeichnis (DVD)', dvdRawPath);
+    } else {
+      addPath('raw_dir', 'RAW-Verzeichnis', blurayRawPath || dvdRawPath || sourceMap.raw_dir);
+    }
+    addPath('raw_dir_cd', 'CD-Verzeichnis', cdRawPath || sourceMap.raw_dir_cd);
+
+    if (blurayMoviePath && dvdMoviePath && blurayMoviePath !== dvdMoviePath) {
+      addPath('movie_dir_bluray', 'Movie-Verzeichnis (Blu-ray)', blurayMoviePath);
+      addPath('movie_dir_dvd', 'Movie-Verzeichnis (DVD)', dvdMoviePath);
+    } else {
+      addPath('movie_dir', 'Movie-Verzeichnis', blurayMoviePath || dvdMoviePath || sourceMap.movie_dir);
+    }
+
+    addPath('log_dir', 'Log-Verzeichnis', sourceMap.log_dir);
+
+    return monitoredPaths;
   }
 
   pathsSignature(paths = []) {

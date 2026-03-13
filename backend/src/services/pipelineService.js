@@ -21,6 +21,7 @@ const { buildMediainfoReview } = require('../utils/encodePlan');
 const { analyzePlaylistObfuscation, normalizePlaylistId } = require('../utils/playlistAnalysis');
 const { errorToMeta } = require('../utils/errorMeta');
 const userPresetService = require('./userPresetService');
+const thumbnailService = require('./thumbnailService');
 
 const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING']);
 const REVIEW_REFRESH_SETTING_PREFIXES = [
@@ -29,8 +30,7 @@ const REVIEW_REFRESH_SETTING_PREFIXES = [
   'makemkv_rip_',
   'makemkv_analyze_',
   'output_extension_',
-  'filename_template_',
-  'output_folder_template_'
+  'output_template_'
 ];
 const REVIEW_REFRESH_SETTING_KEYS = new Set([
   'makemkv_min_length_minutes',
@@ -41,11 +41,11 @@ const REVIEW_REFRESH_SETTING_KEYS = new Set([
   'makemkv_analyze_extra_args',
   'makemkv_rip_extra_args',
   'output_extension',
-  'filename_template',
-  'output_folder_template'
+  'output_template'
 ]);
 const QUEUE_ACTIONS = {
   START_PREPARED: 'START_PREPARED',
+  START_CD: 'START_CD',
   RETRY: 'RETRY',
   REENCODE: 'REENCODE',
   RESTART_ENCODE: 'RESTART_ENCODE',
@@ -56,7 +56,8 @@ const QUEUE_ACTION_LABELS = {
   [QUEUE_ACTIONS.RETRY]: 'Retry Rippen',
   [QUEUE_ACTIONS.REENCODE]: 'RAW neu encodieren',
   [QUEUE_ACTIONS.RESTART_ENCODE]: 'Encode neu starten',
-  [QUEUE_ACTIONS.RESTART_REVIEW]: 'Review neu berechnen'
+  [QUEUE_ACTIONS.RESTART_REVIEW]: 'Review neu berechnen',
+  [QUEUE_ACTIONS.START_CD]: 'Audio CD starten'
 };
 const PRE_ENCODE_PROGRESS_RESERVE = 10;
 const POST_ENCODE_PROGRESS_RESERVE = 10;
@@ -83,6 +84,137 @@ function normalizeCdTrackText(value) {
     .replace(/\p{C}+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizePositiveInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function normalizeCdTrackPositionList(values = []) {
+  const source = Array.isArray(values) ? values : [];
+  const seen = new Set();
+  const output = [];
+  for (const value of source) {
+    const normalized = normalizePositiveInteger(value);
+    if (!normalized) {
+      continue;
+    }
+    const key = String(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function parseCdTrackDurationSec(track = null) {
+  const durationSec = Number(track?.durationSec);
+  if (Number.isFinite(durationSec) && durationSec > 0) {
+    return Math.max(0, Math.trunc(durationSec));
+  }
+  const durationMs = Number(track?.durationMs);
+  if (Number.isFinite(durationMs) && durationMs > 0) {
+    return Math.max(0, Math.round(durationMs / 1000));
+  }
+  return 0;
+}
+
+function buildCdLiveTrackRows(selectedTrackPositions = [], tocTracks = [], fallbackArtist = null) {
+  const orderedPositions = normalizeCdTrackPositionList(selectedTrackPositions);
+  const byPosition = new Map(
+    (Array.isArray(tocTracks) ? tocTracks : [])
+      .map((track) => {
+        const position = normalizePositiveInteger(track?.position);
+        if (!position) {
+          return null;
+        }
+        return [position, track];
+      })
+      .filter(Boolean)
+  );
+
+  return orderedPositions.map((position, index) => {
+    const track = byPosition.get(position) || {};
+    return {
+      order: index + 1,
+      position,
+      title: normalizeCdTrackText(track?.title) || `Track ${position}`,
+      artist: normalizeCdTrackText(track?.artist) || normalizeCdTrackText(fallbackArtist) || '',
+      durationSec: parseCdTrackDurationSec(track)
+    };
+  });
+}
+
+function buildCdLiveProgressSnapshot({
+  trackRows = [],
+  phase = 'rip',
+  trackIndex = 0,
+  trackTotal = null,
+  trackPosition = null,
+  ripCompletedCount = 0,
+  encodeCompletedCount = 0,
+  failedTrackPosition = null
+}) {
+  const rows = Array.isArray(trackRows) ? trackRows : [];
+  const total = rows.length;
+  const normalizedPhase = String(phase || '').trim().toLowerCase() === 'encode'
+    ? 'encode'
+    : 'rip';
+  const normalizedTrackTotal = normalizePositiveInteger(trackTotal) || total;
+  const normalizedTrackIndex = normalizePositiveInteger(trackIndex);
+  const normalizedTrackPosition = normalizePositiveInteger(trackPosition);
+  const normalizedFailedTrackPosition = normalizePositiveInteger(failedTrackPosition);
+  const safeRipCompleted = Math.max(0, Math.min(total, Math.trunc(Number(ripCompletedCount) || 0)));
+  const safeEncodeCompleted = Math.max(0, Math.min(total, Math.trunc(Number(encodeCompletedCount) || 0)));
+  const selectedTrackPositions = rows.map((row) => row.position);
+  const ripCompletedTrackPositions = selectedTrackPositions.slice(0, safeRipCompleted);
+  const encodeCompletedTrackPositions = selectedTrackPositions.slice(0, safeEncodeCompleted);
+
+  const trackStates = rows.map((row, index) => {
+    const ripDone = index < safeRipCompleted;
+    const encodeDone = index < safeEncodeCompleted;
+    let ripStatus = ripDone ? 'done' : 'pending';
+    let encodeStatus = encodeDone ? 'done' : 'pending';
+
+    if (!ripDone && normalizedPhase === 'rip' && normalizedTrackPosition && row.position === normalizedTrackPosition) {
+      ripStatus = 'in_progress';
+    } else if (!ripDone && normalizedPhase === 'rip' && normalizedFailedTrackPosition && row.position === normalizedFailedTrackPosition) {
+      ripStatus = 'error';
+    }
+
+    if (!encodeDone && normalizedPhase === 'encode' && normalizedTrackPosition && row.position === normalizedTrackPosition) {
+      encodeStatus = 'in_progress';
+    } else if (!encodeDone && normalizedPhase === 'encode' && normalizedFailedTrackPosition && row.position === normalizedFailedTrackPosition) {
+      encodeStatus = 'error';
+    }
+
+    return {
+      ...row,
+      selected: true,
+      ripStatus,
+      encodeStatus
+    };
+  });
+
+  return {
+    phase: normalizedPhase,
+    trackIndex: normalizedTrackIndex || 0,
+    trackTotal: normalizedTrackTotal,
+    trackPosition: normalizedTrackPosition || null,
+    ripCompleted: safeRipCompleted,
+    encodeCompleted: safeEncodeCompleted,
+    selectedTrackPositions,
+    ripCompletedTrackPositions,
+    encodeCompletedTrackPositions,
+    trackStates,
+    updatedAt: nowIso()
+  };
 }
 
 function normalizeMediaProfile(value) {
@@ -116,9 +248,6 @@ function normalizeMediaProfile(value) {
   }
   if (raw === 'cd' || raw === 'audio_cd') {
     return 'cd';
-  }
-  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges') {
-    return 'other';
   }
   return null;
 }
@@ -357,31 +486,46 @@ function resolveOutputTemplateValues(job, fallbackJobId = null) {
   };
 }
 
-function resolveOutputFileName(settings, values) {
-  const fileTemplate = settings.filename_template || '${title} (${year})';
-  return sanitizeFileName(renderTemplate(fileTemplate, values));
-}
+const DEFAULT_OUTPUT_TEMPLATE = '${title} (${year})/${title} (${year})';
 
-function resolveFinalOutputFolderName(settings, values) {
-  const folderTemplateRaw = String(settings.output_folder_template || '').trim();
-  const fallbackTemplate = settings.filename_template || '${title} (${year})';
-  const folderTemplate = folderTemplateRaw || fallbackTemplate;
-  return sanitizeFileName(renderTemplate(folderTemplate, values));
+function resolveOutputPathParts(settings, values) {
+  const template = String(settings.output_template || DEFAULT_OUTPUT_TEMPLATE).trim()
+    || DEFAULT_OUTPUT_TEMPLATE;
+  const rendered = renderTemplate(template, values);
+  const segments = rendered
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .map((seg) => sanitizeFileName(seg))
+    .filter(Boolean);
+
+  if (segments.length === 0) {
+    return { folderPath: '', baseName: 'untitled' };
+  }
+  const baseName = segments[segments.length - 1];
+  const folderParts = segments.slice(0, -1);
+  return {
+    folderPath: folderParts.length > 0 ? path.join(...folderParts) : '',
+    baseName
+  };
 }
 
 function buildFinalOutputPathFromJob(settings, job, fallbackJobId = null) {
   const movieDir = settings.movie_dir;
   const values = resolveOutputTemplateValues(job, fallbackJobId);
-  const folderName = resolveFinalOutputFolderName(settings, values);
-  const baseName = resolveOutputFileName(settings, values);
+  const { folderPath, baseName } = resolveOutputPathParts(settings, values);
   const ext = String(settings.output_extension || 'mkv').trim() || 'mkv';
-  return path.join(movieDir, folderName, `${baseName}.${ext}`);
+  if (folderPath) {
+    return path.join(movieDir, folderPath, `${baseName}.${ext}`);
+  }
+  return path.join(movieDir, `${baseName}.${ext}`);
 }
 
 function buildIncompleteOutputPathFromJob(settings, job, fallbackJobId = null) {
   const movieDir = settings.movie_dir;
   const values = resolveOutputTemplateValues(job, fallbackJobId);
-  const baseName = resolveOutputFileName(settings, values);
+  const { baseName } = resolveOutputPathParts(settings, values);
   const ext = String(settings.output_extension || 'mkv').trim() || 'mkv';
   const numericJobId = Number(fallbackJobId || job?.id || 0);
   const incompleteFolder = Number.isFinite(numericJobId) && numericJobId > 0
@@ -3552,13 +3696,15 @@ class PipelineService extends EventEmitter {
 
   async migrateRawFolderNamingOnStartup(db) {
     const settings = await settingsService.getSettingsMap();
-    const rawBaseDir = String(settings?.raw_dir || '').trim();
+    const rawBaseDir = String(settings?.raw_dir || settingsService.DEFAULT_RAW_DIR || '').trim();
     const rawExtraDirs = [
       settings?.raw_dir_bluray,
       settings?.raw_dir_dvd,
-      settings?.raw_dir_other
+      settings?.raw_dir_cd,
+      settingsService.DEFAULT_CD_DIR
     ].map((d) => String(d || '').trim()).filter(Boolean);
-    const allRawDirs = [rawBaseDir, ...rawExtraDirs].filter((d) => d && fs.existsSync(d));
+    const allRawDirs = [rawBaseDir, settingsService.DEFAULT_RAW_DIR, ...rawExtraDirs]
+      .filter((d, i, arr) => arr.indexOf(d) === i && d && fs.existsSync(d));
     if (allRawDirs.length === 0) {
       return;
     }
@@ -3890,6 +4036,23 @@ class PipelineService extends EventEmitter {
     return this.normalizeParallelJobsLimit(settings?.pipeline_max_parallel_jobs);
   }
 
+  async getMaxParallelCdEncodes() {
+    const settings = await settingsService.getSettingsMap();
+    return this.normalizeParallelJobsLimit(settings?.pipeline_max_parallel_cd_encodes ?? 2);
+  }
+
+  async getMaxTotalEncodes() {
+    const settings = await settingsService.getSettingsMap();
+    const value = Number(settings?.pipeline_max_total_encodes);
+    return Number.isFinite(value) && value >= 1 ? Math.min(24, Math.trunc(value)) : 3;
+  }
+
+  async getCdBypassesQueue() {
+    const settings = await settingsService.getSettingsMap();
+    const value = settings?.pipeline_cd_bypasses_queue;
+    return value === 'true' || value === true;
+  }
+
   findQueueEntryIndexByJobId(jobId) {
     return this.queueEntries.findIndex((entry) => Number(entry?.jobId) === Number(jobId));
   }
@@ -4090,9 +4253,15 @@ class PipelineService extends EventEmitter {
   }
 
   async getQueueSnapshot() {
-    const maxParallelJobs = await this.getMaxParallelJobs();
+    const [maxParallelJobs, maxParallelCdEncodes, maxTotalEncodes, cdBypassesQueue] = await Promise.all([
+      this.getMaxParallelJobs(),
+      this.getMaxParallelCdEncodes(),
+      this.getMaxTotalEncodes(),
+      this.getCdBypassesQueue()
+    ]);
     const runningJobs = await historyService.getRunningJobs();
     const runningEncodeCount = runningJobs.filter((job) => job.status === 'ENCODING').length;
+    const runningCdCount = runningJobs.filter((job) => ['CD_RIPPING', 'CD_ENCODING'].includes(job.status)).length;
     const queuedJobIds = this.queueEntries
       .filter((entry) => !entry.type || entry.type === 'job')
       .map((entry) => Number(entry.jobId))
@@ -4111,7 +4280,11 @@ class PipelineService extends EventEmitter {
 
     const queue = {
       maxParallelJobs,
+      maxParallelCdEncodes,
+      maxTotalEncodes,
+      cdBypassesQueue,
       runningCount: runningEncodeCount,
+      runningCdCount,
       runningJobs: runningJobs.map((job) => ({
         jobId: Number(job.id),
         title: job.title || job.detected_title || `Job #${job.id}`,
@@ -4299,9 +4472,16 @@ class PipelineService extends EventEmitter {
       };
     }
 
-    const maxParallelJobs = await this.getMaxParallelJobs();
-    const runningEncodeJobs = await historyService.getRunningEncodeJobs();
-    const shouldQueue = this.queueEntries.length > 0 || runningEncodeJobs.length >= maxParallelJobs;
+    const [maxFilm, maxTotal] = await Promise.all([
+      this.getMaxParallelJobs(),
+      this.getMaxTotalEncodes()
+    ]);
+    const [filmRunning, cdRunning] = await Promise.all([
+      historyService.getRunningFilmEncodeJobs().then((r) => r.length),
+      historyService.getRunningCdEncodeJobs().then((r) => r.length)
+    ]);
+    const totalRunning = filmRunning + cdRunning;
+    const shouldQueue = this.queueEntries.length > 0 || filmRunning >= maxFilm || totalRunning >= maxTotal;
     if (!shouldQueue) {
       const result = await startNow();
       await this.emitQueueChanged();
@@ -4332,6 +4512,84 @@ class PipelineService extends EventEmitter {
       started: false,
       queuePosition: this.queueEntries.length,
       action
+    };
+  }
+
+  async enqueueOrStartCdAction(jobId, ripConfig, startNow) {
+    const normalizedJobId = this.normalizeQueueJobId(jobId);
+    if (!normalizedJobId) {
+      const error = new Error('Ungültige Job-ID für CD Queue-Aktion.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (typeof startNow !== 'function') {
+      const error = new Error('CD Queue-Aktion kann nicht gestartet werden (startNow fehlt).');
+      error.statusCode = 500;
+      throw error;
+    }
+
+    const existingQueueIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
+    if (existingQueueIndex >= 0) {
+      return {
+        queued: true,
+        started: false,
+        queuePosition: existingQueueIndex + 1,
+        action: QUEUE_ACTIONS.START_CD
+      };
+    }
+
+    const [maxCd, maxTotal, cdBypass] = await Promise.all([
+      this.getMaxParallelCdEncodes(),
+      this.getMaxTotalEncodes(),
+      this.getCdBypassesQueue()
+    ]);
+    const [filmRunning, cdRunning] = await Promise.all([
+      historyService.getRunningFilmEncodeJobs().then((r) => r.length),
+      historyService.getRunningCdEncodeJobs().then((r) => r.length)
+    ]);
+    const totalRunning = filmRunning + cdRunning;
+
+    let shouldQueue;
+    if (cdBypass) {
+      const cdQueueLength = this.queueEntries.filter(
+        (e) => (!e.type || e.type === 'job') && e.action === QUEUE_ACTIONS.START_CD
+      ).length;
+      shouldQueue = cdQueueLength > 0 || cdRunning >= maxCd || totalRunning >= maxTotal;
+    } else {
+      shouldQueue = this.queueEntries.length > 0 || cdRunning >= maxCd || totalRunning >= maxTotal;
+    }
+
+    if (!shouldQueue) {
+      const result = await startNow();
+      await this.emitQueueChanged();
+      return {
+        queued: false,
+        started: true,
+        action: QUEUE_ACTIONS.START_CD,
+        ...(result && typeof result === 'object' ? result : {})
+      };
+    }
+
+    this.queueEntries.push({
+      id: this.queueEntrySeq++,
+      jobId: normalizedJobId,
+      action: QUEUE_ACTIONS.START_CD,
+      ripConfig: ripConfig || {},
+      enqueuedAt: nowIso()
+    });
+    await historyService.appendLog(
+      normalizedJobId,
+      'USER_ACTION',
+      `In Queue aufgenommen: ${QUEUE_ACTION_LABELS[QUEUE_ACTIONS.START_CD]}`
+    );
+    await this.emitQueueChanged();
+    void this.pumpQueue();
+
+    return {
+      queued: true,
+      started: false,
+      queuePosition: this.queueEntries.length,
+      action: QUEUE_ACTIONS.START_CD
     };
   }
 
@@ -4447,6 +4705,9 @@ class PipelineService extends EventEmitter {
       case QUEUE_ACTIONS.RESTART_REVIEW:
         await this.restartReviewFromRaw(jobId, { immediate: true });
         break;
+      case QUEUE_ACTIONS.START_CD:
+        await this.startCdRip(jobId, entry.ripConfig || {});
+        break;
       default: {
         const error = new Error(`Unbekannte Queue-Aktion: ${String(action || '-')}`);
         error.statusCode = 400;
@@ -4462,23 +4723,66 @@ class PipelineService extends EventEmitter {
     this.queuePumpRunning = true;
     try {
       while (this.queueEntries.length > 0) {
-        const firstEntry = this.queueEntries[0];
-        const isNonJob = firstEntry?.type && firstEntry.type !== 'job';
+        // Get current running counts and limits
+        const [filmRunning, cdRunning, maxFilm, maxCd, maxTotal, cdBypass] = await Promise.all([
+          historyService.getRunningFilmEncodeJobs().then((r) => r.length),
+          historyService.getRunningCdEncodeJobs().then((r) => r.length),
+          this.getMaxParallelJobs(),
+          this.getMaxParallelCdEncodes(),
+          this.getMaxTotalEncodes(),
+          this.getCdBypassesQueue()
+        ]);
+        const totalRunning = filmRunning + cdRunning;
 
-        if (!isNonJob) {
-          // Job entries: respect the parallel encode limit.
-          const maxParallelJobs = await this.getMaxParallelJobs();
-          const runningEncodeJobs = await historyService.getRunningEncodeJobs();
-          if (runningEncodeJobs.length >= maxParallelJobs) {
+        // Find next startable entry
+        let entryIndex = -1;
+        for (let i = 0; i < this.queueEntries.length; i++) {
+          const candidate = this.queueEntries[i];
+          const isNonJob = candidate.type && candidate.type !== 'job';
+
+          if (isNonJob) {
+            // Non-job entries (script, chain, wait) always start immediately
+            entryIndex = i;
             break;
+          }
+
+          // Job entry: check hierarchical limits
+          if (totalRunning >= maxTotal) {
+            // Total limit reached – nothing can start
+            break;
+          }
+
+          const isCdEntry = candidate.action === QUEUE_ACTIONS.START_CD;
+          if (isCdEntry) {
+            if (cdRunning < maxCd) {
+              entryIndex = i;
+              break;
+            }
+            // CD limit reached
+            if (!cdBypass) break; // Strict FIFO: stop scanning
+            continue; // Bypass mode: skip this blocked CD entry
+          } else {
+            // Film/video job entry
+            if (filmRunning < maxFilm) {
+              entryIndex = i;
+              break;
+            }
+            // Film limit reached
+            if (!cdBypass) break; // Strict FIFO: stop scanning
+            continue; // Bypass mode: skip this blocked film entry
           }
         }
 
-        const entry = this.queueEntries.shift();
+        if (entryIndex < 0) {
+          break; // Nothing can start right now
+        }
+
+        const entry = this.queueEntries.splice(entryIndex, 1)[0];
         if (!entry) {
           break;
         }
 
+        const isNonJob = entry.type && entry.type !== 'job';
         await this.emitQueueChanged();
         try {
           if (isNonJob) {
@@ -4493,7 +4797,7 @@ class PipelineService extends EventEmitter {
           await this.dispatchQueuedEntry(entry);
         } catch (error) {
           if (Number(error?.statusCode || 0) === 409) {
-            this.queueEntries.unshift(entry);
+            this.queueEntries.splice(entryIndex, 0, entry);
             await this.emitQueueChanged();
             break;
           }
@@ -4605,6 +4909,9 @@ class PipelineService extends EventEmitter {
   async setState(state, patch = {}) {
     const previous = this.snapshot.state;
     const previousActiveJobId = this.snapshot.activeJobId;
+    const contextPatch = patch.context && typeof patch.context === 'object' && !Array.isArray(patch.context)
+      ? patch.context
+      : null;
     this.snapshot = {
       ...this.snapshot,
       state,
@@ -4617,12 +4924,29 @@ class PipelineService extends EventEmitter {
 
     // Keep per-job progress map in sync when a job starts or finishes.
     if (patch.activeJobId != null) {
-      this.jobProgress.set(Number(patch.activeJobId), {
+      const activeJobId = Number(patch.activeJobId);
+      const previousJobProgress = this.jobProgress.get(activeJobId) || {};
+      const mergedContext = contextPatch
+        ? {
+          ...(previousJobProgress.context && typeof previousJobProgress.context === 'object'
+            ? previousJobProgress.context
+            : {}),
+          ...contextPatch
+        }
+        : (previousJobProgress.context && typeof previousJobProgress.context === 'object'
+            ? previousJobProgress.context
+            : null);
+      const nextProgress = {
+        ...previousJobProgress,
         state,
         progress: patch.progress ?? 0,
         eta: patch.eta ?? null,
         statusText: patch.statusText ?? null
-      });
+      };
+      if (mergedContext && Object.keys(mergedContext).length > 0) {
+        nextProgress.context = mergedContext;
+      }
+      this.jobProgress.set(activeJobId, nextProgress);
     } else if (patch.activeJobId === null) {
       // Job slot cleared – remove the finished job's live entry so it falls
       // back to DB data in the frontend.
@@ -4684,31 +5008,61 @@ class PipelineService extends EventEmitter {
     );
   }
 
-  async updateProgress(stage, percent, eta, statusText, jobIdOverride = null) {
+  async updateProgress(stage, percent, eta, statusText, jobIdOverride = null, options = {}) {
     const effectiveJobId = jobIdOverride != null ? Number(jobIdOverride) : this.snapshot.activeJobId;
     const effectiveProgress = percent ?? this.snapshot.progress;
     const effectiveEta = eta ?? this.snapshot.eta;
     const effectiveStatusText = statusText ?? this.snapshot.statusText;
+    const progressOptions = options && typeof options === 'object' ? options : {};
+    const contextPatch = progressOptions.contextPatch && typeof progressOptions.contextPatch === 'object'
+      && !Array.isArray(progressOptions.contextPatch)
+      ? progressOptions.contextPatch
+      : null;
 
     // Update per-job progress so concurrent jobs don't overwrite each other.
     if (effectiveJobId != null) {
-      this.jobProgress.set(effectiveJobId, {
+      const previousJobProgress = this.jobProgress.get(effectiveJobId) || {};
+      const mergedContext = contextPatch
+        ? {
+          ...(previousJobProgress.context && typeof previousJobProgress.context === 'object'
+            ? previousJobProgress.context
+            : {}),
+          ...contextPatch
+        }
+        : (previousJobProgress.context && typeof previousJobProgress.context === 'object'
+            ? previousJobProgress.context
+            : null);
+      const nextProgress = {
+        ...previousJobProgress,
         state: stage,
         progress: effectiveProgress,
         eta: effectiveEta,
         statusText: effectiveStatusText
-      });
+      };
+      if (mergedContext && Object.keys(mergedContext).length > 0) {
+        nextProgress.context = mergedContext;
+      }
+      this.jobProgress.set(effectiveJobId, nextProgress);
     }
 
     // Only update the global snapshot fields when this update belongs to the
     // currently active job (avoids the snapshot jumping between parallel jobs).
     if (effectiveJobId === this.snapshot.activeJobId || effectiveJobId == null) {
+      const nextContext = contextPatch
+        ? {
+          ...(this.snapshot.context && typeof this.snapshot.context === 'object'
+            ? this.snapshot.context
+            : {}),
+          ...contextPatch
+        }
+        : this.snapshot.context;
       this.snapshot = {
         ...this.snapshot,
         state: stage,
         progress: effectiveProgress,
         eta: effectiveEta,
-        statusText: effectiveStatusText
+        statusText: effectiveStatusText,
+        context: nextContext
       };
       await this.persistSnapshot(false);
     }
@@ -4730,7 +5084,8 @@ class PipelineService extends EventEmitter {
       activeJobId: effectiveJobId,
       progress: effectiveProgress,
       eta: effectiveEta,
-      statusText: effectiveStatusText
+      statusText: effectiveStatusText,
+      contextPatch
     });
   }
 
@@ -4977,7 +5332,8 @@ class PipelineService extends EventEmitter {
     const keys = Array.isArray(changedKeys)
       ? changedKeys.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
-    if (keys.includes('pipeline_max_parallel_jobs')) {
+    const queueLimitKeys = ['pipeline_max_parallel_jobs', 'pipeline_max_parallel_cd_encodes', 'pipeline_max_total_encodes', 'pipeline_cd_bypasses_queue'];
+    if (keys.some((k) => queueLimitKeys.includes(k))) {
       await this.emitQueueChanged();
       void this.pumpQueue();
     }
@@ -5030,11 +5386,10 @@ class PipelineService extends EventEmitter {
     }
 
     const refreshSettings = await settingsService.getSettingsMap();
-    const refreshRawBaseDir = String(refreshSettings?.raw_dir || '').trim();
+    const refreshRawBaseDir = settingsService.DEFAULT_RAW_DIR;
     const refreshRawExtraDirs = [
       refreshSettings?.raw_dir_bluray,
-      refreshSettings?.raw_dir_dvd,
-      refreshSettings?.raw_dir_other
+      refreshSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedRefreshRawPath = job.raw_path
       ? this.resolveCurrentRawPath(refreshRawBaseDir, job.raw_path, refreshRawExtraDirs)
@@ -6488,6 +6843,11 @@ class PipelineService extends EventEmitter {
       makemkv_info_json: JSON.stringify(updatedMakemkvInfo)
     });
 
+    // Bild in Cache laden (async, blockiert nicht)
+    if (posterValue && !thumbnailService.isLocalUrl(posterValue)) {
+      thumbnailService.cacheJobThumbnail(jobId, posterValue).catch(() => {});
+    }
+
     const runningJobs = await historyService.getRunningJobs();
     const foreignRunningJobs = runningJobs.filter((item) => Number(item?.id) !== Number(jobId));
     const keepCurrentPipelineSession = foreignRunningJobs.length > 0;
@@ -6982,8 +7342,7 @@ class PipelineService extends EventEmitter {
     const confirmRawBaseDir = String(confirmSettings?.raw_dir || '').trim();
     const confirmRawExtraDirs = [
       confirmSettings?.raw_dir_bluray,
-      confirmSettings?.raw_dir_dvd,
-      confirmSettings?.raw_dir_other
+      confirmSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedConfirmRawPath = job.raw_path
       ? this.resolveCurrentRawPath(confirmRawBaseDir, job.raw_path, confirmRawExtraDirs)
@@ -7102,11 +7461,10 @@ class PipelineService extends EventEmitter {
     }
 
     const reencodeSettings = await settingsService.getSettingsMap();
-    const reencodeRawBaseDir = String(reencodeSettings?.raw_dir || '').trim();
+    const reencodeRawBaseDir = settingsService.DEFAULT_RAW_DIR;
     const reencodeRawExtraDirs = [
       reencodeSettings?.raw_dir_bluray,
-      reencodeSettings?.raw_dir_dvd,
-      reencodeSettings?.raw_dir_other
+      reencodeSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedReencodeRawPath = this.resolveCurrentRawPath(reencodeRawBaseDir, sourceJob.raw_path, reencodeRawExtraDirs);
     if (!resolvedReencodeRawPath) {
@@ -7618,6 +7976,7 @@ class PipelineService extends EventEmitter {
   async runPreEncodeScripts(jobId, encodePlan, context = {}, progressTracker = null) {
     const scriptIds = normalizeScriptIdList(encodePlan?.preEncodeScriptIds || []);
     const chainIds = Array.isArray(encodePlan?.preEncodeChainIds) ? encodePlan.preEncodeChainIds : [];
+    const executionStage = String(context?.pipelineStage || 'ENCODING').trim().toUpperCase() || 'ENCODING';
     if (scriptIds.length === 0 && chainIds.length === 0) {
       return { configured: 0, attempted: 0, succeeded: 0, failed: 0, skipped: 0, results: [] };
     }
@@ -7668,7 +8027,7 @@ class PipelineService extends EventEmitter {
         });
         const runInfo = await this.runCommand({
           jobId,
-          stage: 'ENCODING',
+          stage: executionStage,
           source: 'PRE_ENCODE_SCRIPT',
           cmd: prepared.cmd,
           args: prepared.args,
@@ -7753,6 +8112,7 @@ class PipelineService extends EventEmitter {
   async runPostEncodeScripts(jobId, encodePlan, context = {}, progressTracker = null) {
     const scriptIds = normalizeScriptIdList(encodePlan?.postEncodeScriptIds || []);
     const chainIds = Array.isArray(encodePlan?.postEncodeChainIds) ? encodePlan.postEncodeChainIds : [];
+    const executionStage = String(context?.pipelineStage || 'ENCODING').trim().toUpperCase() || 'ENCODING';
     if (scriptIds.length === 0 && chainIds.length === 0) {
       return {
         configured: 0,
@@ -7828,7 +8188,7 @@ class PipelineService extends EventEmitter {
         });
         const runInfo = await this.runCommand({
           jobId,
-          stage: 'ENCODING',
+          stage: executionStage,
           source: 'POST_ENCODE_SCRIPT',
           cmd: prepared.cmd,
           args: prepared.args,
@@ -7982,8 +8342,7 @@ class PipelineService extends EventEmitter {
     const rawBaseDir = String(settings.raw_dir || '').trim();
     const rawExtraDirs = [
       settings.raw_dir_bluray,
-      settings.raw_dir_dvd,
-      settings.raw_dir_other
+      settings.raw_dir_dvd
     ].map((item) => String(item || '').trim()).filter(Boolean);
     const resolvedRawPath = job.raw_path
       ? this.resolveCurrentRawPath(rawBaseDir, job.raw_path, rawExtraDirs)
@@ -8394,6 +8753,12 @@ class PipelineService extends EventEmitter {
         error_message: null
       });
 
+      // Thumbnail aus Cache in persistenten Ordner verschieben
+      const promotedUrl = thumbnailService.promoteJobThumbnail(jobId);
+      if (promotedUrl) {
+        await historyService.updateJob(jobId, { poster_url: promotedUrl }).catch(() => {});
+      }
+
       logger.info('encoding:finished', { jobId, mode, outputPath: finalizedOutputPath });
       const finishedStatusTextBase = mode === 'reencode' ? 'Re-Encode abgeschlossen' : 'Job abgeschlossen';
       const finishedStatusText = postEncodeScriptsSummary.failed > 0
@@ -8795,39 +9160,235 @@ class PipelineService extends EventEmitter {
     logger.info('retry:start', { jobId });
     this.cancelRequestedByJob.delete(Number(jobId));
 
-    const job = await historyService.getJobById(jobId);
-    if (!job) {
+    let sourceJob = await historyService.getJobById(jobId);
+    if (!sourceJob) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
       error.statusCode = 404;
       throw error;
     }
 
-    if (!job.title && !job.detected_title) {
+    if (!sourceJob.title && !sourceJob.detected_title) {
       const error = new Error('Retry nicht möglich: keine Metadaten vorhanden.');
       error.statusCode = 400;
       throw error;
     }
 
-    await historyService.resetProcessLog(jobId);
+    const sourceStatus = String(sourceJob.status || '').trim().toUpperCase();
+    const sourceLastState = String(sourceJob.last_state || '').trim().toUpperCase();
+    const retryable = ['ERROR', 'CANCELLED'].includes(sourceStatus)
+      || ['ERROR', 'CANCELLED'].includes(sourceLastState);
+    if (!retryable) {
+      const error = new Error(
+        `Retry nicht möglich: Job ${jobId} ist nicht im Status ERROR/CANCELLED (aktuell ${sourceStatus || sourceLastState || '-'}).`
+      );
+      error.statusCode = 409;
+      throw error;
+    }
 
-    await historyService.updateJob(jobId, {
-      status: 'RIPPING',
-      last_state: 'RIPPING',
+    const sourceMakemkvInfo = this.safeParseJson(sourceJob.makemkv_info_json);
+    const sourceEncodePlan = this.safeParseJson(sourceJob.encode_plan_json);
+    const mediaProfile = this.resolveMediaProfileForJob(sourceJob, {
+      makemkvInfo: sourceMakemkvInfo,
+      encodePlan: sourceEncodePlan
+    });
+    const isCdRetry = mediaProfile === 'cd';
+
+    let cdRetryConfig = null;
+    if (isCdRetry) {
+      const normalizeTrackPosition = (value) => {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          return null;
+        }
+        return Math.trunc(parsed);
+      };
+      const sourceTracks = Array.isArray(sourceMakemkvInfo?.tracks)
+        ? sourceMakemkvInfo.tracks
+        : (Array.isArray(sourceEncodePlan?.tracks) ? sourceEncodePlan.tracks : []);
+      if (sourceTracks.length === 0) {
+        const error = new Error('Retry nicht möglich: keine CD-Trackdaten im Quelljob vorhanden.');
+        error.statusCode = 400;
+        throw error;
+      }
+      const selectedTracks = normalizeCdTrackPositionList(
+        Array.isArray(sourceEncodePlan?.selectedTracks)
+          ? sourceEncodePlan.selectedTracks
+          : sourceTracks.filter((track) => track?.selected !== false).map((track) => normalizeTrackPosition(track?.position))
+      );
+      const selectedMetadata = sourceMakemkvInfo?.selectedMetadata && typeof sourceMakemkvInfo.selectedMetadata === 'object'
+        ? sourceMakemkvInfo.selectedMetadata
+        : {};
+      cdRetryConfig = {
+        format: String(sourceEncodePlan?.format || 'flac').trim().toLowerCase() || 'flac',
+        formatOptions: sourceEncodePlan?.formatOptions && typeof sourceEncodePlan.formatOptions === 'object'
+          ? sourceEncodePlan.formatOptions
+          : {},
+        selectedTracks: selectedTracks.length > 0
+          ? selectedTracks
+          : sourceTracks
+            .map((track) => normalizeTrackPosition(track?.position))
+            .filter((value) => Number.isFinite(value) && value > 0),
+        tracks: sourceTracks,
+        metadata: {
+          title: selectedMetadata?.title || sourceJob.title || sourceJob.detected_title || 'Audio CD',
+          artist: selectedMetadata?.artist || null,
+          year: selectedMetadata?.year ?? sourceJob.year ?? null,
+          mbId: selectedMetadata?.mbId
+            || selectedMetadata?.musicBrainzId
+            || selectedMetadata?.musicbrainzId
+            || selectedMetadata?.mbid
+            || null,
+          coverUrl: selectedMetadata?.coverUrl
+            || selectedMetadata?.poster
+            || selectedMetadata?.posterUrl
+            || sourceJob.poster_url
+            || null
+        },
+        selectedPreEncodeScriptIds: normalizeScriptIdList(sourceEncodePlan?.preEncodeScriptIds || []),
+        selectedPostEncodeScriptIds: normalizeScriptIdList(sourceEncodePlan?.postEncodeScriptIds || []),
+        selectedPreEncodeChainIds: normalizeChainIdList(sourceEncodePlan?.preEncodeChainIds || []),
+        selectedPostEncodeChainIds: normalizeChainIdList(sourceEncodePlan?.postEncodeChainIds || [])
+      };
+    } else {
+      const retrySettings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+      const retryRawBaseDir = String(retrySettings?.raw_dir || '').trim();
+      const retryRawExtraDirs = [
+        retrySettings?.raw_dir_bluray,
+        retrySettings?.raw_dir_dvd
+      ].map((dirPath) => String(dirPath || '').trim()).filter(Boolean);
+      const resolvedOldRawPath = sourceJob.raw_path
+        ? this.resolveCurrentRawPath(retryRawBaseDir, sourceJob.raw_path, retryRawExtraDirs)
+        : null;
+
+      if (resolvedOldRawPath) {
+        const oldRawFolderName = path.basename(resolvedOldRawPath);
+        const oldRawLooksLikeJobFolder = /\s-\sRAW\s-\sjob-\d+\s*$/i.test(stripRawStatePrefix(oldRawFolderName));
+        if (!oldRawLooksLikeJobFolder) {
+          const error = new Error(`Retry nicht möglich: alter RAW-Pfad ist kein Job-RAW-Ordner (${resolvedOldRawPath}).`);
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const rawDeletionRoots = Array.from(new Set(
+          [
+            retryRawBaseDir,
+            ...retryRawExtraDirs,
+            path.dirname(String(sourceJob.raw_path || '').trim())
+          ]
+            .map((dirPath) => normalizeComparablePath(dirPath))
+            .filter(Boolean)
+        ));
+        const oldRawPathAllowed = rawDeletionRoots.some((rootPath) => isPathInsideDirectory(rootPath, resolvedOldRawPath));
+        if (!oldRawPathAllowed) {
+          const error = new Error(
+            `Retry nicht möglich: alter RAW-Pfad liegt außerhalb der erlaubten RAW-Verzeichnisse (${resolvedOldRawPath}).`
+          );
+          error.statusCode = 400;
+          throw error;
+        }
+
+        try {
+          fs.rmSync(resolvedOldRawPath, { recursive: true, force: true });
+        } catch (deleteError) {
+          const error = new Error(`Retry nicht möglich: alter RAW-Ordner konnte nicht gelöscht werden (${deleteError.message}).`);
+          error.statusCode = 500;
+          throw error;
+        }
+        await historyService.appendLog(
+          jobId,
+          'USER_ACTION',
+          `Retry: alter RAW-Ordner wurde entfernt: ${resolvedOldRawPath}`
+        );
+        sourceJob = await historyService.updateJob(jobId, {
+          raw_path: null,
+          rip_successful: 0
+        });
+      } else if (sourceJob.raw_path) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Retry: alter RAW-Pfad ist nicht mehr vorhanden und wird aus dem Job entfernt (${sourceJob.raw_path}).`
+        );
+        sourceJob = await historyService.updateJob(jobId, {
+          raw_path: null,
+          rip_successful: 0
+        });
+      }
+    }
+
+    const retryJob = await historyService.createJob({
+      discDevice: sourceJob.disc_device || null,
+      status: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING',
+      detectedTitle: sourceJob.detected_title || sourceJob.title || null
+    });
+    const retryJobId = Number(retryJob?.id || 0);
+    if (!Number.isFinite(retryJobId) || retryJobId <= 0) {
+      throw new Error('Retry fehlgeschlagen: neuer Job konnte nicht erstellt werden.');
+    }
+
+    const retryUpdatePayload = {
+      parent_job_id: Number(jobId),
+      title: sourceJob.title || null,
+      year: sourceJob.year ?? null,
+      imdb_id: sourceJob.imdb_id || null,
+      poster_url: sourceJob.poster_url || null,
+      omdb_json: sourceJob.omdb_json || null,
+      selected_from_omdb: Number(sourceJob.selected_from_omdb || 0),
+      makemkv_info_json: sourceJob.makemkv_info_json || null,
+      rip_successful: 0,
       error_message: null,
       end_time: null,
       handbrake_info_json: null,
       mediainfo_info_json: null,
-      encode_plan_json: null,
+      encode_plan_json: isCdRetry
+        ? (sourceJob.encode_plan_json || null)
+        : null,
       encode_input_path: null,
       encode_review_confirmed: 0,
-      output_path: null
-    });
+      output_path: null,
+      status: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING',
+      last_state: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING'
+    };
+    await historyService.updateJob(retryJobId, retryUpdatePayload);
 
-    this.startRipEncode(jobId).catch((error) => {
-      logger.error('retry:background-failed', { jobId, error: errorToMeta(error) });
-    });
+    // Thumbnail für neuen Job kopieren, damit er nicht auf die Datei des alten Jobs angewiesen ist
+    if (thumbnailService.isLocalUrl(sourceJob.poster_url)) {
+      const copiedUrl = thumbnailService.copyThumbnail(Number(jobId), retryJobId);
+      if (copiedUrl) {
+        await historyService.updateJob(retryJobId, { poster_url: copiedUrl }).catch(() => {});
+      }
+    }
 
-    return { started: true };
+    await historyService.appendLog(
+      retryJobId,
+      'USER_ACTION',
+      `Retry aus Job #${jobId} gestartet (${isCdRetry ? 'CD' : 'Disc'}).`
+    );
+    await historyService.retireJobInFavorOf(jobId, retryJobId, {
+      reason: isCdRetry ? 'cd_retry' : 'retry'
+    });
+    this.cancelRequestedByJob.delete(retryJobId);
+
+    if (isCdRetry) {
+      this.startCdRip(retryJobId, cdRetryConfig || {}).catch((error) => {
+        logger.error('retry:cd:background-failed', {
+          jobId: retryJobId,
+          sourceJobId: jobId,
+          error: errorToMeta(error)
+        });
+      });
+    } else {
+      this.startRipEncode(retryJobId).catch((error) => {
+        logger.error('retry:background-failed', { jobId: retryJobId, sourceJobId: jobId, error: errorToMeta(error) });
+      });
+    }
+
+    return {
+      started: true,
+      sourceJobId: Number(jobId),
+      jobId: retryJobId,
+      replacedSourceJob: true
+    };
   }
 
   async resumeReadyToEncodeJob(jobId) {
@@ -8862,8 +9423,7 @@ class PipelineService extends EventEmitter {
     const resumeRawBaseDir = String(resumeSettings?.raw_dir || '').trim();
     const resumeRawExtraDirs = [
       resumeSettings?.raw_dir_bluray,
-      resumeSettings?.raw_dir_dvd,
-      resumeSettings?.raw_dir_other
+      resumeSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedResumeRawPath = job.raw_path
       ? this.resolveCurrentRawPath(resumeRawBaseDir, job.raw_path, resumeRawExtraDirs)
@@ -9056,8 +9616,7 @@ class PipelineService extends EventEmitter {
     const restartRawBaseDir = String(restartSettings?.raw_dir || '').trim();
     const restartRawExtraDirs = [
       restartSettings?.raw_dir_bluray,
-      restartSettings?.raw_dir_dvd,
-      restartSettings?.raw_dir_other
+      restartSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedRestartRawPath = job.raw_path
       ? this.resolveCurrentRawPath(restartRawBaseDir, job.raw_path, restartRawExtraDirs)
@@ -9093,16 +9652,37 @@ class PipelineService extends EventEmitter {
       ? Boolean(restartPlan?.encodeInputTitleId)
       : Boolean(inputPath);
 
-    await historyService.updateJob(jobId, {
+    const replacementJob = await historyService.createJob({
+      discDevice: job.disc_device || null,
+      status: 'READY_TO_ENCODE',
+      detectedTitle: job.detected_title || job.title || null
+    });
+    const replacementJobId = Number(replacementJob?.id || 0);
+    if (!Number.isFinite(replacementJobId) || replacementJobId <= 0) {
+      throw new Error('Encode-Neustart fehlgeschlagen: neuer Job konnte nicht erstellt werden.');
+    }
+
+    await historyService.updateJob(replacementJobId, {
+      parent_job_id: Number(jobId),
+      title: job.title || null,
+      year: job.year ?? null,
+      imdb_id: job.imdb_id || null,
+      poster_url: job.poster_url || null,
+      omdb_json: job.omdb_json || null,
+      selected_from_omdb: Number(job.selected_from_omdb || 0),
       status: 'READY_TO_ENCODE',
       last_state: 'READY_TO_ENCODE',
       error_message: null,
       end_time: null,
       output_path: null,
+      disc_device: job.disc_device || null,
+      raw_path: activeRestartRawPath || null,
+      rip_successful: Number(job.rip_successful || 0),
+      makemkv_info_json: job.makemkv_info_json || null,
       handbrake_info_json: null,
+      mediainfo_info_json: job.mediainfo_info_json || null,
       encode_plan_json: JSON.stringify(restartPlan),
       encode_input_path: inputPath,
-      ...(activeRestartRawPath ? { raw_path: activeRestartRawPath } : {}),
       encode_review_confirmed: 0
     });
     const loadedSelectionText = (
@@ -9122,10 +9702,13 @@ class PipelineService extends EventEmitter {
     } else {
       restartLogMessage = `Encode-Neustart angefordert. ${loadedSelectionText}`;
     }
-    await historyService.appendLog(jobId, 'USER_ACTION', restartLogMessage);
+    await historyService.appendLog(replacementJobId, 'USER_ACTION', restartLogMessage);
+    await historyService.retireJobInFavorOf(jobId, replacementJobId, {
+      reason: 'restart_encode'
+    });
 
     await this.setState('READY_TO_ENCODE', {
-      activeJobId: jobId,
+      activeJobId: replacementJobId,
       progress: 0,
       eta: null,
       statusText: hasEncodableTitle
@@ -9133,17 +9716,17 @@ class PipelineService extends EventEmitter {
           ? 'Vorherige Spurauswahl geladen - anpassen und Backup/Rip + Encode starten'
           : 'Vorherige Encode-Auswahl geladen - anpassen und Encoding starten')
         : (isPreRipMode
-          ? 'Vorherige Spurauswahl geladen - kein passender Titel gewählt'
+        ? 'Vorherige Spurauswahl geladen - kein passender Titel gewählt'
           : 'Vorherige Encode-Auswahl geladen - kein Titel erfüllt MIN_LENGTH_MINUTES'),
       context: {
         ...(this.snapshot.context || {}),
-        jobId,
+        jobId: replacementJobId,
         inputPath,
         hasEncodableTitle,
         reviewConfirmed: false,
         mode,
         mediaProfile: readyMediaProfile,
-        sourceJobId: restartPlan?.sourceJobId || null,
+        sourceJobId: Number(jobId),
         selectedMetadata,
         mediaInfoReview: restartPlan
       }
@@ -9153,7 +9736,10 @@ class PipelineService extends EventEmitter {
       restarted: true,
       started: false,
       stage: 'READY_TO_ENCODE',
-      reviewConfirmed: false
+      reviewConfirmed: false,
+      sourceJobId: Number(jobId),
+      jobId: replacementJobId,
+      replacedSourceJob: true
     };
   }
 
@@ -9176,11 +9762,10 @@ class PipelineService extends EventEmitter {
     }
 
     const reviewSettings = await settingsService.getSettingsMap();
-    const reviewRawBaseDir = String(reviewSettings?.raw_dir || '').trim();
+    const reviewRawBaseDir = settingsService.DEFAULT_RAW_DIR;
     const reviewRawExtraDirs = [
       reviewSettings?.raw_dir_bluray,
-      reviewSettings?.raw_dir_dvd,
-      reviewSettings?.raw_dir_other
+      reviewSettings?.raw_dir_dvd
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const resolvedReviewRawPath = this.resolveCurrentRawPath(reviewRawBaseDir, sourceJob.raw_path, reviewRawExtraDirs);
     if (!resolvedReviewRawPath) {
@@ -9233,17 +9818,12 @@ class PipelineService extends EventEmitter {
     }
 
     const staleQueueIndex = this.findQueueEntryIndexByJobId(Number(jobId));
+    let removedQueueActionLabel = null;
     if (staleQueueIndex >= 0) {
       const [removed] = this.queueEntries.splice(staleQueueIndex, 1);
-      await historyService.appendLog(
-        jobId,
-        'USER_ACTION',
-        `Queue-Eintrag entfernt (Review-Neustart): ${QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion'}`
-      );
+      removedQueueActionLabel = QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion';
       await this.emitQueueChanged();
     }
-
-    await historyService.resetProcessLog(jobId);
 
     const forcePlaylistReselection = Boolean(options?.forcePlaylistReselection);
     const previousEncodePlan = this.safeParseJson(sourceJob.encode_plan_json);
@@ -9280,44 +9860,91 @@ class PipelineService extends EventEmitter {
     if (resolvedReviewRawPath !== sourceJob.raw_path) {
       jobUpdatePayload.raw_path = resolvedReviewRawPath;
     }
-    await historyService.updateJob(jobId, jobUpdatePayload);
+
+    const replacementJob = await historyService.createJob({
+      discDevice: sourceJob.disc_device || null,
+      status: 'MEDIAINFO_CHECK',
+      detectedTitle: sourceJob.detected_title || sourceJob.title || null
+    });
+    const replacementJobId = Number(replacementJob?.id || 0);
+    if (!Number.isFinite(replacementJobId) || replacementJobId <= 0) {
+      throw new Error('Review-Neustart fehlgeschlagen: neuer Job konnte nicht erstellt werden.');
+    }
+
+    await historyService.updateJob(replacementJobId, {
+      parent_job_id: Number(jobId),
+      title: sourceJob.title || null,
+      year: sourceJob.year ?? null,
+      imdb_id: sourceJob.imdb_id || null,
+      poster_url: sourceJob.poster_url || null,
+      omdb_json: sourceJob.omdb_json || null,
+      selected_from_omdb: Number(sourceJob.selected_from_omdb || 0),
+      disc_device: sourceJob.disc_device || null,
+      rip_successful: Number(sourceJob.rip_successful || 0),
+      output_path: null,
+      handbrake_info_json: null,
+      mediainfo_info_json: null,
+      encode_plan_json: null,
+      encode_input_path: null,
+      encode_review_confirmed: 0,
+      ...jobUpdatePayload
+    });
+
+    // Thumbnail für neuen Job kopieren, damit er nicht auf die Datei des alten Jobs angewiesen ist
+    if (thumbnailService.isLocalUrl(sourceJob.poster_url)) {
+      const copiedUrl = thumbnailService.copyThumbnail(Number(jobId), replacementJobId);
+      if (copiedUrl) {
+        await historyService.updateJob(replacementJobId, { poster_url: copiedUrl }).catch(() => {});
+      }
+    }
+
+    if (removedQueueActionLabel) {
+      await historyService.appendLog(
+        replacementJobId,
+        'USER_ACTION',
+        `Queue-Eintrag entfernt (Review-Neustart): ${removedQueueActionLabel}`
+      );
+    }
     if (shouldRealignEncodeInput) {
       await historyService.appendLog(
-        jobId,
+        replacementJobId,
         'SYSTEM',
         `Review-Neustart: Encode-Input auf aktuellen RAW-Pfad abgeglichen: ${existingEncodeInputPath || '-'} -> ${normalizedReviewInputPath}`
       );
     }
     await historyService.appendLog(
-      jobId,
+      replacementJobId,
       'USER_ACTION',
       `Review-Neustart aus RAW angefordert.${forcePlaylistReselection ? ' Playlist-Auswahl wird zurückgesetzt.' : ''} MakeMKV Full-Analyse wird vollständig neu ausgeführt.`
     );
+    await historyService.retireJobInFavorOf(jobId, replacementJobId, {
+      reason: 'restart_review'
+    });
 
     await this.setState('MEDIAINFO_CHECK', {
-      activeJobId: jobId,
+      activeJobId: replacementJobId,
       progress: 0,
       eta: null,
       statusText: 'Titel-/Spurprüfung wird neu gestartet...',
       context: {
         ...(this.snapshot.context || {}),
-        jobId,
+        jobId: replacementJobId,
         reviewConfirmed: false,
         mediaInfoReview: null
       }
     });
 
-    this.runReviewForRawJob(jobId, resolvedReviewRawPath, {
+    this.runReviewForRawJob(replacementJobId, resolvedReviewRawPath, {
       mode: options?.mode || 'reencode',
-      sourceJobId: jobId,
+      sourceJobId: Number(jobId),
       forcePlaylistReselection,
       forceFreshAnalyze: true,
       previousEncodePlan
     }).catch((error) => {
-      logger.error('restartReviewFromRaw:background-failed', { jobId, error: errorToMeta(error) });
-      this.failJob(jobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
+      logger.error('restartReviewFromRaw:background-failed', { jobId: replacementJobId, sourceJobId: jobId, error: errorToMeta(error) });
+      this.failJob(replacementJobId, 'MEDIAINFO_CHECK', error).catch((failError) => {
         logger.error('restartReviewFromRaw:background-failJob-failed', {
-          jobId,
+          jobId: replacementJobId,
           error: errorToMeta(failError)
         });
       });
@@ -9327,7 +9954,9 @@ class PipelineService extends EventEmitter {
       restarted: true,
       started: true,
       stage: 'MEDIAINFO_CHECK',
-      jobId
+      sourceJobId: Number(jobId),
+      jobId: replacementJobId,
+      replacedSourceJob: true
     };
   }
 
@@ -9343,20 +9972,23 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
-    const queuedIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
-    if (queuedIndex >= 0) {
-      const [removed] = this.queueEntries.splice(queuedIndex, 1);
-      await historyService.appendLog(
-        normalizedJobId,
-        'USER_ACTION',
-        `Aus Queue entfernt: ${QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion'}`
-      );
-      await this.emitQueueChanged();
-      return {
-        cancelled: true,
-        queuedOnly: true,
-        jobId: normalizedJobId
-      };
+    const processHandle = this.activeProcesses.get(normalizedJobId) || null;
+    if (!processHandle) {
+      const queuedIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
+      if (queuedIndex >= 0) {
+        const [removed] = this.queueEntries.splice(queuedIndex, 1);
+        await historyService.appendLog(
+          normalizedJobId,
+          'USER_ACTION',
+          `Aus Queue entfernt: ${QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion'}`
+        );
+        await this.emitQueueChanged();
+        return {
+          cancelled: true,
+          queuedOnly: true,
+          jobId: normalizedJobId
+        };
+      }
     }
 
     const buildForcedCancelError = (message) => {
@@ -9447,7 +10079,6 @@ class PipelineService extends EventEmitter {
       || ''
     ).trim().toUpperCase();
 
-    const processHandle = this.activeProcesses.get(normalizedJobId) || null;
     if (!processHandle) {
       if (runningStatus === 'READY_TO_ENCODE') {
         // Kein laufender Prozess – Job direkt abbrechen
@@ -9485,11 +10116,29 @@ class PipelineService extends EventEmitter {
       throw error;
     }
 
+    let removedQueuedActionLabel = null;
+    const staleQueueIndex = this.findQueueEntryIndexByJobId(normalizedJobId);
+    if (staleQueueIndex >= 0) {
+      const [removed] = this.queueEntries.splice(staleQueueIndex, 1);
+      removedQueuedActionLabel = QUEUE_ACTION_LABELS[removed?.action] || removed?.action || 'Aktion';
+      await this.emitQueueChanged();
+      try {
+        await historyService.appendLog(
+          normalizedJobId,
+          'SYSTEM',
+          `Veralteter Queue-Eintrag beim Abbruch entfernt: ${removedQueuedActionLabel}`
+        );
+      } catch (_error) {
+        // keep cancel flow even if stale queue entry logging fails
+      }
+    }
+
     logger.warn('cancel:requested', {
       state: this.snapshot.state,
       activeJobId: this.snapshot.activeJobId,
       requestedJobId: normalizedJobId,
-      pid: processHandle?.child?.pid || null
+      pid: processHandle?.child?.pid || null,
+      removedQueuedAction: removedQueuedActionLabel
     });
     this.cancelRequestedByJob.add(normalizedJobId);
     processHandle.cancel();
@@ -9714,7 +10363,18 @@ class PipelineService extends EventEmitter {
     const title = job?.title || job?.detected_title || `Job #${jobId}`;
     const finalState = isCancelled ? 'CANCELLED' : 'ERROR';
     logger[isCancelled ? 'warn' : 'error']('job:failed', { jobId, stage, error: errorToMeta(error) });
+    const makemkvInfo = this.safeParseJson(job?.makemkv_info_json);
     const encodePlan = this.safeParseJson(job?.encode_plan_json);
+    const resolvedMediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan,
+      makemkvInfo,
+      mediaProfile: normalizedStage.startsWith('CD_') ? 'cd' : null
+    });
+    const isCdFailure = resolvedMediaProfile === 'cd'
+      || normalizedStage.startsWith('CD_')
+      || String(job?.status || '').trim().toUpperCase().startsWith('CD_')
+      || String(job?.last_state || '').trim().toUpperCase().startsWith('CD_')
+      || (Array.isArray(makemkvInfo?.tracks) && makemkvInfo.tracks.length > 0);
     const mode = String(encodePlan?.mode || '').trim().toLowerCase();
     const isPreRipMode = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
     const hasEncodableInput = isPreRipMode
@@ -9776,6 +10436,61 @@ class PipelineService extends EventEmitter {
       'SYSTEM',
       `${isCancelled ? 'Abbruch' : 'Fehler'} in ${stage}: ${message}`
     );
+    const jobProgressContext = this.jobProgress.get(Number(jobId))?.context;
+    const cdSelectedMetadata = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+      ? makemkvInfo.selectedMetadata
+      : {};
+    const fallbackCdArtist = Array.isArray(makemkvInfo?.tracks)
+      ? (
+        makemkvInfo.tracks
+          .map((track) => String(track?.artist || '').trim())
+          .find(Boolean) || null
+      )
+      : null;
+    const resolvedCdMbId = String(
+      cdSelectedMetadata?.mbId
+      || cdSelectedMetadata?.musicBrainzId
+      || cdSelectedMetadata?.musicbrainzId
+      || cdSelectedMetadata?.mbid
+      || ''
+    ).trim() || null;
+    const resolvedCdCoverUrl = String(
+      cdSelectedMetadata?.coverUrl
+      || cdSelectedMetadata?.poster
+      || cdSelectedMetadata?.posterUrl
+      || job?.poster_url
+      || ''
+    ).trim() || null;
+    const resolvedSelectedMetadata = isCdFailure
+      ? {
+        title: cdSelectedMetadata?.title || job?.title || job?.detected_title || null,
+        artist: cdSelectedMetadata?.artist || fallbackCdArtist || null,
+        year: cdSelectedMetadata?.year ?? job?.year ?? null,
+        mbId: resolvedCdMbId,
+        coverUrl: resolvedCdCoverUrl,
+        imdbId: job?.imdb_id || null,
+        poster: job?.poster_url || resolvedCdCoverUrl || null
+      }
+      : {
+        title: job?.title || job?.detected_title || null,
+        year: job?.year || null,
+        imdbId: job?.imdb_id || null,
+        poster: job?.poster_url || null
+      };
+    const resolvedTracks = isCdFailure
+      ? (
+        Array.isArray(jobProgressContext?.tracks) && jobProgressContext.tracks.length > 0
+          ? jobProgressContext.tracks
+          : (Array.isArray(makemkvInfo?.tracks) ? makemkvInfo.tracks : [])
+      )
+      : [];
+    const resolvedCdRipConfig = isCdFailure
+      ? (
+        jobProgressContext?.cdRipConfig && typeof jobProgressContext.cdRipConfig === 'object'
+          ? jobProgressContext.cdRipConfig
+          : (encodePlan && typeof encodePlan === 'object' ? encodePlan : null)
+      )
+      : null;
 
     await this.setState(finalState, {
       activeJobId: jobId,
@@ -9783,17 +10498,22 @@ class PipelineService extends EventEmitter {
       eta: null,
       statusText: message,
       context: {
+        ...(jobProgressContext && typeof jobProgressContext === 'object' ? jobProgressContext : {}),
         jobId,
         stage,
         error: message,
         rawPath: job?.raw_path || null,
+        outputPath: job?.output_path || null,
+        mediaProfile: isCdFailure ? 'cd' : resolvedMediaProfile,
         inputPath: job?.encode_input_path || encodePlan?.encodeInputPath || null,
-        selectedMetadata: {
-          title: job?.title || job?.detected_title || null,
-          year: job?.year || null,
-          imdbId: job?.imdb_id || null,
-          poster: job?.poster_url || null
-        },
+        selectedMetadata: resolvedSelectedMetadata,
+        ...(isCdFailure ? {
+          tracks: resolvedTracks,
+          cdRipConfig: resolvedCdRipConfig,
+          cdLive: jobProgressContext?.cdLive || null,
+          devicePath: String(job?.disc_device || jobProgressContext?.devicePath || '').trim() || null,
+          cdparanoiaCmd: String(makemkvInfo?.cdparanoiaCmd || jobProgressContext?.cdparanoiaCmd || '').trim() || null
+        } : {}),
         canRestartEncodeFromLastSettings: hasConfirmedPlan,
         canRestartReviewFromRaw: hasRawPath
       }
@@ -9978,6 +10698,12 @@ class PipelineService extends EventEmitter {
       last_state: 'CD_READY_TO_RIP',
       makemkv_info_json: JSON.stringify(updatedCdInfo)
     });
+
+    // Bild in Cache laden (async, blockiert nicht)
+    if (coverUrl) {
+      thumbnailService.cacheJobThumbnail(jobId, coverUrl).catch(() => {});
+    }
+
     await historyService.appendLog(
       jobId,
       'SYSTEM',
@@ -10012,17 +10738,81 @@ class PipelineService extends EventEmitter {
 
   async startCdRip(jobId, ripConfig) {
     this.ensureNotBusy('startCdRip', jobId);
+    this.cancelRequestedByJob.delete(Number(jobId));
 
-    const job = await historyService.getJobById(jobId);
-    if (!job) {
+    const sourceJob = await historyService.getJobById(jobId);
+    if (!sourceJob) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
       error.statusCode = 404;
       throw error;
     }
 
-    const cdInfo = this.safeParseJson(job.makemkv_info_json) || {};
+    let activeJobId = Number(jobId);
+    let activeJob = sourceJob;
+    const sourceStatus = String(sourceJob.status || sourceJob.last_state || '').trim().toUpperCase();
+    const shouldReplaceSourceJob = sourceStatus === 'CANCELLED' || sourceStatus === 'ERROR';
+    if (shouldReplaceSourceJob) {
+      const replacementJob = await historyService.createJob({
+        discDevice: sourceJob.disc_device || null,
+        status: 'CD_READY_TO_RIP',
+        detectedTitle: sourceJob.detected_title || sourceJob.title || null
+      });
+      const replacementJobId = Number(replacementJob?.id || 0);
+      if (!Number.isFinite(replacementJobId) || replacementJobId <= 0) {
+        throw new Error('CD-Neustart fehlgeschlagen: neuer Job konnte nicht erstellt werden.');
+      }
+
+      await historyService.updateJob(replacementJobId, {
+        parent_job_id: Number(jobId),
+        title: sourceJob.title || null,
+        year: sourceJob.year ?? null,
+        imdb_id: sourceJob.imdb_id || null,
+        poster_url: sourceJob.poster_url || null,
+        omdb_json: sourceJob.omdb_json || null,
+        selected_from_omdb: Number(sourceJob.selected_from_omdb || 0),
+        status: 'CD_READY_TO_RIP',
+        last_state: 'CD_READY_TO_RIP',
+        error_message: null,
+        end_time: null,
+        output_path: null,
+        disc_device: sourceJob.disc_device || null,
+        raw_path: null,
+        rip_successful: 0,
+        makemkv_info_json: sourceJob.makemkv_info_json || null,
+        handbrake_info_json: null,
+        mediainfo_info_json: null,
+        encode_plan_json: null,
+        encode_input_path: null,
+        encode_review_confirmed: 0
+      });
+      // Thumbnail für neuen Job kopieren, damit er nicht auf die Datei des alten Jobs angewiesen ist
+      if (thumbnailService.isLocalUrl(sourceJob.poster_url)) {
+        const copiedUrl = thumbnailService.copyThumbnail(Number(jobId), replacementJobId);
+        if (copiedUrl) {
+          await historyService.updateJob(replacementJobId, { poster_url: copiedUrl }).catch(() => {});
+        }
+      }
+
+      await historyService.appendLog(
+        replacementJobId,
+        'USER_ACTION',
+        `CD-Rip Neustart aus Job #${jobId}. Alter Job wurde durch neuen Job ersetzt.`
+      );
+      await historyService.retireJobInFavorOf(jobId, replacementJobId, {
+        reason: 'cd_restart_rip'
+      });
+
+      activeJobId = replacementJobId;
+      activeJob = await historyService.getJobById(replacementJobId);
+      this.cancelRequestedByJob.delete(replacementJobId);
+      if (!activeJob) {
+        throw new Error(`CD-Neustart fehlgeschlagen: neuer Job #${replacementJobId} konnte nicht geladen werden.`);
+      }
+    }
+
+    const cdInfo = this.safeParseJson(activeJob.makemkv_info_json) || {};
     const device = this.detectedDisc || this.snapshot.context?.device;
-    const devicePath = String(device?.path || job.disc_device || '').trim();
+    const devicePath = String(device?.path || activeJob.disc_device || '').trim();
 
     if (!devicePath) {
       const error = new Error('Kein CD-Laufwerk bekannt.');
@@ -10073,7 +10863,7 @@ class PipelineService extends EventEmitter {
       ...selectedMeta,
       title: normalizeCdTrackText(incomingMeta?.title)
         || normalizeCdTrackText(selectedMeta?.title)
-        || normalizeCdTrackText(job?.title)
+        || normalizeCdTrackText(activeJob?.title)
         || normalizeCdTrackText(cdInfo?.detectedTitle)
         || 'Audio CD',
       artist: normalizeCdTrackText(incomingMeta?.artist)
@@ -10081,7 +10871,7 @@ class PipelineService extends EventEmitter {
         || null,
       year: normalizeOptionalYear(incomingMeta?.year)
         ?? normalizeOptionalYear(selectedMeta?.year)
-        ?? normalizeOptionalYear(job?.year)
+        ?? normalizeOptionalYear(activeJob?.year)
         ?? null
     };
     const mergedTracks = tocTracks.map((track) => {
@@ -10109,26 +10899,114 @@ class PipelineService extends EventEmitter {
     const effectiveSelectedTrackPositions = selectedTrackPositions.length > 0
       ? selectedTrackPositions
       : mergedTracks.filter((track) => track?.selected !== false).map((track) => track.position);
+    const selectedPreEncodeScriptIds = normalizeScriptIdList(ripConfig?.selectedPreEncodeScriptIds || []);
+    const selectedPostEncodeScriptIds = normalizeScriptIdList(ripConfig?.selectedPostEncodeScriptIds || []);
+    const selectedPreEncodeChainIds = normalizeChainIdList(ripConfig?.selectedPreEncodeChainIds || []);
+    const selectedPostEncodeChainIds = normalizeChainIdList(ripConfig?.selectedPostEncodeChainIds || []);
+
+    const [
+      selectedPreEncodeScripts,
+      selectedPostEncodeScripts,
+      selectedPreEncodeChains,
+      selectedPostEncodeChains
+    ] = await Promise.all([
+      scriptService.resolveScriptsByIds(selectedPreEncodeScriptIds, { strict: true }),
+      scriptService.resolveScriptsByIds(selectedPostEncodeScriptIds, { strict: true }),
+      scriptChainService.getChainsByIds(selectedPreEncodeChainIds),
+      scriptChainService.getChainsByIds(selectedPostEncodeChainIds)
+    ]);
+
+    const ensureResolvedChains = (requestedIds, resolvedChains, fieldName) => {
+      const resolved = Array.isArray(resolvedChains) ? resolvedChains : [];
+      const resolvedSet = new Set(
+        resolved
+          .map((chain) => Number(chain?.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .map((id) => Math.trunc(id))
+      );
+      const missing = requestedIds.filter((id) => !resolvedSet.has(Number(id)));
+      if (missing.length === 0) {
+        return;
+      }
+      const error = new Error(`Skriptkette(n) nicht gefunden: ${missing.join(', ')}`);
+      error.statusCode = 400;
+      error.details = [{ field: fieldName, message: `Nicht gefunden: ${missing.join(', ')}` }];
+      throw error;
+    };
+    ensureResolvedChains(selectedPreEncodeChainIds, selectedPreEncodeChains, 'selectedPreEncodeChainIds');
+    ensureResolvedChains(selectedPostEncodeChainIds, selectedPostEncodeChains, 'selectedPostEncodeChainIds');
+
+    const toScriptDescriptor = (script) => {
+      const id = Number(script?.id);
+      const normalizedId = Number.isFinite(id) && id > 0 ? Math.trunc(id) : null;
+      if (!normalizedId) {
+        return null;
+      }
+      const name = String(script?.name || '').trim() || `Skript #${normalizedId}`;
+      return { id: normalizedId, name };
+    };
+    const toChainDescriptor = (chain) => {
+      const id = Number(chain?.id);
+      const normalizedId = Number.isFinite(id) && id > 0 ? Math.trunc(id) : null;
+      if (!normalizedId) {
+        return null;
+      }
+      const name = String(chain?.name || '').trim() || `Kette #${normalizedId}`;
+      return { id: normalizedId, name };
+    };
 
     const settings = await settingsService.getEffectiveSettingsMap('cd');
     const cdparanoiaCmd = String(settings.cdparanoia_command || 'cdparanoia').trim() || 'cdparanoia';
     const cdOutputTemplate = String(
       settings.cd_output_template || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE
     ).trim() || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE;
-    const cdBaseDir = String(settings.raw_dir_cd || '').trim() || 'data/output/cd';
+    const cdBaseDir = String(settings.raw_dir || '').trim() || settingsService.DEFAULT_CD_DIR;
     const cdOutputOwner = String(settings.raw_dir_owner || '').trim();
-    const jobDir = `CD_Job${jobId}_${Date.now()}`;
-    const rawWavDir = path.join(cdBaseDir, '.tmp', jobDir, 'wav');
-    const cdTempJobDir = path.dirname(rawWavDir);
+    const cdMetadataBase = buildRawMetadataBase({
+      title: effectiveSelectedMeta?.album || effectiveSelectedMeta?.title || null,
+      year: effectiveSelectedMeta?.year || null
+    }, activeJobId);
+    const rawDirName = buildRawDirName(cdMetadataBase, activeJobId, { state: RAW_FOLDER_STATES.INCOMPLETE });
+    const rawJobDir = path.join(cdBaseDir, rawDirName);
+    const rawWavDir = rawJobDir;
     const outputDir = cdRipService.buildOutputDir(effectiveSelectedMeta, cdBaseDir, cdOutputTemplate);
     ensureDir(cdBaseDir);
-    ensureDir(cdTempJobDir);
+    ensureDir(rawJobDir);
     ensureDir(outputDir);
-    chownRecursive(cdTempJobDir, cdOutputOwner);
+    chownRecursive(rawJobDir, cdOutputOwner);
     chownRecursive(outputDir, cdOutputOwner);
     const previewTrackPos = effectiveSelectedTrackPositions[0] || mergedTracks[0]?.position || 1;
     const previewWavPath = path.join(rawWavDir, `track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`);
     const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath} ${previewTrackPos} ${previewWavPath}`;
+    const cdLiveTrackRows = buildCdLiveTrackRows(
+      effectiveSelectedTrackPositions,
+      mergedTracks,
+      effectiveSelectedMeta?.artist
+    );
+    const initialCdLive = buildCdLiveProgressSnapshot({
+      trackRows: cdLiveTrackRows,
+      phase: 'rip',
+      trackIndex: cdLiveTrackRows.length > 0 ? 1 : 0,
+      trackTotal: cdLiveTrackRows.length,
+      trackPosition: cdLiveTrackRows[0]?.position || null,
+      ripCompletedCount: 0,
+      encodeCompletedCount: 0
+    });
+    const cdEncodePlan = {
+      format,
+      formatOptions,
+      selectedTracks: effectiveSelectedTrackPositions,
+      tracks: mergedTracks,
+      outputTemplate: cdOutputTemplate,
+      preEncodeScriptIds: selectedPreEncodeScripts.map((item) => Number(item.id)),
+      postEncodeScriptIds: selectedPostEncodeScripts.map((item) => Number(item.id)),
+      preEncodeScripts: selectedPreEncodeScripts.map(toScriptDescriptor).filter(Boolean),
+      postEncodeScripts: selectedPostEncodeScripts.map(toScriptDescriptor).filter(Boolean),
+      preEncodeChainIds: selectedPreEncodeChainIds,
+      postEncodeChainIds: selectedPostEncodeChainIds,
+      preEncodeChains: selectedPreEncodeChains.map(toChainDescriptor).filter(Boolean),
+      postEncodeChains: selectedPostEncodeChains.map(toChainDescriptor).filter(Boolean)
+    };
 
     const updatedCdInfo = {
       ...cdInfo,
@@ -10136,56 +11014,70 @@ class PipelineService extends EventEmitter {
       selectedMetadata: effectiveSelectedMeta
     };
 
-    await historyService.updateJob(jobId, {
+    await historyService.updateJob(activeJobId, {
       title: effectiveSelectedMeta?.title || null,
       year: normalizeOptionalYear(effectiveSelectedMeta?.year),
       status: 'CD_RIPPING',
       last_state: 'CD_RIPPING',
       error_message: null,
-      raw_path: null,
+      raw_path: rawJobDir,
       output_path: outputDir,
+      handbrake_info_json: null,
+      mediainfo_info_json: null,
       makemkv_info_json: JSON.stringify(updatedCdInfo),
-      encode_plan_json: JSON.stringify({
-        format,
-        formatOptions,
-        selectedTracks: effectiveSelectedTrackPositions,
-        tracks: mergedTracks,
-        outputTemplate: cdOutputTemplate
-      })
+      encode_plan_json: JSON.stringify(cdEncodePlan)
     });
 
     await this.setState('CD_RIPPING', {
-      activeJobId: jobId,
+      activeJobId,
       progress: 0,
       eta: null,
       statusText: 'CD wird gerippt …',
       context: {
         ...(this.snapshot.context || {}),
-        jobId,
+        jobId: activeJobId,
         mediaProfile: 'cd',
         tracks: mergedTracks,
         selectedMetadata: effectiveSelectedMeta,
         devicePath,
         cdparanoiaCmd,
         rawWavDir,
+        outputPath: outputDir,
         outputTemplate: cdOutputTemplate,
+        cdRipConfig: cdEncodePlan,
+        cdLive: initialCdLive,
         cdparanoiaCommandPreview
       }
     });
 
-    logger.info('cd:rip:start', { jobId, devicePath, format, trackCount: effectiveSelectedTrackPositions.length });
+    logger.info('cd:rip:start', { jobId: activeJobId, devicePath, format, trackCount: effectiveSelectedTrackPositions.length });
     await historyService.appendLog(
-      jobId,
+      activeJobId,
       'SYSTEM',
       `CD-Rip gestartet: Format=${format}, Tracks=${effectiveSelectedTrackPositions.join(',') || 'alle'}`
     );
+    if (
+      selectedPreEncodeScripts.length > 0
+      || selectedPreEncodeChains.length > 0
+      || selectedPostEncodeScripts.length > 0
+      || selectedPostEncodeChains.length > 0
+    ) {
+      await historyService.appendLog(
+        activeJobId,
+        'SYSTEM',
+        `CD Skript-Auswahl: Pre-Skripte=${selectedPreEncodeScripts.length}, Pre-Ketten=${selectedPreEncodeChains.length}, `
+        + `Post-Skripte=${selectedPostEncodeScripts.length}, Post-Ketten=${selectedPostEncodeChains.length}.`
+      );
+    }
 
     // Run asynchronously so the HTTP response returns immediately
     this._runCdRip({
-      jobId,
+      jobId: activeJobId,
       devicePath,
       cdparanoiaCmd,
       rawWavDir,
+      rawBaseDir: cdBaseDir,
+      cdMetadataBase,
       outputDir,
       format,
       formatOptions,
@@ -10193,12 +11085,18 @@ class PipelineService extends EventEmitter {
       outputOwner: cdOutputOwner,
       selectedTrackPositions: effectiveSelectedTrackPositions,
       tocTracks: mergedTracks,
-      selectedMeta: effectiveSelectedMeta
+      selectedMeta: effectiveSelectedMeta,
+      encodePlan: cdEncodePlan
     }).catch((error) => {
-      logger.error('cd:rip:unhandled', { jobId, error: errorToMeta(error) });
+      logger.error('cd:rip:unhandled', { jobId: activeJobId, error: errorToMeta(error) });
     });
 
-    return { jobId, started: true };
+    return {
+      jobId: activeJobId,
+      sourceJobId: shouldReplaceSourceJob ? Number(jobId) : null,
+      replacedSourceJob: shouldReplaceSourceJob,
+      started: true
+    };
   }
 
   async _runCdRip({
@@ -10206,6 +11104,8 @@ class PipelineService extends EventEmitter {
     devicePath,
     cdparanoiaCmd,
     rawWavDir,
+    rawBaseDir,
+    cdMetadataBase,
     outputDir,
     format,
     formatOptions,
@@ -10213,7 +11113,8 @@ class PipelineService extends EventEmitter {
     outputOwner,
     selectedTrackPositions,
     tocTracks,
-    selectedMeta
+    selectedMeta,
+    encodePlan = null
   }) {
     const processKey = Number(jobId);
     let currentProcessHandle = null;
@@ -10244,6 +11145,59 @@ class PipelineService extends EventEmitter {
     this.syncPrimaryActiveProcess();
 
     try {
+      const normalizedEncodePlan = encodePlan && typeof encodePlan === 'object' ? encodePlan : {};
+      const preScriptIds = normalizeScriptIdList(normalizedEncodePlan?.preEncodeScriptIds || []);
+      const preChainIds = normalizeChainIdList(normalizedEncodePlan?.preEncodeChainIds || []);
+      const postScriptIds = normalizeScriptIdList(normalizedEncodePlan?.postEncodeScriptIds || []);
+      const postChainIds = normalizeChainIdList(normalizedEncodePlan?.postEncodeChainIds || []);
+      let preEncodeScriptsSummary = {
+        configured: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+        results: []
+      };
+      let postEncodeScriptsSummary = {
+        configured: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+        results: []
+      };
+      const selectedTrackOrder = normalizeCdTrackPositionList(selectedTrackPositions);
+      const liveTrackRows = buildCdLiveTrackRows(selectedTrackOrder, tocTracks, selectedMeta?.artist);
+      const effectiveTrackTotal = liveTrackRows.length;
+      let ripCompletedCount = 0;
+      let encodeCompletedCount = 0;
+      let currentPhase = 'rip';
+      let currentTrackIndex = effectiveTrackTotal > 0 ? 1 : 0;
+      let currentTrackPosition = liveTrackRows[0]?.position || null;
+      const buildLiveContext = (failedTrackPosition = null) => buildCdLiveProgressSnapshot({
+        trackRows: liveTrackRows,
+        phase: currentPhase,
+        trackIndex: currentTrackIndex,
+        trackTotal: effectiveTrackTotal,
+        trackPosition: currentTrackPosition,
+        ripCompletedCount,
+        encodeCompletedCount,
+        failedTrackPosition
+      });
+      if (preScriptIds.length > 0 || preChainIds.length > 0) {
+        await historyService.appendLog(jobId, 'SYSTEM', 'Pre-Rip Skripte/Ketten werden ausgeführt...');
+        preEncodeScriptsSummary = await this.runPreEncodeScripts(jobId, normalizedEncodePlan, {
+          mode: 'cd_rip',
+          jobId,
+          jobTitle: selectedMeta?.title || `Job #${jobId}`,
+          inputPath: devicePath || null,
+          outputPath: outputDir || null,
+          rawPath: rawWavDir || null,
+          mediaProfile: 'cd',
+          pipelineStage: 'CD_RIPPING'
+        });
+        await historyService.appendLog(jobId, 'SYSTEM', 'Pre-Rip Skripte/Ketten abgeschlossen.');
+      }
       let encodeStateApplied = false;
       let lastProgressPercent = 0;
       const bindProcessHandle = (handle) => {
@@ -10272,9 +11226,15 @@ class PipelineService extends EventEmitter {
         meta: selectedMeta,
         onProcessHandle: bindProcessHandle,
         isCancelled: () => this.cancelRequestedByJob.has(processKey),
-        onProgress: async ({ phase, percent, trackIndex, trackTotal }) => {
+        onProgress: async ({ phase, percent, trackIndex, trackTotal, trackPosition, trackEvent }) => {
           const normalizedPhase = phase === 'encode' ? 'encode' : 'rip';
           const stage = normalizedPhase === 'rip' ? 'CD_RIPPING' : 'CD_ENCODING';
+          const normalizedTrackTotal = normalizePositiveInteger(trackTotal) || effectiveTrackTotal;
+          const normalizedTrackIndex = normalizePositiveInteger(trackIndex)
+            || currentTrackIndex
+            || (normalizedTrackTotal > 0 ? 1 : 0);
+          const normalizedTrackPosition = normalizePositiveInteger(trackPosition) || currentTrackPosition || null;
+          const normalizedTrackEvent = String(trackEvent || '').trim().toLowerCase();
           let clampedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
           if (normalizedPhase === 'rip') {
             clampedPercent = Math.min(clampedPercent, 50);
@@ -10284,7 +11244,35 @@ class PipelineService extends EventEmitter {
           if (clampedPercent < lastProgressPercent) {
             clampedPercent = lastProgressPercent;
           }
+          clampedPercent = Number(clampedPercent.toFixed(2));
           lastProgressPercent = clampedPercent;
+
+          if (normalizedPhase === 'rip') {
+            currentPhase = 'rip';
+            currentTrackIndex = normalizedTrackIndex;
+            currentTrackPosition = normalizedTrackPosition;
+            if (normalizedTrackEvent === 'complete') {
+              ripCompletedCount = Math.max(ripCompletedCount, normalizedTrackIndex);
+              if (ripCompletedCount >= normalizedTrackTotal) {
+                currentTrackPosition = null;
+              }
+            } else {
+              ripCompletedCount = Math.max(ripCompletedCount, Math.max(0, normalizedTrackIndex - 1));
+            }
+          } else {
+            currentPhase = 'encode';
+            ripCompletedCount = Math.max(ripCompletedCount, normalizedTrackTotal);
+            currentTrackIndex = normalizedTrackIndex;
+            currentTrackPosition = normalizedTrackPosition;
+            if (normalizedTrackEvent === 'complete') {
+              encodeCompletedCount = Math.max(encodeCompletedCount, normalizedTrackIndex);
+              if (encodeCompletedCount >= normalizedTrackTotal) {
+                currentTrackPosition = null;
+              }
+            } else {
+              encodeCompletedCount = Math.max(encodeCompletedCount, Math.max(0, normalizedTrackIndex - 1));
+            }
+          }
 
           if (normalizedPhase === 'encode' && !encodeStateApplied) {
             encodeStateApplied = true;
@@ -10301,7 +11289,11 @@ class PipelineService extends EventEmitter {
             ? `CD wird gerippt …${detail}`
             : `Tracks werden encodiert …${detail}`;
 
-          await this.updateProgress(stage, clampedPercent, null, statusText, processKey);
+          await this.updateProgress(stage, clampedPercent, null, statusText, processKey, {
+            contextPatch: {
+              cdLive: buildLiveContext(null)
+            }
+          });
         },
         onLog: async (level, msg) => {
           await historyService.appendLog(jobId, 'SYSTEM', msg).catch(() => {});
@@ -10310,26 +11302,95 @@ class PipelineService extends EventEmitter {
       });
       settleLifecycle();
 
+      if (postScriptIds.length > 0 || postChainIds.length > 0) {
+        await historyService.appendLog(jobId, 'SYSTEM', 'Post-Rip Skripte/Ketten werden ausgeführt...');
+        try {
+          postEncodeScriptsSummary = await this.runPostEncodeScripts(jobId, normalizedEncodePlan, {
+            mode: 'cd_rip',
+            jobId,
+            jobTitle: selectedMeta?.title || `Job #${jobId}`,
+            inputPath: devicePath || null,
+            outputPath: outputDir || null,
+            rawPath: rawWavDir || null,
+            mediaProfile: 'cd',
+            pipelineStage: 'CD_ENCODING'
+          });
+        } catch (error) {
+          logger.warn('cd:rip:post-script:failed', { jobId, error: errorToMeta(error) });
+          await historyService.appendLog(
+            jobId,
+            'SYSTEM',
+            `Post-Rip Skripte/Ketten konnten nicht vollständig ausgeführt werden: ${error?.message || 'unknown'}`
+          );
+        }
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Post-Rip Skripte/Ketten abgeschlossen: ${postEncodeScriptsSummary.succeeded} erfolgreich, `
+          + `${postEncodeScriptsSummary.failed} fehlgeschlagen, ${postEncodeScriptsSummary.skipped} übersprungen.`
+        );
+      }
+
+      // RAW-Verzeichnis von Incomplete_ → finalen Namen umbenennen
+      let activeRawDir = rawWavDir;
+      try {
+        const completedRawDirName = buildRawDirName(cdMetadataBase, jobId, { state: RAW_FOLDER_STATES.COMPLETE });
+        const completedRawDir = path.join(rawBaseDir, completedRawDirName);
+        if (activeRawDir !== completedRawDir && fs.existsSync(activeRawDir) && !fs.existsSync(completedRawDir)) {
+          fs.renameSync(activeRawDir, completedRawDir);
+          activeRawDir = completedRawDir;
+        }
+      } catch (_renameError) {
+        // ignore – raw dir bleibt unter Incomplete_-Name zugänglich
+      }
+
       // Success
       await historyService.updateJob(jobId, {
         status: 'FINISHED',
         last_state: 'FINISHED',
         end_time: nowIso(),
         rip_successful: 1,
-        output_path: outputDir
+        raw_path: activeRawDir,
+        output_path: outputDir,
+        handbrake_info_json: JSON.stringify({
+          mode: 'cd_rip',
+          preEncodeScripts: preEncodeScriptsSummary,
+          postEncodeScripts: postEncodeScriptsSummary
+        })
       });
+
+      // Thumbnail aus Cache in persistenten Ordner verschieben
+      const cdPromotedUrl = thumbnailService.promoteJobThumbnail(jobId);
+      if (cdPromotedUrl) {
+        await historyService.updateJob(jobId, { poster_url: cdPromotedUrl }).catch(() => {});
+      }
+
+      chownRecursive(activeRawDir, outputOwner);
       chownRecursive(outputDir, outputOwner);
       await historyService.appendLog(jobId, 'SYSTEM', `CD-Rip abgeschlossen. Ausgabe: ${outputDir}`);
+      const finishedStatusText = postEncodeScriptsSummary.failed > 0
+        ? `CD-Rip abgeschlossen (${postEncodeScriptsSummary.failed} Skript(e) fehlgeschlagen)`
+        : 'CD-Rip abgeschlossen';
+      currentPhase = 'encode';
+      ripCompletedCount = effectiveTrackTotal;
+      encodeCompletedCount = effectiveTrackTotal;
+      currentTrackIndex = effectiveTrackTotal;
+      currentTrackPosition = null;
+      const finishedCdLive = buildLiveContext(null);
 
       await this.setState('FINISHED', {
         activeJobId: jobId,
         progress: 100,
         eta: null,
-        statusText: 'CD-Rip abgeschlossen',
+        statusText: finishedStatusText,
         context: {
           jobId,
           mediaProfile: 'cd',
+          tracks: tocTracks,
           outputDir,
+          outputPath: outputDir,
+          cdRipConfig: normalizedEncodePlan,
+          cdLive: finishedCdLive,
           selectedMetadata: selectedMeta
         }
       });
@@ -10340,17 +11401,22 @@ class PipelineService extends EventEmitter {
       });
     } catch (error) {
       settleLifecycle();
+      const failedCdLive = buildLiveContext(currentTrackPosition || null);
+      await this.updateProgress(
+        this.snapshot.state === 'CD_ENCODING' ? 'CD_ENCODING' : 'CD_RIPPING',
+        this.snapshot.progress,
+        null,
+        this.snapshot.statusText,
+        processKey,
+        {
+          contextPatch: {
+            cdLive: failedCdLive
+          }
+        }
+      );
       logger.error('cd:rip:failed', { jobId, error: errorToMeta(error) });
       await this.failJob(jobId, this.snapshot.state === 'CD_ENCODING' ? 'CD_ENCODING' : 'CD_RIPPING', error);
     } finally {
-      try {
-        const cdTempJobDir = path.dirname(String(rawWavDir || ''));
-        if (cdTempJobDir && cdTempJobDir !== '.' && cdTempJobDir !== path.sep) {
-          fs.rmSync(cdTempJobDir, { recursive: true, force: true });
-        }
-      } catch (_cleanupError) {
-        // ignore temp cleanup issues
-      }
       this.activeProcesses.delete(processKey);
       this.syncPrimaryActiveProcess();
     }

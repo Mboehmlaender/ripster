@@ -19,6 +19,7 @@ const diskDetectionService = require('./services/diskDetectionService');
 const hardwareMonitorService = require('./services/hardwareMonitorService');
 const logger = require('./services/logger').child('BOOT');
 const { errorToMeta } = require('./utils/errorMeta');
+const { getThumbnailsDir, migrateExistingThumbnails } = require('./services/thumbnailService');
 
 async function start() {
   logger.info('backend:start:init');
@@ -40,6 +41,7 @@ async function start() {
   app.use('/api/history', historyRoutes);
   app.use('/api/crons', cronRoutes);
   app.use('/api/runtime', runtimeRoutes);
+  app.use('/api/thumbnails', express.static(getThumbnailsDir(), { maxAge: '30d', immutable: true }));
 
   app.use(errorHandler);
 
@@ -72,6 +74,8 @@ async function start() {
 
   server.listen(port, () => {
     logger.info('backend:listening', { port });
+    // Bestehende Job-Bilder im Hintergrund migrieren (blockiert nicht den Start)
+    migrateExistingThumbnails().catch(() => {});
   });
 
   const shutdown = () => {

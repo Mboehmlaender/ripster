@@ -8,6 +8,38 @@ const { parseToc } = require('./cdRipService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_POLL_INTERVAL_MS = 4000;
+const MIN_POLL_INTERVAL_MS = 1000;
+const MAX_POLL_INTERVAL_MS = 60000;
+
+function toBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return fallback;
+}
+
+function clampPollIntervalMs(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_POLL_INTERVAL_MS;
+  }
+  const clamped = Math.max(MIN_POLL_INTERVAL_MS, Math.min(MAX_POLL_INTERVAL_MS, Math.trunc(parsed)));
+  return clamped || DEFAULT_POLL_INTERVAL_MS;
+}
 
 function flattenDevices(nodes, acc = []) {
   for (const node of nodes || []) {
@@ -55,9 +87,6 @@ function normalizeMediaProfile(rawValue) {
   }
   if (value === 'cd' || value === 'audio_cd') {
     return 'cd';
-  }
-  if (value === 'disc' || value === 'other' || value === 'sonstiges') {
-    return 'other';
   }
   return null;
 }
@@ -188,18 +217,24 @@ class DiskDetectionService extends EventEmitter {
     }
 
     this.timer = setTimeout(async () => {
-      let nextDelay = 4000;
+      let nextDelay = DEFAULT_POLL_INTERVAL_MS;
 
       try {
         const map = await settingsService.getSettingsMap();
-        nextDelay = Number(map.disc_poll_interval_ms || 4000);
+        nextDelay = clampPollIntervalMs(map.disc_poll_interval_ms);
+        const autoDetectionEnabled = toBoolean(map.disc_auto_detection_enabled, true);
         logger.debug('poll:tick', {
           driveMode: map.drive_mode,
           driveDevice: map.drive_device,
-          nextDelay
+          nextDelay,
+          autoDetectionEnabled
         });
-        const detected = await this.detectDisc(map);
-        this.applyDetectionResult(detected, { forceInsertEvent: false });
+        if (autoDetectionEnabled) {
+          const detected = await this.detectDisc(map);
+          this.applyDetectionResult(detected, { forceInsertEvent: false });
+        } else {
+          logger.debug('poll:skip:auto-detection-disabled', { nextDelay });
+        }
       } catch (error) {
         logger.error('poll:error', { error: errorToMeta(error) });
         this.emit('error', error);

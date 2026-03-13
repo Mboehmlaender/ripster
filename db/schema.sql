@@ -24,6 +24,7 @@ CREATE TABLE settings_values (
 
 CREATE TABLE jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_job_id INTEGER,
   title TEXT,
   year INTEGER,
   imdb_id TEXT,
@@ -47,11 +48,29 @@ CREATE TABLE jobs (
   encode_input_path TEXT,
   encode_review_confirmed INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (parent_job_id) REFERENCES jobs(id) ON DELETE SET NULL
 );
 
 CREATE INDEX idx_jobs_status ON jobs(status);
 CREATE INDEX idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX idx_jobs_parent_job_id ON jobs(parent_job_id);
+
+CREATE TABLE job_lineage_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL,
+  source_job_id INTEGER,
+  media_type TEXT,
+  raw_path TEXT,
+  output_path TEXT,
+  reason TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_job_lineage_artifacts_job_id ON job_lineage_artifacts(job_id);
+CREATE INDEX idx_job_lineage_artifacts_source_job_id ON job_lineage_artifacts(source_job_id);
 
 CREATE TABLE scripts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,28 +170,20 @@ CREATE INDEX idx_user_presets_media_type ON user_presets(media_type);
 
 -- Pfade – Eigentümer für alternative Verzeichnisse (inline in DynamicSettingsForm gerendert)
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_bluray_owner', 'Pfade', 'Eigentümer Raw-Ordner (Blu-ray)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1015);
+VALUES ('raw_dir_bluray_owner', 'Pfade', 'Eigentümer Raw-Ordner (Blu-ray)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1015);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_bluray_owner', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_dvd_owner', 'Pfade', 'Eigentümer Raw-Ordner (DVD)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1025);
+VALUES ('raw_dir_dvd_owner', 'Pfade', 'Eigentümer Raw-Ordner (DVD)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1025);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_dvd_owner', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_other_owner', 'Pfade', 'Eigentümer Raw-Ordner (Sonstiges)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1035);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_other_owner', NULL);
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_bluray_owner', 'Pfade', 'Eigentümer Film-Ordner (Blu-ray)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1115);
+VALUES ('movie_dir_bluray_owner', 'Pfade', 'Eigentümer Film-Ordner (Blu-ray)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1115);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_bluray_owner', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_dvd_owner', 'Pfade', 'Eigentümer Film-Ordner (DVD)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1125);
+VALUES ('movie_dir_dvd_owner', 'Pfade', 'Eigentümer Film-Ordner (DVD)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1125);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_dvd_owner', NULL);
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_other_owner', 'Pfade', 'Eigentümer Film-Ordner (Sonstiges)', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1135);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_other_owner', NULL);
 
 -- Laufwerk
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
@@ -188,41 +199,29 @@ VALUES ('makemkv_source_index', 'Laufwerk', 'MakeMKV Source Index', 'number', 1,
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_source_index', '0');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('disc_auto_detection_enabled', 'Laufwerk', 'Automatische Disk-Erkennung', 'boolean', 1, 'Wenn deaktiviert, findet keine automatische Laufwerksprüfung statt. Neue Disks werden nur per "Laufwerk neu lesen" erkannt.', 'true', '[]', '{}', 35);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('disc_auto_detection_enabled', 'true');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('disc_poll_interval_ms', 'Laufwerk', 'Polling Intervall (ms)', 'number', 1, 'Intervall für Disk-Erkennung.', '4000', '[]', '{"min":1000,"max":60000}', 40);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('disc_poll_interval_ms', '4000');
 
 -- Pfade
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir', 'Pfade', 'Raw Ausgabeordner', 'path', 1, 'Zwischenablage für MakeMKV Rip.', 'data/output/raw', '[]', '{"minLength":1}', 100);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir', 'data/output/raw');
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_bluray', 'Pfade', 'Raw Ausgabeordner (Blu-ray)', 'path', 0, 'Optionaler RAW-Zielpfad nur für Blu-ray. Leer = Fallback auf "Raw Ausgabeordner".', NULL, '[]', '{}', 101);
+VALUES ('raw_dir_bluray', 'Pfade', 'Raw-Ordner (Blu-ray)', 'path', 0, 'RAW-Zielpfad für Blu-ray. Leer = Standardpfad (data/output/raw).', NULL, '[]', '{}', 101);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_bluray', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_dvd', 'Pfade', 'Raw Ausgabeordner (DVD)', 'path', 0, 'Optionaler RAW-Zielpfad nur für DVD. Leer = Fallback auf "Raw Ausgabeordner".', NULL, '[]', '{}', 102);
+VALUES ('raw_dir_dvd', 'Pfade', 'Raw-Ordner (DVD)', 'path', 0, 'RAW-Zielpfad für DVD. Leer = Standardpfad (data/output/raw).', NULL, '[]', '{}', 102);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_dvd', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_other', 'Pfade', 'Raw Ausgabeordner (Sonstiges)', 'path', 0, 'Optionaler RAW-Zielpfad nur für Sonstiges. Leer = Fallback auf "Raw Ausgabeordner".', NULL, '[]', '{}', 103);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_other', NULL);
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir', 'Pfade', 'Film Ausgabeordner', 'path', 1, 'Finale HandBrake Ausgabe.', 'data/output/movies', '[]', '{"minLength":1}', 110);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir', 'data/output/movies');
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_bluray', 'Pfade', 'Film Ausgabeordner (Blu-ray)', 'path', 0, 'Optionaler Encode-Zielpfad nur für Blu-ray. Leer = Fallback auf "Film Ausgabeordner".', NULL, '[]', '{}', 111);
+VALUES ('movie_dir_bluray', 'Pfade', 'Film-Ordner (Blu-ray)', 'path', 0, 'Encode-Zielpfad für Blu-ray. Leer = Standardpfad (data/output/movies).', NULL, '[]', '{}', 111);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_bluray', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_dvd', 'Pfade', 'Film Ausgabeordner (DVD)', 'path', 0, 'Optionaler Encode-Zielpfad nur für DVD. Leer = Fallback auf "Film Ausgabeordner".', NULL, '[]', '{}', 112);
+VALUES ('movie_dir_dvd', 'Pfade', 'Film-Ordner (DVD)', 'path', 0, 'Encode-Zielpfad für DVD. Leer = Standardpfad (data/output/movies).', NULL, '[]', '{}', 112);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_dvd', NULL);
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('movie_dir_other', 'Pfade', 'Film Ausgabeordner (Sonstiges)', 'path', 0, 'Optionaler Encode-Zielpfad nur für Sonstiges. Leer = Fallback auf "Film Ausgabeordner".', NULL, '[]', '{}', 113);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_other', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('log_dir', 'Pfade', 'Log Ordner', 'path', 1, 'Basisordner für Logs. Job-Logs liegen direkt hier, Backend-Logs in /backend.', 'data/logs', '[]', '{"minLength":1}', 120);
@@ -263,8 +262,27 @@ VALUES ('handbrake_restart_delete_incomplete_output', 'Tools', 'Encode-Neustart:
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('handbrake_restart_delete_incomplete_output', 'true');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('pipeline_max_parallel_jobs', 'Tools', 'Parallele Jobs', 'number', 1, 'Maximale Anzahl parallel laufender Jobs. Weitere Starts landen in der Queue.', '1', '[]', '{"min":1,"max":12}', 225);
+VALUES ('pipeline_max_parallel_jobs', 'Tools', 'Max. parallele Film/Video Encodes', 'number', 1, 'Maximale Anzahl parallel laufender Film/Video Encode-Jobs. Gilt zusätzlich zum Gesamtlimit.', '1', '[]', '{"min":1,"max":12}', 225);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('pipeline_max_parallel_jobs', '1');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('pipeline_max_parallel_cd_encodes', 'Tools', 'Max. parallele Audio CD Jobs', 'number', 1, 'Maximale Anzahl parallel laufender Audio CD Jobs (Rip + Encode als Einheit). Gilt zusätzlich zum Gesamtlimit.', '2', '[]', '{"min":1,"max":12}', 226);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('pipeline_max_parallel_cd_encodes', '2');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('pipeline_max_total_encodes', 'Tools', 'Max. Encodes gesamt (medienunabhängig)', 'number', 1, 'Gesamtlimit für alle parallel laufenden Encode-Jobs (Film + Audio CD). Dieses Limit hat Vorrang vor den Einzellimits.', '3', '[]', '{"min":1,"max":24}', 227);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('pipeline_max_total_encodes', '3');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('pipeline_cd_bypasses_queue', 'Tools', 'Audio CDs: Queue-Reihenfolge überspringen', 'boolean', 1, 'Wenn aktiv, können Audio CD Jobs unabhängig von Film-Jobs starten (überspringen die Film-Queue-Reihenfolge). Einzellimits und Gesamtlimit gelten weiterhin.', 'false', '[]', '{}', 228);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('pipeline_cd_bypasses_queue', 'false');
+
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('script_test_timeout_ms', 'Tools', 'Script-Test Timeout (ms)', 'number', 1, 'Timeout fuer Script-Tests in den Settings. 0 = kein Timeout.', '0', '[]', '{"min":0,"max":86400000}', 229);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('script_test_timeout_ms', '0');
+
+-- Migration: Label für bestehende Installationen aktualisieren
+UPDATE settings_schema SET label = 'Max. parallele Film/Video Encodes', description = 'Maximale Anzahl parallel laufender Film/Video Encode-Jobs. Gilt zusätzlich zum Gesamtlimit.' WHERE key = 'pipeline_max_parallel_jobs' AND label = 'Parallele Jobs';
 
 -- Tools – Blu-ray
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
@@ -296,12 +314,8 @@ VALUES ('output_extension_bluray', 'Tools', 'Ausgabeformat', 'select', 1, 'Datei
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_extension_bluray', 'mkv');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('filename_template_bluray', 'Tools', 'Dateiname Template', 'string', 1, 'Verfügbare Tokens: ${title}, ${year}, ${imdbId} (Blu-ray).', '${title} (${year})', '[]', '{"minLength":1}', 335);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('filename_template_bluray', '${title} (${year})');
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('output_folder_template_bluray', 'Tools', 'Ordnername Template', 'string', 0, 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template (Blu-ray).', NULL, '[]', '{}', 340);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_folder_template_bluray', NULL);
+VALUES ('output_template_bluray', 'Pfade', 'Output Template (Blu-ray)', 'string', 1, 'Template für Ordner und Dateiname. Platzhalter: ${title}, ${year}, ${imdbId}. Unterordner über "/" möglich – alles nach dem letzten "/" ist der Dateiname. Die Endung wird über das gewählte Ausgabeformat gesetzt.', '${title} (${year})/${title} (${year})', '[]', '{"minLength":1}', 335);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_template_bluray', '${title} (${year})/${title} (${year})');
 
 -- Tools – DVD
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
@@ -310,7 +324,7 @@ INSERT OR IGNORE INTO settings_values (key, value) VALUES ('mediainfo_extra_args
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('makemkv_rip_mode_dvd', 'Tools', 'MakeMKV Rip Modus', 'select', 1, 'mkv: direkte MKV-Dateien; backup: vollständige Disc-Struktur im RAW-Ordner.', 'mkv', '[{"label":"MKV","value":"mkv"},{"label":"Backup","value":"backup"}]', '{}', 505);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_mode_dvd', 'mkv');
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_mode_dvd', 'backup');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('makemkv_analyze_extra_args_dvd', 'Tools', 'MakeMKV Analyze Extra Args', 'string', 0, 'Zusätzliche CLI-Parameter für Analyze (DVD).', NULL, '[]', '{}', 510);
@@ -333,12 +347,8 @@ VALUES ('output_extension_dvd', 'Tools', 'Ausgabeformat', 'select', 1, 'Dateiend
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_extension_dvd', 'mkv');
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('filename_template_dvd', 'Tools', 'Dateiname Template', 'string', 1, 'Verfügbare Tokens: ${title}, ${year}, ${imdbId} (DVD).', '${title} (${year})', '[]', '{"minLength":1}', 535);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('filename_template_dvd', '${title} (${year})');
-
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('output_folder_template_dvd', 'Tools', 'Ordnername Template', 'string', 0, 'Optional. Verfügbare Tokens: ${title}, ${year}, ${imdbId}. Leer = Dateiname-Template (DVD).', NULL, '[]', '{}', 540);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_folder_template_dvd', NULL);
+VALUES ('output_template_dvd', 'Pfade', 'Output Template (DVD)', 'string', 1, 'Template für Ordner und Dateiname. Platzhalter: ${title}, ${year}, ${imdbId}. Unterordner über "/" möglich – alles nach dem letzten "/" ist der Dateiname. Die Endung wird über das gewählte Ausgabeformat gesetzt.', '${title} (${year})/${title} (${year})', '[]', '{"minLength":1}', 535);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_template_dvd', '${title} (${year})/${title} (${year})');
 
 -- Tools – CD
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
@@ -348,11 +358,11 @@ INSERT OR IGNORE INTO settings_values (key, value) VALUES ('cdparanoia_command',
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES (
   'cd_output_template',
-  'Tools',
+  'Pfade',
   'CD Output Template',
   'string',
   1,
-  'Template für relative CD-Ausgabepfade ohne Dateiendung. Platzhalter: {artist}, {album}, {year}, {title}, {trackNr}, {trackNo}. Unterordner sind über "/" möglich. Die Endung wird über das gewählte Ausgabeformat gesetzt.',
+  'Template für relative CD-Ausgabepfade ohne Dateiendung. Platzhalter: {artist}, {album}, {year}, {title}, {trackNr}, {trackNo}. Unterordner sind über "/" möglich – alles nach dem letzten "/" ist der Dateiname. Die Endung wird über das gewählte Ausgabeformat gesetzt.',
   '{artist} - {album} ({year})/{trackNr} {artist} - {title}',
   '[]',
   '{"minLength":1}',
@@ -363,11 +373,11 @@ VALUES ('cd_output_template', '{artist} - {album} ({year})/{trackNr} {artist} - 
 
 -- Pfade – CD
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_cd', 'Pfade', 'CD Ausgabeordner', 'path', 0, 'Optionaler Ausgabeordner für geripppte CD-Dateien. Leer = Fallback auf "Raw Ausgabeordner".', '/opt/ripster/backend/data/output/cd', '[]', '{}', 104);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd', '/opt/ripster/backend/data/output/cd');
+VALUES ('raw_dir_cd', 'Pfade', 'CD RAW-Ordner', 'path', 0, 'Basisordner für CD-Rips. Enthält die WAV-Rohdaten (RAW) sowie den encodierten Audio-Output. Leer = Standardpfad (data/output/cd).', NULL, '[]', '{}', 104);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('raw_dir_cd_owner', 'Pfade', 'Eigentümer CD-Ordner', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein alternativer Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1045);
+VALUES ('raw_dir_cd_owner', 'Pfade', 'Eigentümer CD-Ordner', 'string', 0, 'Eigentümer der Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1045);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_cd_owner', NULL);
 
 -- Metadaten
@@ -384,6 +394,10 @@ VALUES ('musicbrainz_enabled', 'Metadaten', 'MusicBrainz aktiviert', 'boolean', 
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('musicbrainz_enabled', 'true');
 
 -- Benachrichtigungen
+INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+VALUES ('ui_expert_mode', 'Benachrichtigungen', 'Expertenmodus', 'boolean', 1, 'Schaltet erweiterte Einstellungen in der UI ein.', 'false', '[]', '{}', 495);
+INSERT OR IGNORE INTO settings_values (key, value) VALUES ('ui_expert_mode', 'false');
+
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('pushover_enabled', 'Benachrichtigungen', 'PushOver aktiviert', 'boolean', 1, 'Master-Schalter für PushOver Versand.', 'false', '[]', '{}', 500);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('pushover_enabled', 'false');

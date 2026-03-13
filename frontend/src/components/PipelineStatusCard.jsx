@@ -243,8 +243,23 @@ function renderTemplate(template, values) {
   });
 }
 
-function buildOutputPathPreview(settings, metadata, fallbackJobId = null) {
-  const movieDir = String(settings?.movie_dir || '').trim();
+function resolveProfiledSetting(settings, key, mediaProfile) {
+  const profileKey = mediaProfile ? `${key}_${mediaProfile}` : null;
+  if (profileKey && settings?.[profileKey] != null && settings[profileKey] !== '') {
+    return settings[profileKey];
+  }
+  const fallbackProfiles = mediaProfile === 'bluray' ? ['dvd'] : ['bluray'];
+  for (const fb of fallbackProfiles) {
+    const fbKey = `${key}_${fb}`;
+    if (settings?.[fbKey] != null && settings[fbKey] !== '') {
+      return settings[fbKey];
+    }
+  }
+  return settings?.[key] ?? null;
+}
+
+function buildOutputPathPreview(settings, mediaProfile, metadata, fallbackJobId = null) {
+  const movieDir = String(resolveProfiledSetting(settings, 'movie_dir', mediaProfile) || '').trim();
   if (!movieDir) {
     return null;
   }
@@ -252,13 +267,26 @@ function buildOutputPathPreview(settings, metadata, fallbackJobId = null) {
   const title = metadata?.title || (fallbackJobId ? `job-${fallbackJobId}` : 'job');
   const year = metadata?.year || new Date().getFullYear();
   const imdbId = metadata?.imdbId || (fallbackJobId ? `job-${fallbackJobId}` : 'noimdb');
-  const fileTemplate = settings?.filename_template || '${title} (${year})';
-  const folderTemplate = String(settings?.output_folder_template || '').trim() || fileTemplate;
-  const folderName = sanitizeFileName(renderTemplate(folderTemplate, { title, year, imdbId }));
-  const baseName = sanitizeFileName(renderTemplate(fileTemplate, { title, year, imdbId }));
-  const ext = String(settings?.output_extension || 'mkv').trim() || 'mkv';
+  const DEFAULT_TEMPLATE = '${title} (${year})/${title} (${year})';
+  const rawTemplate = resolveProfiledSetting(settings, 'output_template', mediaProfile);
+  const template = String(rawTemplate || DEFAULT_TEMPLATE).trim() || DEFAULT_TEMPLATE;
+  const rendered = renderTemplate(template, { title, year, imdbId });
+  const segments = rendered
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .map((seg) => sanitizeFileName(seg))
+    .filter(Boolean);
+  const baseName = segments.length > 0 ? segments[segments.length - 1] : 'untitled';
+  const folderParts = segments.slice(0, -1);
+  const rawExt = resolveProfiledSetting(settings, 'output_extension', mediaProfile);
+  const ext = String(rawExt || 'mkv').trim() || 'mkv';
   const root = movieDir.replace(/\/+$/g, '');
-  return `${root}/${folderName}/${baseName}.${ext}`;
+  if (folderParts.length > 0) {
+    return `${root}/${folderParts.join('/')}/${baseName}.${ext}`;
+  }
+  return `${root}/${baseName}.${ext}`;
 }
 
 export default function PipelineStatusCard({
@@ -515,8 +543,8 @@ export default function PipelineStatusCard({
 
   const playlistDecisionRequiredBeforeStart = state === 'WAITING_FOR_USER_DECISION';
   const commandOutputPath = useMemo(
-    () => buildOutputPathPreview(settingsMap, selectedMetadata, retryJobId),
-    [settingsMap, selectedMetadata, retryJobId]
+    () => buildOutputPathPreview(settingsMap, jobMediaProfile, selectedMetadata, retryJobId),
+    [settingsMap, jobMediaProfile, selectedMetadata, retryJobId]
   );
   const presetDisplayValue = useMemo(() => {
     const preset = String(mediaInfoReview?.selectors?.preset || '').trim();

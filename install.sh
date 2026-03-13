@@ -384,7 +384,7 @@ apt_update
 
 info "Installiere Basispakete..."
 apt-get install -y \
-  curl wget git \
+  curl wget git jq \
   mediainfo \
   util-linux udev \
   ca-certificates gnupg \
@@ -552,6 +552,11 @@ LOG_LEVEL=info
 
 # CORS: Erlaube Anfragen vom Frontend (nginx)
 CORS_ORIGIN=http://${FRONTEND_HOST}
+
+# Standard-Ausgabepfade (Fallback wenn in den Einstellungen kein Pfad gesetzt)
+DEFAULT_RAW_DIR=${INSTALL_DIR}/backend/data/output/raw
+DEFAULT_MOVIE_DIR=${INSTALL_DIR}/backend/data/output/movies
+DEFAULT_CD_DIR=${INSTALL_DIR}/backend/data/output/cd
 EOF
   ok "Backend .env erstellt"
 fi

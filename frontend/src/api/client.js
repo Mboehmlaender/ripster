@@ -116,6 +116,12 @@ export const api = {
       forceRefresh: options.forceRefresh
     });
   },
+  getEffectivePaths(options = {}) {
+    return requestCachedGet('/settings/effective-paths', {
+      ttlMs: 30 * 1000,
+      forceRefresh: options.forceRefresh
+    });
+  },
   getHandBrakePresets(options = {}) {
     return requestCachedGet('/settings/handbrake-presets', {
       ttlMs: 10 * 60 * 1000,
@@ -437,10 +443,17 @@ export const api = {
     afterMutationInvalidate(['/history']);
     return result;
   },
-  async deleteJobEntry(jobId, target = 'none') {
+  getJobDeletePreview(jobId, options = {}) {
+    const includeRelated = options?.includeRelated !== false;
+    const query = new URLSearchParams();
+    query.set('includeRelated', includeRelated ? '1' : '0');
+    return request(`/history/${jobId}/delete-preview?${query.toString()}`);
+  },
+  async deleteJobEntry(jobId, target = 'none', options = {}) {
+    const includeRelated = Boolean(options?.includeRelated);
     const result = await request(`/history/${jobId}/delete`, {
       method: 'POST',
-      body: JSON.stringify({ target })
+      body: JSON.stringify({ target, includeRelated })
     });
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;

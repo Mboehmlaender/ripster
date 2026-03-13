@@ -30,6 +30,15 @@ router.get(
 );
 
 router.get(
+  '/effective-paths',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:settings:effective-paths', { reqId: req.reqId });
+    const paths = await settingsService.getEffectivePaths();
+    res.json(paths);
+  })
+);
+
+router.get(
   '/handbrake-presets',
   asyncHandler(async (req, res) => {
     logger.debug('get:settings:handbrake-presets', { reqId: req.reqId });

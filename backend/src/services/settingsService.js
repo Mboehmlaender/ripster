@@ -13,6 +13,8 @@ const {
 const { splitArgs } = require('../utils/commandLine');
 const { setLogRootDir } = require('./logPathService');
 
+const { defaultRawDir: DEFAULT_RAW_DIR, defaultMovieDir: DEFAULT_MOVIE_DIR, defaultCdDir: DEFAULT_CD_DIR } = require('../config');
+
 const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
 const HANDBRAKE_PRESET_LIST_TIMEOUT_MS = 30000;
 const SETTINGS_CACHE_TTL_MS = 15000;
@@ -36,29 +38,25 @@ const SUBTITLE_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-subtitles', '--first-s
 const SUBTITLE_FLAG_KEYS_WITH_VALUE = new Set(['--subtitle-burned', '--subtitle-default', '--subtitle-forced']);
 const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
 const LOG_DIR_SETTING_KEY = 'log_dir';
-const MEDIA_PROFILES = ['bluray', 'dvd', 'other', 'cd'];
+const MEDIA_PROFILES = ['bluray', 'dvd', 'cd'];
 const PROFILED_SETTINGS = {
   raw_dir: {
     bluray: 'raw_dir_bluray',
     dvd: 'raw_dir_dvd',
-    other: 'raw_dir_other',
     cd: 'raw_dir_cd'
   },
   raw_dir_owner: {
     bluray: 'raw_dir_bluray_owner',
     dvd: 'raw_dir_dvd_owner',
-    other: 'raw_dir_other_owner',
     cd: 'raw_dir_cd_owner'
   },
   movie_dir: {
     bluray: 'movie_dir_bluray',
-    dvd: 'movie_dir_dvd',
-    other: 'movie_dir_other'
+    dvd: 'movie_dir_dvd'
   },
   movie_dir_owner: {
     bluray: 'movie_dir_bluray_owner',
-    dvd: 'movie_dir_dvd_owner',
-    other: 'movie_dir_other_owner'
+    dvd: 'movie_dir_dvd_owner'
   },
   mediainfo_extra_args: {
     bluray: 'mediainfo_extra_args_bluray',
@@ -88,13 +86,9 @@ const PROFILED_SETTINGS = {
     bluray: 'output_extension_bluray',
     dvd: 'output_extension_dvd'
   },
-  filename_template: {
-    bluray: 'filename_template_bluray',
-    dvd: 'filename_template_dvd'
-  },
-  output_folder_template: {
-    bluray: 'output_folder_template_bluray',
-    dvd: 'output_folder_template_dvd'
+  output_template: {
+    bluray: 'output_template_bluray',
+    dvd: 'output_template_dvd'
   }
 };
 const STRICT_PROFILE_ONLY_SETTING_KEYS = new Set([
@@ -373,8 +367,8 @@ function normalizeMediaProfileValue(value) {
   ) {
     return 'dvd';
   }
-  if (raw === 'disc' || raw === 'other' || raw === 'sonstiges' || raw === 'cd') {
-    return 'other';
+  if (raw === 'cd' || raw === 'audio_cd') {
+    return 'cd';
   }
   return null;
 }
@@ -385,9 +379,6 @@ function resolveProfileFallbackOrder(profile) {
     return ['bluray', 'dvd'];
   }
   if (normalized === 'dvd') {
-    return ['dvd', 'bluray'];
-  }
-  if (normalized === 'other') {
     return ['dvd', 'bluray'];
   }
   return ['dvd', 'bluray'];
@@ -694,6 +685,14 @@ class SettingsService {
         if (hasUsableProfileSpecificValue(selectedProfileValue)) {
           resolvedValue = selectedProfileValue;
         }
+        // Fallback to hardcoded install defaults when no setting value is configured
+        if (!hasUsableProfileSpecificValue(resolvedValue)) {
+          if (legacyKey === 'raw_dir') {
+            resolvedValue = normalizedRequestedProfile === 'cd' ? DEFAULT_CD_DIR : DEFAULT_RAW_DIR;
+          } else if (legacyKey === 'movie_dir') {
+            resolvedValue = DEFAULT_MOVIE_DIR;
+          }
+        }
         effective[legacyKey] = resolvedValue;
         continue;
       }
@@ -716,6 +715,23 @@ class SettingsService {
   async getEffectiveSettingsMap(mediaProfile = null) {
     const map = await this.getSettingsMap();
     return this.resolveEffectiveToolSettings(map, mediaProfile);
+  }
+
+  async getEffectivePaths() {
+    const map = await this.getSettingsMap();
+    const bluray = this.resolveEffectiveToolSettings(map, 'bluray');
+    const dvd = this.resolveEffectiveToolSettings(map, 'dvd');
+    const cd = this.resolveEffectiveToolSettings(map, 'cd');
+    return {
+      bluray: { raw: bluray.raw_dir, movies: bluray.movie_dir },
+      dvd: { raw: dvd.raw_dir, movies: dvd.movie_dir },
+      cd: { raw: cd.raw_dir },
+      defaults: {
+        raw: DEFAULT_RAW_DIR,
+        movies: DEFAULT_MOVIE_DIR,
+        cd: DEFAULT_CD_DIR
+      }
+    };
   }
 
   async fetchFlatSettingsFromDb() {
@@ -1458,4 +1474,8 @@ class SettingsService {
   }
 }
 
-module.exports = new SettingsService();
+const settingsServiceInstance = new SettingsService();
+settingsServiceInstance.DEFAULT_RAW_DIR = DEFAULT_RAW_DIR;
+settingsServiceInstance.DEFAULT_MOVIE_DIR = DEFAULT_MOVIE_DIR;
+settingsServiceInstance.DEFAULT_CD_DIR = DEFAULT_CD_DIR;
+module.exports = settingsServiceInstance;

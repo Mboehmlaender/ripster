@@ -6,6 +6,7 @@ import { Dropdown } from 'primereact/dropdown';
 import { Button } from 'primereact/button';
 import { Tag } from 'primereact/tag';
 import { Toast } from 'primereact/toast';
+import { Dialog } from 'primereact/dialog';
 import { api } from '../api/client';
 import JobDetailDialog from '../components/JobDetailDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
@@ -22,6 +23,7 @@ const MEDIA_FILTER_OPTIONS = [
   { label: 'Alle Medien', value: '' },
   { label: 'Blu-ray', value: 'bluray' },
   { label: 'DVD', value: 'dvd' },
+  { label: 'Audio CD', value: 'cd' },
   { label: 'Sonstiges', value: 'other' }
 ];
 
@@ -36,13 +38,30 @@ const SORT_OPTIONS = [
   { label: 'Medium: Z -> A', value: '!sortMediaType' }
 ];
 
+const CD_FORMAT_LABELS = {
+  flac: 'FLAC',
+  wav: 'WAV',
+  mp3: 'MP3',
+  opus: 'Opus',
+  ogg: 'Ogg Vorbis'
+};
+
+function normalizePositiveInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
 function resolveMediaType(row) {
+  const encodePlan = row?.encodePlan && typeof row.encodePlan === 'object' ? row.encodePlan : null;
   const candidates = [
     row?.mediaType,
     row?.media_type,
     row?.mediaProfile,
     row?.media_profile,
-    row?.encodePlan?.mediaProfile,
+    encodePlan?.mediaProfile,
     row?.makemkvInfo?.analyzeContext?.mediaProfile,
     row?.makemkvInfo?.mediaProfile,
     row?.mediainfoInfo?.mediaProfile
@@ -58,6 +77,28 @@ function resolveMediaType(row) {
     if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
       return 'dvd';
     }
+    if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
+      return 'cd';
+    }
+  }
+  const statusCandidates = [
+    row?.status,
+    row?.last_state,
+    row?.makemkvInfo?.lastState
+  ];
+  if (statusCandidates.some((value) => String(value || '').trim().toUpperCase().startsWith('CD_'))) {
+    return 'cd';
+  }
+  const planFormat = String(encodePlan?.format || '').trim().toLowerCase();
+  const hasCdTracksInPlan = Array.isArray(encodePlan?.selectedTracks) && encodePlan.selectedTracks.length > 0;
+  if (hasCdTracksInPlan && ['flac', 'wav', 'mp3', 'opus', 'ogg'].includes(planFormat)) {
+    return 'cd';
+  }
+  if (String(row?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'cd_rip') {
+    return 'cd';
+  }
+  if (Array.isArray(row?.makemkvInfo?.tracks) && row.makemkvInfo.tracks.length > 0) {
+    return 'cd';
   }
   return 'other';
 }
@@ -80,12 +121,107 @@ function resolveMediaTypeMeta(row) {
       alt: 'DVD'
     };
   }
+  if (mediaType === 'cd') {
+    return {
+      mediaType,
+      icon: otherIndicatorIcon,
+      label: 'Audio CD',
+      alt: 'Audio CD'
+    };
+  }
   return {
     mediaType,
     icon: otherIndicatorIcon,
     label: 'Sonstiges',
     alt: 'Sonstiges Medium'
   };
+}
+
+function formatDurationSeconds(totalSeconds) {
+  const parsed = Number(totalSeconds);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  const rounded = Math.max(0, Math.trunc(parsed));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const seconds = rounded % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function resolveCdDetails(row) {
+  const encodePlan = row?.encodePlan && typeof row.encodePlan === 'object' ? row.encodePlan : {};
+  const makemkvInfo = row?.makemkvInfo && typeof row.makemkvInfo === 'object' ? row.makemkvInfo : {};
+  const selectedMetadata = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : {};
+  const tracksSource = Array.isArray(makemkvInfo?.tracks) && makemkvInfo.tracks.length > 0
+    ? makemkvInfo.tracks
+    : (Array.isArray(encodePlan?.tracks) ? encodePlan.tracks : []);
+  const tracks = tracksSource
+    .map((track) => {
+      const position = normalizePositiveInteger(track?.position);
+      if (!position) {
+        return null;
+      }
+      return {
+        ...track,
+        position,
+        selected: track?.selected !== false
+      };
+    })
+    .filter(Boolean);
+  const selectedTracksFromPlan = Array.isArray(encodePlan?.selectedTracks)
+    ? encodePlan.selectedTracks
+      .map((value) => normalizePositiveInteger(value))
+      .filter(Boolean)
+    : [];
+  const selectedTrackPositions = selectedTracksFromPlan.length > 0
+    ? selectedTracksFromPlan
+    : tracks.filter((track) => track.selected !== false).map((track) => track.position);
+  const fallbackArtist = tracks
+    .map((track) => String(track?.artist || '').trim())
+    .find(Boolean) || null;
+  const totalDurationSec = tracks.reduce((sum, track) => {
+    const durationMs = Number(track?.durationMs);
+    const durationSec = Number(track?.durationSec);
+    if (Number.isFinite(durationMs) && durationMs > 0) {
+      return sum + (durationMs / 1000);
+    }
+    if (Number.isFinite(durationSec) && durationSec > 0) {
+      return sum + durationSec;
+    }
+    return sum;
+  }, 0);
+  const format = String(encodePlan?.format || '').trim().toLowerCase();
+  const mbId = String(
+    selectedMetadata?.mbId
+    || selectedMetadata?.musicBrainzId
+    || selectedMetadata?.musicbrainzId
+    || selectedMetadata?.mbid
+    || ''
+  ).trim() || null;
+
+  return {
+    artist: String(selectedMetadata?.artist || '').trim() || fallbackArtist || null,
+    trackCount: tracks.length,
+    selectedTrackCount: selectedTrackPositions.length,
+    format,
+    formatLabel: format ? (CD_FORMAT_LABELS[format] || format.toUpperCase()) : null,
+    totalDurationLabel: formatDurationSeconds(totalDurationSec),
+    mbId
+  };
+}
+
+function getOutputLabelForRow(row) {
+  return resolveMediaType(row) === 'cd' ? 'Audio-Dateien' : 'Movie-Datei(en)';
+}
+
+function getOutputShortLabelForRow(row) {
+  return resolveMediaType(row) === 'cd' ? 'Audio' : 'Movie';
 }
 
 function normalizeJobId(value) {
@@ -173,6 +309,11 @@ export default function HistoryPage() {
   const [actionBusy, setActionBusy] = useState(false);
   const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
   const [deleteEntryBusy, setDeleteEntryBusy] = useState(false);
+  const [deleteEntryDialogVisible, setDeleteEntryDialogVisible] = useState(false);
+  const [deleteEntryDialogRow, setDeleteEntryDialogRow] = useState(null);
+  const [deleteEntryPreview, setDeleteEntryPreview] = useState(null);
+  const [deleteEntryPreviewLoading, setDeleteEntryPreviewLoading] = useState(false);
+  const [deleteEntryTargetBusy, setDeleteEntryTargetBusy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
@@ -321,7 +462,9 @@ export default function HistoryPage() {
   };
 
   const handleDeleteFiles = async (row, target) => {
-    const label = target === 'raw' ? 'RAW-Dateien' : target === 'movie' ? 'Movie-Datei(en)' : 'RAW + Movie';
+    const outputLabel = getOutputLabelForRow(row);
+    const outputShortLabel = getOutputShortLabelForRow(row);
+    const label = target === 'raw' ? 'RAW-Dateien' : target === 'movie' ? outputLabel : `RAW + ${outputShortLabel}`;
     const title = row.title || row.detected_title || `Job #${row.id}`;
     const confirmed = window.confirm(`${label} für "${title}" wirklich löschen?`);
     if (!confirmed) {
@@ -335,7 +478,7 @@ export default function HistoryPage() {
       toastRef.current?.show({
         severity: 'success',
         summary: 'Dateien gelöscht',
-        detail: `RAW: ${summary.raw?.filesDeleted ?? 0}, MOVIE: ${summary.movie?.filesDeleted ?? 0}`,
+        detail: `RAW: ${summary.raw?.filesDeleted ?? 0}, ${outputShortLabel}: ${summary.movie?.filesDeleted ?? 0}`,
         life: 3500
       });
       await load();
@@ -440,28 +583,129 @@ export default function HistoryPage() {
     }
   };
 
-  const handleDeleteEntry = async (row) => {
+  const handleRetry = async (row) => {
     const title = row?.title || row?.detected_title || `Job #${row?.id}`;
-    const confirmed = window.confirm(`Historieneintrag für "${title}" wirklich löschen?\nDateien werden NICHT gelöscht.`);
+    const mediaType = resolveMediaType(row);
+    const actionLabel = mediaType === 'cd' ? 'CD-Rip' : 'Retry';
+    const confirmed = window.confirm(`${actionLabel} für "${title}" neu starten?`);
     if (!confirmed) {
       return;
     }
 
+    setActionBusy(true);
+    try {
+      const response = await api.retryJob(row.id);
+      const result = getQueueActionResult(response);
+      const replacementJobId = normalizeJobId(result?.jobId);
+      toastRef.current?.show({
+        severity: result.queued ? 'info' : 'success',
+        summary: mediaType === 'cd' ? 'CD-Rip neu gestartet' : 'Retry gestartet',
+        detail: result.queued
+          ? 'Job wurde in die Warteschlange eingeplant.'
+          : (replacementJobId ? `Neuer Job #${replacementJobId} wurde erstellt.` : 'Job wurde neu gestartet.'),
+        life: 4000
+      });
+      await load();
+      if (replacementJobId) {
+        const detailResponse = await api.getJob(replacementJobId, { includeLogs: false });
+        setSelectedJob(detailResponse.job);
+        setDetailVisible(true);
+      } else {
+        await refreshDetailIfOpen(row.id);
+      }
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: mediaType === 'cd' ? 'CD-Rip Neustart fehlgeschlagen' : 'Retry fehlgeschlagen',
+        detail: error.message,
+        life: 4500
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const closeDeleteEntryDialog = () => {
+    if (deleteEntryTargetBusy) {
+      return;
+    }
+    setDeleteEntryDialogVisible(false);
+    setDeleteEntryDialogRow(null);
+    setDeleteEntryPreview(null);
+    setDeleteEntryPreviewLoading(false);
+    setDeleteEntryTargetBusy(null);
+  };
+
+  const handleDeleteEntry = async (row) => {
+    const jobId = Number(row?.id || 0);
+    if (!jobId) {
+      return;
+    }
+    setDeleteEntryDialogRow(row);
+    setDeleteEntryPreview(null);
+    setDeleteEntryDialogVisible(true);
+    setDeleteEntryPreviewLoading(true);
     setDeleteEntryBusy(true);
     try {
-      await api.deleteJobEntry(row.id, 'none');
+      const response = await api.getJobDeletePreview(jobId, { includeRelated: true });
+      setDeleteEntryPreview(response?.preview || null);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Löschvorschau fehlgeschlagen',
+        detail: error.message,
+        life: 4500
+      });
+      setDeleteEntryDialogVisible(false);
+      setDeleteEntryDialogRow(null);
+      setDeleteEntryPreview(null);
+    } finally {
+      setDeleteEntryPreviewLoading(false);
+      setDeleteEntryBusy(false);
+    }
+  };
+
+  const confirmDeleteEntry = async (target) => {
+    const normalizedTarget = String(target || '').trim().toLowerCase();
+    if (!['raw', 'movie', 'both'].includes(normalizedTarget)) {
+      return;
+    }
+    const jobId = Number(deleteEntryDialogRow?.id || 0);
+    if (!jobId) {
+      return;
+    }
+
+    setDeleteEntryBusy(true);
+    setDeleteEntryTargetBusy(normalizedTarget);
+    try {
+      const response = await api.deleteJobEntry(jobId, normalizedTarget, { includeRelated: true });
+      const deletedJobIds = Array.isArray(response?.deletedJobIds) ? response.deletedJobIds : [];
+      const fileSummary = response?.fileSummary || {};
+      const rawFiles = Number(fileSummary?.raw?.filesDeleted || 0);
+      const movieFiles = Number(fileSummary?.movie?.filesDeleted || 0);
+      const rawDirs = Number(fileSummary?.raw?.dirsRemoved || 0);
+      const movieDirs = Number(fileSummary?.movie?.dirsRemoved || 0);
+
       toastRef.current?.show({
         severity: 'success',
-        summary: 'Eintrag gelöscht',
-        detail: `"${title}" wurde aus der Historie entfernt.`,
-        life: 3500
+        summary: 'Historie gelöscht',
+        detail: `${deletedJobIds.length || 1} Eintrag/Einträge entfernt | RAW: ${rawFiles} Dateien, ${rawDirs} Ordner | ${deleteEntryOutputShortLabel}: ${movieFiles} Dateien, ${movieDirs} Ordner`,
+        life: 5000
       });
+
+      closeDeleteEntryDialog();
       setDetailVisible(false);
       setSelectedJob(null);
       await load();
     } catch (error) {
-      toastRef.current?.show({ severity: 'error', summary: 'Löschen fehlgeschlagen', detail: error.message, life: 4500 });
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Löschen fehlgeschlagen',
+        detail: error.message,
+        life: 5000
+      });
     } finally {
+      setDeleteEntryTargetBusy(null);
       setDeleteEntryBusy(false);
     }
   };
@@ -508,11 +752,12 @@ export default function HistoryPage() {
   };
 
   const renderPoster = (row, className = 'history-dv-poster') => {
+    const mediaMeta = resolveMediaTypeMeta(row);
     const title = row?.title || row?.detected_title || 'Poster';
     if (row?.poster_url && row.poster_url !== 'N/A') {
       return <img src={row.poster_url} alt={title} className={className} loading="lazy" />;
     }
-    return <div className="history-dv-poster-fallback">Kein Poster</div>;
+    return <div className="history-dv-poster-fallback">{mediaMeta.mediaType === 'cd' ? 'Kein Cover' : 'Kein Poster'}</div>;
   };
 
   const renderPresenceChip = (label, available) => (
@@ -522,7 +767,39 @@ export default function HistoryPage() {
     </span>
   );
 
-  const renderRatings = (row) => {
+  const renderSupplementalInfo = (row) => {
+    if (resolveMediaType(row) === 'cd') {
+      const cdDetails = resolveCdDetails(row);
+      const infoItems = [];
+      if (cdDetails.trackCount > 0) {
+        infoItems.push({
+          key: 'tracks',
+          label: 'Tracks',
+          value: cdDetails.selectedTrackCount > 0 && cdDetails.selectedTrackCount !== cdDetails.trackCount
+            ? `${cdDetails.selectedTrackCount}/${cdDetails.trackCount}`
+            : String(cdDetails.trackCount)
+        });
+      }
+      if (cdDetails.formatLabel) {
+        infoItems.push({ key: 'format', label: 'Format', value: cdDetails.formatLabel });
+      }
+      if (cdDetails.totalDurationLabel) {
+        infoItems.push({ key: 'duration', label: 'Dauer', value: cdDetails.totalDurationLabel });
+      }
+      if (cdDetails.mbId) {
+        infoItems.push({ key: 'mb', label: 'MusicBrainz', value: 'gesetzt' });
+      }
+      if (infoItems.length === 0) {
+        return <span className="history-dv-subtle">Keine CD-Details</span>;
+      }
+      return infoItems.map((item) => (
+        <span key={`${row?.id}-${item.key}`} className="history-dv-rating-chip">
+          <strong>{item.label}</strong>
+          <span>{item.value}</span>
+        </span>
+      ));
+    }
+
     const ratings = resolveRatings(row);
     if (ratings.length === 0) {
       return <span className="history-dv-subtle">Keine Ratings</span>;
@@ -545,6 +822,16 @@ export default function HistoryPage() {
 
   const listItem = (row) => {
     const mediaMeta = resolveMediaTypeMeta(row);
+    const isCdJob = mediaMeta.mediaType === 'cd';
+    const cdDetails = isCdJob ? resolveCdDetails(row) : null;
+    const subtitle = isCdJob
+      ? [
+        `#${row?.id || '-'}`,
+        cdDetails?.artist || '-',
+        row?.year || null,
+        cdDetails?.mbId ? 'MusicBrainz' : null
+      ].filter(Boolean).join(' | ')
+      : `#${row?.id || '-'} | ${row?.year || '-'} | ${row?.imdb_id || '-'}`;
 
     return (
       <div className="col-12" key={row.id}>
@@ -565,9 +852,7 @@ export default function HistoryPage() {
             <div className="history-dv-head">
               <div className="history-dv-title-block">
                 <strong className="history-dv-title">{row?.title || row?.detected_title || '-'}</strong>
-                <small className="history-dv-subtle">
-                  #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
-                </small>
+                <small className="history-dv-subtle">{subtitle}</small>
               </div>
               {renderStatusTag(row)}
             </div>
@@ -582,12 +867,22 @@ export default function HistoryPage() {
             </div>
 
             <div className="history-dv-flags-row">
-              {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
-              {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
-              {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+              {isCdJob ? (
+                <>
+                  {renderPresenceChip('Audio', Boolean(row?.outputStatus?.exists))}
+                  {renderPresenceChip('Rip', Boolean(row?.ripSuccessful))}
+                  {renderPresenceChip('Metadaten', Boolean(cdDetails?.artist || cdDetails?.mbId))}
+                </>
+              ) : (
+                <>
+                  {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+                  {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+                  {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+                </>
+              )}
             </div>
 
-            <div className="history-dv-ratings-row">{renderRatings(row)}</div>
+            <div className="history-dv-ratings-row">{renderSupplementalInfo(row)}</div>
           </div>
 
           <div className="history-dv-actions">
@@ -608,6 +903,16 @@ export default function HistoryPage() {
 
   const gridItem = (row) => {
     const mediaMeta = resolveMediaTypeMeta(row);
+    const isCdJob = mediaMeta.mediaType === 'cd';
+    const cdDetails = isCdJob ? resolveCdDetails(row) : null;
+    const subtitle = isCdJob
+      ? [
+        `#${row?.id || '-'}`,
+        cdDetails?.artist || '-',
+        row?.year || null,
+        cdDetails?.mbId ? 'MusicBrainz' : null
+      ].filter(Boolean).join(' | ')
+      : `#${row?.id || '-'} | ${row?.year || '-'} | ${row?.imdb_id || '-'}`;
 
     return (
       <div className="col-12 md-col-6 xl-col-4" key={row.id}>
@@ -630,9 +935,7 @@ export default function HistoryPage() {
               {renderStatusTag(row)}
             </div>
 
-            <small className="history-dv-subtle">
-              #{row?.id || '-'} | {row?.year || '-'} | {row?.imdb_id || '-'}
-            </small>
+            <small className="history-dv-subtle">{subtitle}</small>
 
             <div className="history-dv-meta-row">
               <span className="job-step-cell">
@@ -644,12 +947,22 @@ export default function HistoryPage() {
             </div>
 
             <div className="history-dv-flags-row">
-              {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
-              {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
-              {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+              {isCdJob ? (
+                <>
+                  {renderPresenceChip('Audio', Boolean(row?.outputStatus?.exists))}
+                  {renderPresenceChip('Rip', Boolean(row?.ripSuccessful))}
+                  {renderPresenceChip('Metadaten', Boolean(cdDetails?.artist || cdDetails?.mbId))}
+                </>
+              ) : (
+                <>
+                  {renderPresenceChip('RAW', Boolean(row?.rawStatus?.exists))}
+                  {renderPresenceChip('Movie', Boolean(row?.outputStatus?.exists))}
+                  {renderPresenceChip('Encode', Boolean(row?.encodeSuccess))}
+                </>
+              )}
             </div>
 
-            <div className="history-dv-ratings-row">{renderRatings(row)}</div>
+            <div className="history-dv-ratings-row">{renderSupplementalInfo(row)}</div>
           </div>
 
           <div className="history-dv-actions history-dv-actions-grid">
@@ -675,12 +988,21 @@ export default function HistoryPage() {
     return currentLayout === 'list' ? listItem(row) : gridItem(row);
   };
 
+  const previewRelatedJobs = Array.isArray(deleteEntryPreview?.relatedJobs) ? deleteEntryPreview.relatedJobs : [];
+  const previewRawPaths = Array.isArray(deleteEntryPreview?.pathCandidates?.raw) ? deleteEntryPreview.pathCandidates.raw : [];
+  const previewMoviePaths = Array.isArray(deleteEntryPreview?.pathCandidates?.movie) ? deleteEntryPreview.pathCandidates.movie : [];
+  const previewRawExisting = previewRawPaths.filter((item) => Boolean(item?.exists));
+  const previewMovieExisting = previewMoviePaths.filter((item) => Boolean(item?.exists));
+  const deleteTargetActionsDisabled = deleteEntryPreviewLoading || Boolean(deleteEntryTargetBusy) || !deleteEntryPreview;
+  const deleteEntryOutputLabel = getOutputLabelForRow(deleteEntryDialogRow);
+  const deleteEntryOutputShortLabel = getOutputShortLabelForRow(deleteEntryDialogRow);
+
   const header = (
     <div className="history-dv-toolbar">
       <InputText
         value={search}
         onChange={(event) => setSearch(event.target.value)}
-        placeholder="Suche nach Titel oder IMDb"
+        placeholder="Suche nach Titel, Interpret oder IMDb"
       />
 
       <Dropdown
@@ -748,6 +1070,7 @@ export default function HistoryPage() {
         onRestartEncode={handleRestartEncode}
         onRestartReview={handleRestartReview}
         onReencode={handleReencode}
+        onRetry={handleRetry}
         onDeleteFiles={handleDeleteFiles}
         onDeleteEntry={handleDeleteEntry}
         onRemoveFromQueue={handleRemoveFromQueue}
@@ -761,6 +1084,118 @@ export default function HistoryPage() {
           setLogLoadingMode(null);
         }}
       />
+
+      <Dialog
+        header="Historien-Eintrag löschen"
+        visible={deleteEntryDialogVisible}
+        onHide={closeDeleteEntryDialog}
+        style={{ width: '56rem', maxWidth: '96vw' }}
+        className="history-delete-dialog"
+        modal
+      >
+        <p>
+          {`Es werden ${previewRelatedJobs.length || 1} Historien-Eintrag/Einträge entfernt.`}
+        </p>
+
+        {deleteEntryDialogRow ? (
+          <small className="muted-inline">
+            Job: {deleteEntryDialogRow?.title || deleteEntryDialogRow?.detected_title || `Job #${deleteEntryDialogRow?.id || '-'}`}
+          </small>
+        ) : null}
+
+        {deleteEntryPreviewLoading ? (
+          <p>Löschvorschau wird geladen ...</p>
+        ) : (
+          <div className="history-delete-preview-grid">
+            <div>
+              <h4>Rip/Encode Historie</h4>
+              {previewRelatedJobs.length > 0 ? (
+                <ul className="history-delete-preview-list">
+                  {previewRelatedJobs.map((item) => (
+                    <li key={`delete-related-${item.id}`}>
+                      <strong>#{item.id}</strong> | {item.title || '-'} | {item.status || '-'} {item.isPrimary ? '(aktuell)' : '(Alt-Eintrag)'}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <small className="history-dv-subtle">Keine verknüpften Alt-Einträge erkannt.</small>
+              )}
+            </div>
+
+            <div>
+              <h4>{`RAW (${previewRawExisting.length}/${previewRawPaths.length})`}</h4>
+              {previewRawPaths.length > 0 ? (
+                <ul className="history-delete-preview-list">
+                  {previewRawPaths.map((item) => (
+                    <li key={`delete-raw-${item.path}`}>
+                      <span className={item.exists ? 'exists-yes' : 'exists-no'}>
+                        {item.exists ? 'vorhanden' : 'nicht gefunden'}
+                      </span>
+                      {' '}| {item.path}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <small className="history-dv-subtle">Keine RAW-Pfade.</small>
+              )}
+            </div>
+
+            <div>
+              <h4>{`${deleteEntryOutputShortLabel} (${previewMovieExisting.length}/${previewMoviePaths.length})`}</h4>
+              {previewMoviePaths.length > 0 ? (
+                <ul className="history-delete-preview-list">
+                  {previewMoviePaths.map((item) => (
+                    <li key={`delete-movie-${item.path}`}>
+                      <span className={item.exists ? 'exists-yes' : 'exists-no'}>
+                        {item.exists ? 'vorhanden' : 'nicht gefunden'}
+                      </span>
+                      {' '}| {item.path}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <small className="history-dv-subtle">Keine Movie-Pfade.</small>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="dialog-actions">
+          <Button
+            label="Nur RAW löschen"
+            icon="pi pi-trash"
+            severity="warning"
+            outlined
+            onClick={() => confirmDeleteEntry('raw')}
+            loading={deleteEntryTargetBusy === 'raw'}
+            disabled={deleteTargetActionsDisabled}
+          />
+          <Button
+            label={`Nur ${deleteEntryOutputShortLabel} löschen`}
+            icon="pi pi-trash"
+            severity="warning"
+            outlined
+            onClick={() => confirmDeleteEntry('movie')}
+            loading={deleteEntryTargetBusy === 'movie'}
+            disabled={deleteTargetActionsDisabled}
+          />
+          <Button
+            label="Beides löschen"
+            icon="pi pi-times"
+            severity="danger"
+            onClick={() => confirmDeleteEntry('both')}
+            loading={deleteEntryTargetBusy === 'both'}
+            disabled={deleteTargetActionsDisabled}
+          />
+          <Button
+            label="Abbrechen"
+            severity="secondary"
+            outlined
+            onClick={closeDeleteEntryDialog}
+            disabled={Boolean(deleteEntryTargetBusy)}
+          />
+        </div>
+      </Dialog>
     </div>
   );
 }

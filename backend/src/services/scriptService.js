@@ -4,13 +4,37 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('SCRIPTS');
+const settingsService = require('./settingsService');
 const runtimeActivityService = require('./runtimeActivityService');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const SCRIPT_NAME_MAX_LENGTH = 120;
 const SCRIPT_BODY_MAX_LENGTH = 200000;
-const SCRIPT_TEST_TIMEOUT_MS = 120000;
+const SCRIPT_TEST_TIMEOUT_SETTING_KEY = 'script_test_timeout_ms';
+const DEFAULT_SCRIPT_TEST_TIMEOUT_MS = 0;
+const SCRIPT_TEST_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.RIPSTER_SCRIPT_TEST_TIMEOUT_MS);
+  if (Number.isFinite(parsed)) {
+    return Math.max(0, Math.trunc(parsed));
+  }
+  return DEFAULT_SCRIPT_TEST_TIMEOUT_MS;
+})();
 const SCRIPT_OUTPUT_MAX_CHARS = 150000;
+
+function normalizeScriptTestTimeoutMs(rawValue, fallbackMs = SCRIPT_TEST_TIMEOUT_MS) {
+  const parsed = Number(rawValue);
+  if (Number.isFinite(parsed)) {
+    return Math.max(0, Math.trunc(parsed));
+  }
+  if (fallbackMs === null || fallbackMs === undefined) {
+    return null;
+  }
+  const parsedFallback = Number(fallbackMs);
+  if (Number.isFinite(parsedFallback)) {
+    return Math.max(0, Math.trunc(parsedFallback));
+  }
+  return 0;
+}
 
 function normalizeScriptId(rawValue) {
   const value = Number(rawValue);
@@ -184,6 +208,7 @@ function killChildProcessTree(child, signal = 'SIGTERM') {
 
 function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd = process.cwd(), onChild = null }) {
   return new Promise((resolve, reject) => {
+    const effectiveTimeoutMs = normalizeScriptTestTimeoutMs(timeoutMs, SCRIPT_TEST_TIMEOUT_MS);
     const startedAt = Date.now();
     let ended = false;
     const child = spawn(cmd, args, {
@@ -206,15 +231,18 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
     let stderrTruncated = false;
     let timedOut = false;
 
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      killChildProcessTree(child, 'SIGTERM');
-      setTimeout(() => {
-        if (!ended) {
-          killChildProcessTree(child, 'SIGKILL');
-        }
-      }, 2000);
-    }, Math.max(1000, Number(timeoutMs || SCRIPT_TEST_TIMEOUT_MS)));
+    let timeout = null;
+    if (effectiveTimeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        killChildProcessTree(child, 'SIGTERM');
+        setTimeout(() => {
+          if (!ended) {
+            killChildProcessTree(child, 'SIGKILL');
+          }
+        }, 2000);
+      }, effectiveTimeoutMs);
+    }
 
     const onData = (streamName, chunk) => {
       if (streamName === 'stdout') {
@@ -233,13 +261,17 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
 
     child.on('error', (error) => {
       ended = true;
-      clearTimeout(timeout);
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       reject(error);
     });
 
     child.on('close', (code, signal) => {
       ended = true;
-      clearTimeout(timeout);
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       const endedAt = Date.now();
       resolve({
         code: Number.isFinite(Number(code)) ? Number(code) : null,
@@ -253,6 +285,23 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
       });
     });
   });
+}
+
+async function resolveScriptTestTimeoutMs(options = {}) {
+  const timeoutFromOptions = normalizeScriptTestTimeoutMs(options?.timeoutMs, null);
+  if (timeoutFromOptions !== null) {
+    return timeoutFromOptions;
+  }
+  try {
+    const settingsMap = await settingsService.getSettingsMap();
+    return normalizeScriptTestTimeoutMs(
+      settingsMap?.[SCRIPT_TEST_TIMEOUT_SETTING_KEY],
+      SCRIPT_TEST_TIMEOUT_MS
+    );
+  } catch (error) {
+    logger.warn('script:test-timeout:settings-read-failed', { error: errorToMeta(error) });
+    return SCRIPT_TEST_TIMEOUT_MS;
+  }
 }
 
 class ScriptService {
@@ -506,8 +555,7 @@ class ScriptService {
 
   async testScript(scriptId, options = {}) {
     const script = await this.getScriptById(scriptId);
-    const timeoutMs = Number(options?.timeoutMs);
-    const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SCRIPT_TEST_TIMEOUT_MS;
+    const effectiveTimeoutMs = await resolveScriptTestTimeoutMs(options);
     const prepared = await this.createExecutableScriptFile(script, {
       source: 'settings_test',
       mode: 'test'
