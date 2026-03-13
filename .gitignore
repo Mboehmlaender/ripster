@@ -81,3 +81,4 @@ Thumbs.db
 # ----------------------------
 deploy-ripster.sh
 build-handbrake-nvdec.sh
+gitea-setup.sh
