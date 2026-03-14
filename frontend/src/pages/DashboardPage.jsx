@@ -2306,6 +2306,11 @@ export default function DashboardPage({
                 return (
                   <div key={jobId} className="dashboard-job-expanded">
                     <div className="dashboard-job-expanded-head">
+                      {job?.poster_url && job.poster_url !== 'N/A' ? (
+                        <img src={job.poster_url} alt={jobTitle} className="poster-thumb" />
+                      ) : (
+                        <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
+                      )}
                       <div className="dashboard-job-expanded-title">
                         <strong className="dashboard-job-title-line">
                           <img
