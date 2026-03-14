@@ -9,6 +9,7 @@ import HistoryPage from './pages/HistoryPage';
 import DatabasePage from './pages/DatabasePage';
 
 function App() {
+  const appVersion = __APP_VERSION__;
   const [pipeline, setPipeline] = useState({ state: 'IDLE', progress: 0, context: {} });
   const [hardwareMonitoring, setHardwareMonitoring] = useState(null);
   const [lastDiscEvent, setLastDiscEvent] = useState(null);
@@ -115,7 +116,12 @@ function App() {
           <img src="/logo.png" alt="Ripster Logo" className="brand-logo" />
           <div className="brand-copy">
             <h1>Ripster</h1>
-            <p>Disc Ripping Control Center</p>
+            <div className="brand-meta">
+              <p>Disc Ripping Control Center</p>
+              <span className="app-version" aria-label={`Version ${appVersion}`}>
+                v{appVersion}
+              </span>
+            </div>
           </div>
         </div>
         <div className="nav-buttons">

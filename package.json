@@ -1,13 +1,14 @@
 {
   "name": "ripster",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.9.0-1",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",
     "start": "npm run start --prefix backend",
-    "build:frontend": "npm run build --prefix frontend"
+    "build:frontend": "npm run build --prefix frontend",
+    "release:interactive": "bash ./scripts/release.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

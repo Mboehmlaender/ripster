@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const appPackage = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const publicOrigin = (process.env.VITE_PUBLIC_ORIGIN || '').trim();
 const parsedAllowedHosts = (process.env.VITE_ALLOWED_HOSTS || '')
   .split(',')
@@ -24,6 +26,9 @@ if (publicOrigin) {
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appPackage.version)
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
