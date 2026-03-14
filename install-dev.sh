@@ -848,6 +848,7 @@ if [[ "$SKIP_NGINX" == false ]]; then
 server {
     listen 80;
     server_name ${FRONTEND_HOST} _;
+    client_max_body_size 8G;
 
     # Frontend (statische Dateien)
     root ${INSTALL_DIR}/frontend/dist;
