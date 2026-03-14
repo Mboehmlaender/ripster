@@ -9,7 +9,7 @@ BRANCHES_API_URL="${GITEA_BASE}/api/v1/repos/${REPO_OWNER}/${REPO_NAME}/branches
 usage() {
   cat <<'EOF'
 Verwendung:
-  bash setup.sh [Optionen]
+  bash gitea_setup.sh [Optionen]
 
 Optionen (wie install.sh):
   --branch <branch>     Branch direkt setzen (ohne Auswahlmenue)
@@ -137,9 +137,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 INSTALL_SCRIPT="${SCRIPT_DIR}/gitea_install.sh"
 
 if [[ ! -f "$INSTALL_SCRIPT" ]]; then
-  echo "gitea_install.sh nicht gefunden in $SCRIPT_DIR" >&2
+  echo "Lokale gitea_install.sh nicht gefunden in $SCRIPT_DIR" >&2
+  echo "gitea_setup.sh ruft bewusst nur die lokale gitea_install.sh auf und lädt nichts aus dem Repo." >&2
   exit 1
 fi
+
+echo "Starte lokale gitea_install.sh aus $SCRIPT_DIR fuer Branch '$SELECTED_BRANCH' ..."
 
 if [[ $EUID -eq 0 ]]; then
   bash "$INSTALL_SCRIPT" --branch "$SELECTED_BRANCH" "${FORWARDED_ARGS[@]}"
