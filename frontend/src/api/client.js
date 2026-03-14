@@ -58,12 +58,12 @@ async function requestCachedGet(path, options = {}) {
 
   if (!forceRefresh && current && current.value !== undefined) {
     if (current.expiresAt > now) {
-      return current.value;
+      return Promise.resolve(current.value);
     }
     if (!current.promise) {
       void refreshCachedGet(path, ttlMs);
     }
-    return current.value;
+    return Promise.resolve(current.value);
   }
 
   if (!forceRefresh && current?.promise) {

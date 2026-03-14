@@ -1065,7 +1065,7 @@ class HistoryService {
     };
   }
 
-  appendLog(jobId, source, message) {
+  async appendLog(jobId, source, message) {
     this.appendProcessLog(jobId, source, message);
   }
 

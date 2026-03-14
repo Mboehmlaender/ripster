@@ -677,6 +677,7 @@ apt_update
 info "Installiere Basispakete..."
 apt-get install -y \
   curl wget git \
+  ffmpeg \
   mediainfo \
   util-linux udev \
   ca-certificates gnupg \
