@@ -1709,9 +1709,14 @@ class HistoryService {
       selected_from_omdb: selectedFromOmdb
     });
 
-    // Bild in Cache laden (async, blockiert nicht)
+    // Bild herunterladen, in persistenten Ordner verschieben und poster_url aktualisieren
     if (posterUrl && !thumbnailService.isLocalUrl(posterUrl)) {
-      thumbnailService.cacheJobThumbnail(jobId, posterUrl).catch(() => {});
+      thumbnailService.cacheJobThumbnail(jobId, posterUrl)
+        .then(() => {
+          const promotedUrl = thumbnailService.promoteJobThumbnail(jobId);
+          if (promotedUrl) return this.updateJob(jobId, { poster_url: promotedUrl });
+        })
+        .catch(() => {});
     }
 
     await this.appendLog(
@@ -1792,7 +1797,12 @@ class HistoryService {
     });
 
     if (coverUrl && !thumbnailService.isLocalUrl(coverUrl)) {
-      thumbnailService.cacheJobThumbnail(jobId, coverUrl).catch(() => {});
+      thumbnailService.cacheJobThumbnail(jobId, coverUrl)
+        .then(() => {
+          const promotedUrl = thumbnailService.promoteJobThumbnail(jobId);
+          if (promotedUrl) return this.updateJob(jobId, { poster_url: promotedUrl });
+        })
+        .catch(() => {});
     }
 
     await this.appendLog(
