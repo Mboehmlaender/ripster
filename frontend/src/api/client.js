@@ -58,12 +58,12 @@ async function requestCachedGet(path, options = {}) {
 
   if (!forceRefresh && current && current.value !== undefined) {
     if (current.expiresAt > now) {
-      return current.value;
+      return Promise.resolve(current.value);
     }
     if (!current.promise) {
       void refreshCachedGet(path, ttlMs);
     }
-    return current.value;
+    return Promise.resolve(current.value);
   }
 
   if (!forceRefresh && current?.promise) {
@@ -78,11 +78,13 @@ function afterMutationInvalidate(prefixes = []) {
 }
 
 async function request(path, options = {}) {
+  const isFormDataBody = typeof FormData !== 'undefined' && options?.body instanceof FormData;
+  const mergedHeaders = {
+    ...(isFormDataBody ? {} : { 'Content-Type': 'application/json' }),
+    ...(options.headers || {})
+  };
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
+    headers: mergedHeaders,
     ...options
   });
 
@@ -297,6 +299,32 @@ export const api = {
     const result = await request(`/pipeline/cd/start/${jobId}`, {
       method: 'POST',
       body: JSON.stringify(ripConfig || {})
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async uploadAudiobook(file, payload = {}) {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+    if (payload?.format) {
+      formData.append('format', String(payload.format));
+    }
+    if (payload?.startImmediately !== undefined) {
+      formData.append('startImmediately', String(payload.startImmediately));
+    }
+    const result = await request('/pipeline/audiobook/upload', {
+      method: 'POST',
+      body: formData
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
+  async startAudiobook(jobId, payload = {}) {
+    const result = await request(`/pipeline/audiobook/start/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
     });
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;

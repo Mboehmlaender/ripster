@@ -13,7 +13,13 @@ const {
 const { splitArgs } = require('../utils/commandLine');
 const { setLogRootDir } = require('./logPathService');
 
-const { defaultRawDir: DEFAULT_RAW_DIR, defaultMovieDir: DEFAULT_MOVIE_DIR, defaultCdDir: DEFAULT_CD_DIR } = require('../config');
+const {
+  defaultRawDir: DEFAULT_RAW_DIR,
+  defaultMovieDir: DEFAULT_MOVIE_DIR,
+  defaultCdDir: DEFAULT_CD_DIR,
+  defaultAudiobookRawDir: DEFAULT_AUDIOBOOK_RAW_DIR,
+  defaultAudiobookDir: DEFAULT_AUDIOBOOK_DIR
+} = require('../config');
 
 const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
 const HANDBRAKE_PRESET_LIST_TIMEOUT_MS = 30000;
@@ -38,27 +44,31 @@ const SUBTITLE_SELECTION_KEYS_FLAG_ONLY = new Set(['--all-subtitles', '--first-s
 const SUBTITLE_FLAG_KEYS_WITH_VALUE = new Set(['--subtitle-burned', '--subtitle-default', '--subtitle-forced']);
 const TITLE_SELECTION_KEYS_WITH_VALUE = new Set(['-t', '--title']);
 const LOG_DIR_SETTING_KEY = 'log_dir';
-const MEDIA_PROFILES = ['bluray', 'dvd', 'cd'];
+const MEDIA_PROFILES = ['bluray', 'dvd', 'cd', 'audiobook'];
 const PROFILED_SETTINGS = {
   raw_dir: {
     bluray: 'raw_dir_bluray',
     dvd: 'raw_dir_dvd',
-    cd: 'raw_dir_cd'
+    cd: 'raw_dir_cd',
+    audiobook: 'raw_dir_audiobook'
   },
   raw_dir_owner: {
     bluray: 'raw_dir_bluray_owner',
     dvd: 'raw_dir_dvd_owner',
-    cd: 'raw_dir_cd_owner'
+    cd: 'raw_dir_cd_owner',
+    audiobook: 'raw_dir_audiobook_owner'
   },
   movie_dir: {
     bluray: 'movie_dir_bluray',
     dvd: 'movie_dir_dvd',
-    cd: 'movie_dir_cd'
+    cd: 'movie_dir_cd',
+    audiobook: 'movie_dir_audiobook'
   },
   movie_dir_owner: {
     bluray: 'movie_dir_bluray_owner',
     dvd: 'movie_dir_dvd_owner',
-    cd: 'movie_dir_cd_owner'
+    cd: 'movie_dir_cd_owner',
+    audiobook: 'movie_dir_audiobook_owner'
   },
   mediainfo_extra_args: {
     bluray: 'mediainfo_extra_args_bluray',
@@ -86,11 +96,13 @@ const PROFILED_SETTINGS = {
   },
   output_extension: {
     bluray: 'output_extension_bluray',
-    dvd: 'output_extension_dvd'
+    dvd: 'output_extension_dvd',
+    audiobook: 'output_extension_audiobook'
   },
   output_template: {
     bluray: 'output_template_bluray',
-    dvd: 'output_template_dvd'
+    dvd: 'output_template_dvd',
+    audiobook: 'output_template_audiobook'
   }
 };
 const STRICT_PROFILE_ONLY_SETTING_KEYS = new Set([
@@ -372,11 +384,17 @@ function normalizeMediaProfileValue(value) {
   if (raw === 'cd' || raw === 'audio_cd') {
     return 'cd';
   }
+  if (raw === 'audiobook' || raw === 'audio_book' || raw === 'audio book' || raw === 'book') {
+    return 'audiobook';
+  }
   return null;
 }
 
 function resolveProfileFallbackOrder(profile) {
   const normalized = normalizeMediaProfileValue(profile);
+  if (normalized === 'audiobook') {
+    return ['audiobook'];
+  }
   if (normalized === 'bluray') {
     return ['bluray', 'dvd'];
   }
@@ -690,9 +708,21 @@ class SettingsService {
         // Fallback to hardcoded install defaults when no setting value is configured
         if (!hasUsableProfileSpecificValue(resolvedValue)) {
           if (legacyKey === 'raw_dir') {
-            resolvedValue = normalizedRequestedProfile === 'cd' ? DEFAULT_CD_DIR : DEFAULT_RAW_DIR;
+            if (normalizedRequestedProfile === 'cd') {
+              resolvedValue = DEFAULT_CD_DIR;
+            } else if (normalizedRequestedProfile === 'audiobook') {
+              resolvedValue = DEFAULT_AUDIOBOOK_RAW_DIR;
+            } else {
+              resolvedValue = DEFAULT_RAW_DIR;
+            }
           } else if (legacyKey === 'movie_dir') {
-            resolvedValue = normalizedRequestedProfile === 'cd' ? DEFAULT_CD_DIR : DEFAULT_MOVIE_DIR;
+            if (normalizedRequestedProfile === 'cd') {
+              resolvedValue = DEFAULT_CD_DIR;
+            } else if (normalizedRequestedProfile === 'audiobook') {
+              resolvedValue = DEFAULT_AUDIOBOOK_DIR;
+            } else {
+              resolvedValue = DEFAULT_MOVIE_DIR;
+            }
           }
         }
         effective[legacyKey] = resolvedValue;
@@ -724,14 +754,18 @@ class SettingsService {
     const bluray = this.resolveEffectiveToolSettings(map, 'bluray');
     const dvd = this.resolveEffectiveToolSettings(map, 'dvd');
     const cd = this.resolveEffectiveToolSettings(map, 'cd');
+    const audiobook = this.resolveEffectiveToolSettings(map, 'audiobook');
     return {
       bluray: { raw: bluray.raw_dir, movies: bluray.movie_dir },
       dvd: { raw: dvd.raw_dir, movies: dvd.movie_dir },
       cd: { raw: cd.raw_dir, movies: cd.movie_dir },
+      audiobook: { raw: audiobook.raw_dir, movies: audiobook.movie_dir },
       defaults: {
         raw: DEFAULT_RAW_DIR,
         movies: DEFAULT_MOVIE_DIR,
-        cd: DEFAULT_CD_DIR
+        cd: DEFAULT_CD_DIR,
+        audiobookRaw: DEFAULT_AUDIOBOOK_RAW_DIR,
+        audiobookMovies: DEFAULT_AUDIOBOOK_DIR
       }
     };
   }
@@ -1480,4 +1514,6 @@ const settingsServiceInstance = new SettingsService();
 settingsServiceInstance.DEFAULT_RAW_DIR = DEFAULT_RAW_DIR;
 settingsServiceInstance.DEFAULT_MOVIE_DIR = DEFAULT_MOVIE_DIR;
 settingsServiceInstance.DEFAULT_CD_DIR = DEFAULT_CD_DIR;
+settingsServiceInstance.DEFAULT_AUDIOBOOK_RAW_DIR = DEFAULT_AUDIOBOOK_RAW_DIR;
+settingsServiceInstance.DEFAULT_AUDIOBOOK_DIR = DEFAULT_AUDIOBOOK_DIR;
 module.exports = settingsServiceInstance;

@@ -80,5 +80,5 @@ Thumbs.db
 # Scripts
 # ----------------------------
 /scripts/
-/setup.sh
+/release.sh
 /Audible_Tool

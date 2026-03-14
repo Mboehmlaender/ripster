@@ -443,6 +443,7 @@ apt_update
 info "Installiere Basispakete..."
 apt-get install -y \
   curl wget git jq \
+  ffmpeg \
   mediainfo \
   util-linux udev \
   ca-certificates gnupg \

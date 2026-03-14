@@ -21,7 +21,7 @@ function parseJsonSafe(raw, fallback = null) {
 
 const PROCESS_LOG_TAIL_MAX_BYTES = 1024 * 1024;
 const processLogStreams = new Map();
-const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'cd', 'other'];
+const PROFILE_PATH_SUFFIXES = ['bluray', 'dvd', 'cd', 'audiobook', 'other'];
 const RAW_INCOMPLETE_PREFIX = 'Incomplete_';
 const RAW_RIP_COMPLETE_PREFIX = 'Rip_Complete_';
 
@@ -183,6 +183,30 @@ function hasCdStructure(rawPath) {
   }
 }
 
+function hasAudiobookStructure(rawPath) {
+  const basePath = String(rawPath || '').trim();
+  if (!basePath) {
+    return false;
+  }
+
+  try {
+    if (!fs.existsSync(basePath)) {
+      return false;
+    }
+    const stat = fs.statSync(basePath);
+    if (stat.isFile()) {
+      return path.extname(basePath).toLowerCase() === '.aax';
+    }
+    if (!stat.isDirectory()) {
+      return false;
+    }
+    const entries = fs.readdirSync(basePath);
+    return entries.some((entry) => path.extname(entry).toLowerCase() === '.aax');
+  } catch (_error) {
+    return false;
+  }
+}
+
 function detectOrphanMediaType(rawPath) {
   if (hasBlurayStructure(rawPath)) {
     return 'bluray';
@@ -192,6 +216,9 @@ function detectOrphanMediaType(rawPath) {
   }
   if (hasCdStructure(rawPath)) {
     return 'cd';
+  }
+  if (hasAudiobookStructure(rawPath)) {
+    return 'audiobook';
   }
   return 'other';
 }
@@ -269,6 +296,9 @@ function normalizeMediaTypeValue(value) {
   if (raw === 'cd' || raw === 'audio_cd') {
     return 'cd';
   }
+  if (raw === 'audiobook' || raw === 'audio_book' || raw === 'audio book' || raw === 'book') {
+    return 'audiobook';
+  }
   return null;
 }
 
@@ -288,7 +318,7 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan, handbrakeIn
     || job?.mediaType
   );
 
-  if (profileHint === 'bluray' || profileHint === 'dvd' || profileHint === 'cd') {
+  if (profileHint === 'bluray' || profileHint === 'dvd' || profileHint === 'cd' || profileHint === 'audiobook') {
     return profileHint;
   }
 
@@ -311,6 +341,15 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan, handbrakeIn
   }
   if (Array.isArray(mkInfo?.tracks) && mkInfo.tracks.length > 0) {
     return 'cd';
+  }
+  if (hasAudiobookStructure(rawPath) || hasAudiobookStructure(encodeInputPath)) {
+    return 'audiobook';
+  }
+  if (String(hbInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+    return 'audiobook';
+  }
+  if (String(plan?.mode || '').trim().toLowerCase() === 'audiobook') {
+    return 'audiobook';
   }
 
   if (hasBlurayStructure(rawPath)) {
@@ -1026,7 +1065,7 @@ class HistoryService {
     };
   }
 
-  appendLog(jobId, source, message) {
+  async appendLog(jobId, source, message) {
     this.appendProcessLog(jobId, source, message);
   }
 
@@ -1383,7 +1422,7 @@ class HistoryService {
     const settings = await settingsService.getSettingsMap();
     const rawDirs = getConfiguredMediaPathList(settings, 'raw_dir');
     if (rawDirs.length === 0) {
-      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,other}).');
+      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,cd,audiobook,other}).');
       error.statusCode = 400;
       throw error;
     }
@@ -1457,6 +1496,7 @@ class HistoryService {
           hasBlurayStructure: detectedMediaType === 'bluray',
           hasDvdStructure: detectedMediaType === 'dvd',
           hasCdStructure: detectedMediaType === 'cd',
+          hasAudiobookStructure: detectedMediaType === 'audiobook',
           lastModifiedAt: stat.mtime.toISOString()
         });
         seenOrphanPaths.add(normalizedPath);
@@ -1483,7 +1523,7 @@ class HistoryService {
     }
 
     if (rawDirs.length === 0) {
-      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,other}).');
+      const error = new Error('Kein RAW-Pfad konfiguriert (raw_dir oder raw_dir_{bluray,dvd,cd,audiobook,other}).');
       error.statusCode = 400;
       throw error;
     }

@@ -180,6 +180,7 @@ Beispiel `/etc/nginx/sites-available/ripster`:
 server {
     listen 80;
     server_name ripster.local;
+    client_max_body_size 8G;
 
     root /opt/ripster/frontend/dist;
     index index.html;
@@ -211,6 +212,8 @@ sudo ln -s /etc/nginx/sites-available/ripster /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+Hinweis: Fuer groessere Uploads wie `.aax`-Audiobooks muss `client_max_body_size` ausreichend hoch gesetzt sein. Im mitgelieferten Beispiel sind `8G` hinterlegt.
 
 ---
 

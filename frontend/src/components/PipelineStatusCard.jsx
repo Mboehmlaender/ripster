@@ -109,6 +109,9 @@ function normalizeMediaProfile(value) {
   if (['dvd', 'disc', 'dvdvideo', 'dvd-video', 'dvdrom', 'dvd-rom', 'video_ts', 'iso9660'].includes(raw)) {
     return 'dvd';
   }
+  if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+    return 'audiobook';
+  }
   if (['other', 'sonstiges', 'unknown'].includes(raw)) {
     return 'other';
   }
@@ -234,8 +237,8 @@ function sanitizeFileName(input) {
 }
 
 function renderTemplate(template, values) {
-  return String(template || '${title} (${year})').replace(/\$\{([^}]+)\}/g, (_, key) => {
-    const value = values[key.trim()];
+  return String(template || '${title} (${year})').replace(/\$\{([^}]+)\}|\{([^{}]+)\}/g, (_, keyA, keyB) => {
+    const value = values[(keyA || keyB || '').trim()];
     if (value === undefined || value === null || value === '') {
       return 'unknown';
     }
@@ -248,7 +251,11 @@ function resolveProfiledSetting(settings, key, mediaProfile) {
   if (profileKey && settings?.[profileKey] != null && settings[profileKey] !== '') {
     return settings[profileKey];
   }
-  const fallbackProfiles = mediaProfile === 'bluray' ? ['dvd'] : ['bluray'];
+  const fallbackProfiles = mediaProfile === 'bluray'
+    ? ['dvd']
+    : mediaProfile === 'dvd'
+      ? ['bluray']
+      : [];
   for (const fb of fallbackProfiles) {
     const fbKey = `${key}_${fb}`;
     if (settings?.[fbKey] != null && settings[fbKey] !== '') {
@@ -265,12 +272,14 @@ function buildOutputPathPreview(settings, mediaProfile, metadata, fallbackJobId 
   }
 
   const title = metadata?.title || (fallbackJobId ? `job-${fallbackJobId}` : 'job');
+  const author = metadata?.author || metadata?.artist || 'unknown';
+  const narrator = metadata?.narrator || 'unknown';
   const year = metadata?.year || new Date().getFullYear();
   const imdbId = metadata?.imdbId || (fallbackJobId ? `job-${fallbackJobId}` : 'noimdb');
   const DEFAULT_TEMPLATE = '${title} (${year})/${title} (${year})';
   const rawTemplate = resolveProfiledSetting(settings, 'output_template', mediaProfile);
   const template = String(rawTemplate || DEFAULT_TEMPLATE).trim() || DEFAULT_TEMPLATE;
-  const rendered = renderTemplate(template, { title, year, imdbId });
+  const rendered = renderTemplate(template, { title, year, imdbId, author, narrator });
   const segments = rendered
     .replace(/\\/g, '/')
     .replace(/\/+/g, '/')

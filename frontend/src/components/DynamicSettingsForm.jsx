@@ -20,6 +20,8 @@ const GENERAL_TOOL_KEYS = new Set([
   'makemkv_min_length_minutes',
   'mediainfo_command',
   'handbrake_command',
+  'ffmpeg_command',
+  'ffprobe_command',
   'handbrake_restart_delete_incomplete_output',
   'script_test_timeout_ms'
 ]);
@@ -122,6 +124,12 @@ function buildToolSections(settings) {
     description: 'Profil-spezifische Settings für DVD.',
     settings: []
   };
+  const audiobookBucket = {
+    id: 'audiobook',
+    title: 'Audiobook',
+    description: 'Profil-spezifische Settings für Audiobooks.',
+    settings: []
+  };
   const fallbackBucket = {
     id: 'other',
     title: 'Weitere Tool-Settings',
@@ -143,13 +151,18 @@ function buildToolSections(settings) {
       dvdBucket.settings.push(setting);
       continue;
     }
+    if (key.endsWith('_audiobook')) {
+      audiobookBucket.settings.push(setting);
+      continue;
+    }
     fallbackBucket.settings.push(setting);
   }
 
   const sections = [
     generalBucket,
     blurayBucket,
-    dvdBucket
+    dvdBucket,
+    audiobookBucket
   ].filter((item) => item.settings.length > 0);
   if (fallbackBucket.settings.length > 0) {
     sections.push(fallbackBucket);
@@ -161,6 +174,7 @@ function buildToolSections(settings) {
 const BLURAY_PATH_KEYS = ['raw_dir_bluray', 'movie_dir_bluray', 'output_template_bluray'];
 const DVD_PATH_KEYS = ['raw_dir_dvd', 'movie_dir_dvd', 'output_template_dvd'];
 const CD_PATH_KEYS = ['raw_dir_cd', 'movie_dir_cd', 'cd_output_template'];
+const AUDIOBOOK_PATH_KEYS = ['raw_dir_audiobook', 'movie_dir_audiobook', 'output_template_audiobook', 'audiobook_raw_template'];
 const LOG_PATH_KEYS = ['log_dir'];
 
 function buildSectionsForCategory(categoryName, settings) {
@@ -369,11 +383,14 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const bluraySettings = list.filter((s) => BLURAY_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && BLURAY_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const dvdSettings = list.filter((s) => DVD_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && DVD_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const cdSettings = list.filter((s) => CD_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && CD_PATH_KEYS.includes(s.key.replace('_owner', ''))));
+  const audiobookSettings = list.filter((s) => AUDIOBOOK_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && AUDIOBOOK_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const logSettings = list.filter((s) => LOG_PATH_KEYS.includes(s.key));
 
   const defaultRaw = effectivePaths?.defaults?.raw || 'data/output/raw';
   const defaultMovies = effectivePaths?.defaults?.movies || 'data/output/movies';
   const defaultCd = effectivePaths?.defaults?.cd || 'data/output/cd';
+  const defaultAudiobookRaw = effectivePaths?.defaults?.audiobookRaw || 'data/output/audiobook-raw';
+  const defaultAudiobookMovies = effectivePaths?.defaults?.audiobookMovies || 'data/output/audiobooks';
 
   const ep = effectivePaths || {};
   const blurayRaw = ep.bluray?.raw || defaultRaw;
@@ -382,6 +399,8 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const dvdMovies = ep.dvd?.movies || defaultMovies;
   const cdRaw = ep.cd?.raw || defaultCd;
   const cdMovies = ep.cd?.movies || cdRaw;
+  const audiobookRaw = ep.audiobook?.raw || defaultAudiobookRaw;
+  const audiobookMovies = ep.audiobook?.movies || defaultAudiobookMovies;
 
   const isDefault = (path, def) => path === def;
 
@@ -435,6 +454,17 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
                 {isDefault(cdMovies, cdRaw) && <span className="path-default-badge">Standard</span>}
               </td>
             </tr>
+            <tr>
+              <td><strong>Audiobook</strong></td>
+              <td>
+                <code>{audiobookRaw}</code>
+                {isDefault(audiobookRaw, defaultAudiobookRaw) && <span className="path-default-badge">Standard</span>}
+              </td>
+              <td>
+                <code>{audiobookMovies}</code>
+                {isDefault(audiobookMovies, defaultAudiobookMovies) && <span className="path-default-badge">Standard</span>}
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -462,6 +492,15 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
         <PathMediumCard
           title="CD / Audio"
           pathSettings={cdSettings}
+          settingsByKey={settingsByKey}
+          values={values}
+          errors={errors}
+          dirtyKeys={dirtyKeys}
+          onChange={onChange}
+        />
+        <PathMediumCard
+          title="Audiobook"
+          pathSettings={audiobookSettings}
           settingsByKey={settingsByKey}
           values={values}
           errors={errors}

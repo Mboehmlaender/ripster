@@ -11,6 +11,7 @@ import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import CdMetadataDialog from '../components/CdMetadataDialog';
 import CdRipConfigPanel from '../components/CdRipConfigPanel';
+import AudiobookConfigPanel from '../components/AudiobookConfigPanel';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
 import otherIndicatorIcon from '../assets/media-other.svg';
@@ -377,6 +378,9 @@ function resolveMediaType(job) {
     if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
       return 'cd';
     }
+    if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+      return 'audiobook';
+    }
   }
   const statusCandidates = [
     job?.status,
@@ -397,6 +401,12 @@ function resolveMediaType(job) {
   if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
     return 'cd';
   }
+  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+    return 'audiobook';
+  }
+  if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
+    return 'audiobook';
+  }
   return 'other';
 }
 
@@ -410,6 +420,9 @@ function mediaIndicatorMeta(job) {
   }
   if (mediaType === 'cd') {
     return { mediaType, src: otherIndicatorIcon, alt: 'Audio CD', title: 'Audio CD' };
+  }
+  if (mediaType === 'audiobook') {
+    return { mediaType, src: otherIndicatorIcon, alt: 'Audiobook', title: 'Audiobook' };
   }
   return { mediaType, src: otherIndicatorIcon, alt: 'Sonstiges Medium', title: 'Sonstiges Medium' };
 }
@@ -448,6 +461,7 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
 
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
+  const resolvedMediaType = resolveMediaType(job);
   const analyzeContext = getAnalyzeContext(job);
   const normalizePlanIdList = (values) => {
     const list = Array.isArray(values) ? values : [];
@@ -575,15 +589,30 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     ? `${job.raw_path}/track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`
     : '<temp>/trackNN.cdda.wav';
   const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} ${previewWavPath}`;
-  const selectedMetadata = {
-    title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
-    artist: cdSelectedMeta?.artist || fallbackCdArtist || null,
-    year: cdSelectedMeta?.year ?? job?.year ?? null,
-    mbId: resolvedCdMbId,
-    coverUrl: resolvedCdCoverUrl,
-    imdbId: job?.imdb_id || null,
-    poster: job?.poster_url || resolvedCdCoverUrl || null
-  };
+  const audiobookSelectedMeta = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const selectedMetadata = resolvedMediaType === 'audiobook'
+    ? {
+      title: audiobookSelectedMeta?.title || job?.title || job?.detected_title || null,
+      author: audiobookSelectedMeta?.author || audiobookSelectedMeta?.artist || null,
+      narrator: audiobookSelectedMeta?.narrator || null,
+      series: audiobookSelectedMeta?.series || null,
+      part: audiobookSelectedMeta?.part || null,
+      year: audiobookSelectedMeta?.year ?? job?.year ?? null,
+      chapters: Array.isArray(audiobookSelectedMeta?.chapters) ? audiobookSelectedMeta.chapters : [],
+      durationMs: audiobookSelectedMeta?.durationMs || 0,
+      poster: job?.poster_url || null
+    }
+    : {
+      title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
+      artist: cdSelectedMeta?.artist || fallbackCdArtist || null,
+      year: cdSelectedMeta?.year ?? job?.year ?? null,
+      mbId: resolvedCdMbId,
+      coverUrl: resolvedCdCoverUrl,
+      imdbId: job?.imdb_id || null,
+      poster: job?.poster_url || resolvedCdCoverUrl || null
+    };
   const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
   const isPreRip = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
   const inputPath = isPreRip
@@ -623,13 +652,14 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const canRestartReviewFromRaw = Boolean(
     job?.raw_path
     && !processingStates.includes(jobStatus)
+    && resolvedMediaType !== 'audiobook'
   );
   const computedContext = {
     jobId,
     rawPath: job?.raw_path || null,
     outputPath: job?.output_path || null,
     detectedTitle: job?.detected_title || null,
-    mediaProfile: resolveMediaType(job),
+    mediaProfile: resolvedMediaType,
     lastState,
     devicePath,
     cdparanoiaCmd,
@@ -642,6 +672,14 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     mode,
     sourceJobId: encodePlan?.sourceJobId || null,
     selectedMetadata,
+    audiobookConfig: resolvedMediaType === 'audiobook'
+      ? {
+        format: String(encodePlan?.format || '').trim().toLowerCase() || 'mp3',
+        formatOptions: encodePlan?.formatOptions && typeof encodePlan.formatOptions === 'object'
+          ? encodePlan.formatOptions
+          : {}
+      }
+      : null,
     mediaInfoReview: encodePlan,
     playlistAnalysis: analyzeContext.playlistAnalysis || null,
     playlistDecisionRequired: Boolean(analyzeContext.playlistDecisionRequired),
@@ -751,6 +789,8 @@ export default function DashboardPage({
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
+  const [audiobookUploadFile, setAudiobookUploadFile] = useState(null);
+  const [audiobookUploadBusy, setAudiobookUploadBusy] = useState(false);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [expandedQueueScriptKeys, setExpandedQueueScriptKeys] = useState(() => new Set());
   const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
@@ -1245,6 +1285,8 @@ export default function DashboardPage({
     }
 
     const startOptions = options && typeof options === 'object' ? options : {};
+    const startJobRow = dashboardJobs.find((item) => normalizeJobId(item?.id) === normalizedJobId) || null;
+    const mediaType = resolveMediaType(startJobRow);
     setJobBusy(normalizedJobId, true);
     try {
       if (startOptions.ensureConfirmed) {
@@ -1270,12 +1312,70 @@ export default function DashboardPage({
         }
         await api.confirmEncodeReview(normalizedJobId, confirmPayload);
       }
-      const response = await api.startJob(normalizedJobId);
+      const response = mediaType === 'audiobook'
+        ? await api.startJob(normalizedJobId)
+        : await api.startJob(normalizedJobId);
       const result = getQueueActionResult(response);
       await refreshPipeline();
       await loadDashboardJobs();
       if (result.queued) {
         showQueuedToast(toastRef, 'Start', result);
+      } else {
+        setExpandedJobId(normalizedJobId);
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setJobBusy(normalizedJobId, false);
+    }
+  };
+
+  const handleAudiobookUpload = async () => {
+    if (!audiobookUploadFile) {
+      showError(new Error('Bitte zuerst eine AAX-Datei auswählen.'));
+      return;
+    }
+    setAudiobookUploadBusy(true);
+    try {
+      const response = await api.uploadAudiobook(audiobookUploadFile, { startImmediately: false });
+      const result = getQueueActionResult(response);
+      const uploadedJobId = normalizeJobId(response?.result?.jobId);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Audiobook', result);
+      } else {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Audiobook importiert',
+          detail: uploadedJobId ? `Job #${uploadedJobId} wurde angelegt.` : 'Audiobook wurde importiert.',
+          life: 3200
+        });
+      }
+      if (uploadedJobId) {
+        setExpandedJobId(uploadedJobId);
+      }
+      setAudiobookUploadFile(null);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setAudiobookUploadBusy(false);
+    }
+  };
+
+  const handleAudiobookStart = async (jobId, audiobookConfig) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId) {
+      return;
+    }
+    setJobBusy(normalizedJobId, true);
+    try {
+      const response = await api.startAudiobook(normalizedJobId, audiobookConfig || {});
+      const result = getQueueActionResult(response);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Audiobook', result);
       } else {
         setExpandedJobId(normalizedJobId);
       }
@@ -1944,6 +2044,35 @@ export default function DashboardPage({
         )}
       </Card>
 
+      <Card title="Audiobook Upload" subTitle="AAX-Datei hochladen, analysieren und danach Format/Qualität vor dem Start auswählen.">
+        <div className="actions-row">
+          <input
+            key={audiobookUploadFile ? `${audiobookUploadFile.name}-${audiobookUploadFile.size}` : 'audiobook-upload-input'}
+            type="file"
+            accept=".aax"
+            onChange={(event) => {
+              const nextFile = event.target?.files?.[0] || null;
+              setAudiobookUploadFile(nextFile);
+            }}
+            disabled={audiobookUploadBusy}
+          />
+          <Button
+            label="Audiobook hochladen"
+            icon="pi pi-upload"
+            onClick={() => {
+              void handleAudiobookUpload();
+            }}
+            loading={audiobookUploadBusy}
+            disabled={!audiobookUploadFile}
+          />
+        </div>
+        <small>
+          {audiobookUploadFile
+            ? `Ausgewählt: ${audiobookUploadFile.name}`
+            : 'Unterstützt im MVP: AAX-Upload. Danach erscheint ein eigener Audiobook-Startschritt mit Format- und Qualitätswahl.'}
+        </small>
+      </Card>
+
       <Card title="Job Queue" subTitle="Starts werden nach Typ- und Gesamtlimit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">
         <div className="pipeline-queue-meta">
           <Tag value={`Film max.: ${queueState?.maxParallelJobs || 1}`} severity="info" />
@@ -2281,11 +2410,14 @@ export default function DashboardPage({
               const statusBadgeSeverity = getStatusSeverity(normalizedStatus, { queued: isQueued });
               const isExpanded = normalizeJobId(expandedJobId) === jobId;
               const isCurrentSession = currentPipelineJobId === jobId && state !== 'IDLE';
-              const isResumable = normalizedStatus === 'READY_TO_ENCODE' && !isCurrentSession;
               const reviewConfirmed = Boolean(Number(job?.encode_review_confirmed || 0));
               const pipelineForJob = pipelineByJobId.get(jobId) || pipeline;
               const jobTitle = job?.title || job?.detected_title || `Job #${jobId}`;
               const mediaIndicator = mediaIndicatorMeta(job);
+              const isResumable = (
+                normalizedStatus === 'READY_TO_ENCODE'
+                || (mediaIndicator.mediaType === 'audiobook' && normalizedStatus === 'READY_TO_START')
+              ) && !isCurrentSession;
               const mediaProfile = String(pipelineForJob?.context?.mediaProfile || '').trim().toLowerCase();
               const jobState = String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase();
               const pipelineStage = String(pipelineForJob?.context?.stage || '').trim().toUpperCase();
@@ -2295,6 +2427,9 @@ export default function DashboardPage({
                 || mediaProfile === 'cd'
                 || mediaIndicator.mediaType === 'cd'
                 || pipelineStatusText.includes('CD_');
+              const isAudiobookJob = mediaProfile === 'audiobook'
+                || mediaIndicator.mediaType === 'audiobook'
+                || String(pipelineForJob?.context?.mode || '').trim().toLowerCase() === 'audiobook';
               const rawProgress = Number(pipelineForJob?.progress ?? 0);
               const clampedProgress = Number.isFinite(rawProgress)
                 ? Math.max(0, Math.min(100, rawProgress))
@@ -2302,14 +2437,19 @@ export default function DashboardPage({
               const progressLabel = `${Math.round(clampedProgress)}%`;
               const etaLabel = String(pipelineForJob?.eta || '').trim();
 
+              const audiobookMeta = pipelineForJob?.context?.selectedMetadata && typeof pipelineForJob.context.selectedMetadata === 'object'
+                ? pipelineForJob.context.selectedMetadata
+                : {};
+              const audiobookChapterCount = Array.isArray(audiobookMeta?.chapters) ? audiobookMeta.chapters.length : 0;
+
               if (isExpanded) {
                 return (
                   <div key={jobId} className="dashboard-job-expanded">
                     <div className="dashboard-job-expanded-head">
-                      {job?.poster_url && job.poster_url !== 'N/A' ? (
+                      {(job?.poster_url && job.poster_url !== 'N/A') ? (
                         <img src={job.poster_url} alt={jobTitle} className="poster-thumb" />
                       ) : (
-                        <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
+                        <div className="poster-thumb dashboard-job-poster-fallback">{isAudiobookJob ? 'Kein Cover' : 'Kein Poster'}</div>
                       )}
                       <div className="dashboard-job-expanded-title">
                         <strong className="dashboard-job-title-line">
@@ -2363,9 +2503,20 @@ export default function DashboardPage({
                           </>
                         );
                       }
+                      if (isAudiobookJob) {
+                        return (
+                          <AudiobookConfigPanel
+                            pipeline={pipelineForJob}
+                            onStart={(config) => handleAudiobookStart(jobId, config)}
+                            onCancel={() => handleCancel(jobId, jobState)}
+                            onRetry={() => handleRetry(jobId)}
+                            busy={busyJobIds.has(jobId)}
+                          />
+                        );
+                      }
                       return null;
                     })()}
-                    {!isCdJob ? (
+                    {!isCdJob && !isAudiobookJob ? (
                     <PipelineStatusCard
                       pipeline={pipelineForJob}
                       onAnalyze={handleAnalyze}
@@ -2399,7 +2550,7 @@ export default function DashboardPage({
                   {job?.poster_url && job.poster_url !== 'N/A' ? (
                     <img src={job.poster_url} alt={jobTitle} className="poster-thumb" />
                   ) : (
-                    <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
+                    <div className="poster-thumb dashboard-job-poster-fallback">{isAudiobookJob ? 'Kein Cover' : 'Kein Poster'}</div>
                   )}
                   <div className="dashboard-job-row-content">
                     <div className="dashboard-job-row-main">
@@ -2414,8 +2565,16 @@ export default function DashboardPage({
                       </strong>
                       <small>
                         #{jobId}
-                        {job?.year ? ` | ${job.year}` : ''}
-                        {job?.imdb_id ? ` | ${job.imdb_id}` : ''}
+                        {isAudiobookJob
+                          ? (
+                            `${audiobookMeta?.author ? ` | ${audiobookMeta.author}` : ''}`
+                            + `${audiobookMeta?.narrator ? ` | ${audiobookMeta.narrator}` : ''}`
+                            + `${audiobookChapterCount > 0 ? ` | ${audiobookChapterCount} Kapitel` : ''}`
+                          )
+                          : (
+                            `${job?.year ? ` | ${job.year}` : ''}`
+                            + `${job?.imdb_id ? ` | ${job.imdb_id}` : ''}`
+                          )}
                       </small>
                     </div>
                     <div className="dashboard-job-badges">
