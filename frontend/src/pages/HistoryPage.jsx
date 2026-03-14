@@ -1126,7 +1126,7 @@ export default function HistoryPage() {
             </div>
 
             <div>
-              <h4>{`RAW (${previewRawExisting.length}/${previewRawPaths.length})`}</h4>
+              <h4>RAW</h4>
               {previewRawPaths.length > 0 ? (() => {
                 const display = previewRawPaths.filter(p => p.exists).length > 0
                   ? previewRawPaths.filter(p => p.exists)
@@ -1149,7 +1149,7 @@ export default function HistoryPage() {
             </div>
 
             <div>
-              <h4>{`${deleteEntryOutputShortLabel} (${previewMovieExisting.length}/${previewMoviePaths.length})`}</h4>
+              <h4>{deleteEntryOutputShortLabel}</h4>
               {previewMoviePaths.length > 0 ? (() => {
                 const display = previewMoviePaths.filter(p => p.exists).length > 0
                   ? previewMoviePaths.filter(p => p.exists)
