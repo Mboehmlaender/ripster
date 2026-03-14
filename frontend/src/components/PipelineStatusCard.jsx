@@ -294,6 +294,7 @@ export default function PipelineStatusCard({
   onAnalyze,
   onReanalyze,
   onOpenMetadata,
+  onReassignOmdb,
   onStart,
   onRemoveFromQueue,
   onRestartEncode,
@@ -649,6 +650,17 @@ export default function PipelineStatusCard({
                 icon="pi pi-list"
                 severity="info"
                 onClick={() => onOpenMetadata?.(retryJobId)}
+                loading={busy}
+              />
+            ) : null}
+
+            {!running && state !== 'METADATA_SELECTION' && state !== 'WAITING_FOR_USER_DECISION' && state !== 'IDLE' && state !== 'DISC_DETECTED' && retryJobId && typeof onReassignOmdb === 'function' ? (
+              <Button
+                label="OMDb neu zuordnen"
+                icon="pi pi-search"
+                severity="secondary"
+                size="small"
+                onClick={() => onReassignOmdb?.(retryJobId)}
                 loading={busy}
               />
             ) : null}

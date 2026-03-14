@@ -641,11 +641,23 @@ function buildRawPathForJobId(rawPath, jobId) {
 
   const absRawPath = normalizeComparablePath(rawPath);
   const folderName = path.basename(absRawPath);
+
+  // Replace existing job ID suffix if present
   const replaced = folderName.replace(/(\s-\sRAW\s-\sjob-)\d+\s*$/i, `$1${Math.trunc(normalizedJobId)}`);
-  if (replaced === folderName) {
-    return absRawPath;
+  if (replaced !== folderName) {
+    return path.join(path.dirname(absRawPath), replaced);
   }
-  return path.join(path.dirname(absRawPath), replaced);
+
+  // No existing job ID suffix — add canonical suffix
+  // Strip any state prefix (Rip_Complete_ / Incomplete_), append suffix, restore prefix
+  const statePrefix = /^Rip_Complete_/i.test(folderName)
+    ? RAW_RIP_COMPLETE_PREFIX
+    : /^Incomplete_/i.test(folderName)
+      ? RAW_INCOMPLETE_PREFIX
+      : '';
+  const stripped = stripRawFolderStatePrefix(folderName);
+  const withJobId = `${statePrefix}${stripped} - RAW - job-${Math.trunc(normalizedJobId)}`;
+  return path.join(path.dirname(absRawPath), withJobId);
 }
 
 function deleteFilesRecursively(rootPath, keepRoot = true) {

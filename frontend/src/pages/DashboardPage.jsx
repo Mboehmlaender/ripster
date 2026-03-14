@@ -728,6 +728,7 @@ export default function DashboardPage({
   };
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
+  const [metadataDialogReassignMode, setMetadataDialogReassignMode] = useState(false);
   const [cdMetadataDialogVisible, setCdMetadataDialogVisible] = useState(false);
   const [cdMetadataDialogContext, setCdMetadataDialogContext] = useState(null);
   const [cdRipPanelJobId, setCdRipPanelJobId] = useState(null);
@@ -1040,6 +1041,18 @@ export default function DashboardPage({
       showError(new Error('Kein Job mit offener Metadaten-Auswahl gefunden.'));
       return;
     }
+    setMetadataDialogReassignMode(false);
+    setMetadataDialogContext(context);
+    setMetadataDialogVisible(true);
+  };
+
+  const handleOpenReassignOmdbDialog = (jobId) => {
+    const context = buildMetadataContextForJob(jobId);
+    if (!context?.jobId) {
+      showError(new Error('Job nicht gefunden.'));
+      return;
+    }
+    setMetadataDialogReassignMode(true);
     setMetadataDialogContext(context);
     setMetadataDialogVisible(true);
   };
@@ -1516,11 +1529,16 @@ export default function DashboardPage({
   const handleMetadataSubmit = async (payload) => {
     setBusy(true);
     try {
-      await api.selectMetadata(payload);
+      if (metadataDialogReassignMode) {
+        await api.assignJobOmdb(payload.jobId, payload);
+      } else {
+        await api.selectMetadata(payload);
+      }
       await refreshPipeline();
       await loadDashboardJobs();
       setMetadataDialogVisible(false);
       setMetadataDialogContext(null);
+      setMetadataDialogReassignMode(false);
     } catch (error) {
       showError(error);
     } finally {
@@ -2348,6 +2366,7 @@ export default function DashboardPage({
                       onAnalyze={handleAnalyze}
                       onReanalyze={handleReanalyze}
                       onOpenMetadata={handleOpenMetadataDialog}
+                      onReassignOmdb={handleOpenReassignOmdbDialog}
                       onStart={handleStartJob}
                       onRestartEncode={handleRestartEncodeWithLastSettings}
                       onRestartReview={handleRestartReviewFromRaw}
@@ -2469,6 +2488,7 @@ export default function DashboardPage({
         onHide={() => {
           setMetadataDialogVisible(false);
           setMetadataDialogContext(null);
+          setMetadataDialogReassignMode(false);
         }}
         onSubmit={handleMetadataSubmit}
         onSearch={handleOmdbSearch}
