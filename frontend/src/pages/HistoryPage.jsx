@@ -667,7 +667,7 @@ export default function HistoryPage() {
 
   const confirmDeleteEntry = async (target) => {
     const normalizedTarget = String(target || '').trim().toLowerCase();
-    if (!['raw', 'movie', 'both'].includes(normalizedTarget)) {
+    if (!['raw', 'movie', 'both', 'none'].includes(normalizedTarget)) {
       return;
     }
     const jobId = Number(deleteEntryDialogRow?.id || 0);
@@ -686,10 +686,13 @@ export default function HistoryPage() {
       const rawDirs = Number(fileSummary?.raw?.dirsRemoved || 0);
       const movieDirs = Number(fileSummary?.movie?.dirsRemoved || 0);
 
+      const detail = normalizedTarget === 'none'
+        ? `${deletedJobIds.length || 1} Eintrag/Einträge entfernt (Dateien bleiben erhalten)`
+        : `${deletedJobIds.length || 1} Eintrag/Einträge entfernt | RAW: ${rawFiles} Dateien, ${rawDirs} Ordner | ${deleteEntryOutputShortLabel}: ${movieFiles} Dateien, ${movieDirs} Ordner`;
       toastRef.current?.show({
         severity: 'success',
         summary: 'Historie gelöscht',
-        detail: `${deletedJobIds.length || 1} Eintrag/Einträge entfernt | RAW: ${rawFiles} Dateien, ${rawDirs} Ordner | ${deleteEntryOutputShortLabel}: ${movieFiles} Dateien, ${movieDirs} Ordner`,
+        detail,
         life: 5000
       });
 
@@ -1124,36 +1127,46 @@ export default function HistoryPage() {
 
             <div>
               <h4>{`RAW (${previewRawExisting.length}/${previewRawPaths.length})`}</h4>
-              {previewRawPaths.length > 0 ? (
-                <ul className="history-delete-preview-list">
-                  {previewRawPaths.map((item) => (
-                    <li key={`delete-raw-${item.path}`}>
-                      <span className={item.exists ? 'exists-yes' : 'exists-no'}>
-                        {item.exists ? 'vorhanden' : 'nicht gefunden'}
-                      </span>
-                      {' '}| {item.path}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
+              {previewRawPaths.length > 0 ? (() => {
+                const display = previewRawPaths.filter(p => p.exists).length > 0
+                  ? previewRawPaths.filter(p => p.exists)
+                  : previewRawPaths.slice(0, 1);
+                return (
+                  <ul className="history-delete-preview-list">
+                    {display.map((item) => (
+                      <li key={`delete-raw-${item.path}`}>
+                        <span className={item.exists ? 'exists-yes' : 'exists-no'}>
+                          {item.exists ? 'vorhanden' : 'nicht gefunden'}
+                        </span>
+                        {' '}| {item.path}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })() : (
                 <small className="history-dv-subtle">Keine RAW-Pfade.</small>
               )}
             </div>
 
             <div>
               <h4>{`${deleteEntryOutputShortLabel} (${previewMovieExisting.length}/${previewMoviePaths.length})`}</h4>
-              {previewMoviePaths.length > 0 ? (
-                <ul className="history-delete-preview-list">
-                  {previewMoviePaths.map((item) => (
-                    <li key={`delete-movie-${item.path}`}>
-                      <span className={item.exists ? 'exists-yes' : 'exists-no'}>
-                        {item.exists ? 'vorhanden' : 'nicht gefunden'}
-                      </span>
-                      {' '}| {item.path}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
+              {previewMoviePaths.length > 0 ? (() => {
+                const display = previewMoviePaths.filter(p => p.exists).length > 0
+                  ? previewMoviePaths.filter(p => p.exists)
+                  : previewMoviePaths.slice(0, 1);
+                return (
+                  <ul className="history-delete-preview-list">
+                    {display.map((item) => (
+                      <li key={`delete-movie-${item.path}`}>
+                        <span className={item.exists ? 'exists-yes' : 'exists-no'}>
+                          {item.exists ? 'vorhanden' : 'nicht gefunden'}
+                        </span>
+                        {' '}| {item.path}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })() : (
                 <small className="history-dv-subtle">Keine Movie-Pfade.</small>
               )}
             </div>
@@ -1185,6 +1198,15 @@ export default function HistoryPage() {
             severity="danger"
             onClick={() => confirmDeleteEntry('both')}
             loading={deleteEntryTargetBusy === 'both'}
+            disabled={deleteTargetActionsDisabled}
+          />
+          <Button
+            label="Nur Eintrag löschen"
+            icon="pi pi-database"
+            severity="secondary"
+            outlined
+            onClick={() => confirmDeleteEntry('none')}
+            loading={deleteEntryTargetBusy === 'none'}
             disabled={deleteTargetActionsDisabled}
           />
           <Button

@@ -532,6 +532,84 @@ function resolveAudioEncoderPreviewLabel(track, encoderToken, copyMask, fallback
   return `Transcode (${normalizedToken})`;
 }
 
+function parseAudioSelectorFromArgs(extraArgsString, baseSelector) {
+  const base = baseSelector && typeof baseSelector === 'object' ? baseSelector : {};
+  const args = String(extraArgsString || '').trim();
+  if (!args) {
+    return base;
+  }
+
+  // Tokenize: split on whitespace but respect quoted strings
+  const tokens = [];
+  let current = '';
+  let inQuote = null;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (ch === ' ' || ch === '\t') {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) {
+    tokens.push(current);
+  }
+
+  const result = { ...base };
+
+  const getNext = (i) => (i + 1 < tokens.length ? tokens[i + 1] : null);
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+
+    // Support both --flag=value and --flag value
+    const eqIdx = token.indexOf('=');
+    const flag = eqIdx !== -1 ? token.slice(0, eqIdx) : token;
+    const inlineVal = eqIdx !== -1 ? token.slice(eqIdx + 1) : null;
+
+    const getValue = () => {
+      if (inlineVal !== null) return inlineVal;
+      const next = getNext(i);
+      if (next && !next.startsWith('-')) {
+        i++;
+        return next;
+      }
+      return null;
+    };
+
+    if (flag === '--aencoder') {
+      const val = getValue();
+      if (val) {
+        result.encoders = val.split(',').map((s) => s.trim()).filter(Boolean);
+        result.encoderSource = 'args';
+      }
+    } else if (flag === '--audio-copy-mask') {
+      const val = getValue();
+      if (val) {
+        result.copyMask = val.split(',').map((s) => s.trim()).filter(Boolean);
+      }
+    } else if (flag === '--audio-fallback') {
+      const val = getValue();
+      if (val) {
+        result.fallbackEncoder = val.trim();
+      }
+    }
+  }
+
+  return result;
+}
+
 function buildAudioActionPreviewSummary(track, selectedIndex, audioSelector) {
   const selector = audioSelector && typeof audioSelector === 'object' ? audioSelector : {};
   const availableEncoders = Array.isArray(selector.encoders) ? selector.encoders : [];
@@ -759,6 +837,9 @@ export default function MediaInfoReviewPanel({
   const effectivePresetOverride = selectedUserPreset
     ? { handbrakePreset: selectedUserPreset.handbrakePreset || '', extraArgs: selectedUserPreset.extraArgs || '' }
     : null;
+  const effectiveAudioSelector = effectivePresetOverride?.extraArgs
+    ? parseAudioSelectorFromArgs(effectivePresetOverride.extraArgs, review?.selectors?.audio)
+    : (review?.selectors?.audio || null);
   const hasUserPresets = normalizedUserPresets.length > 0;
   const allowUserPresetSelection = hasUserPresets && typeof onUserPresetChange === 'function' && allowEncodeItemSelection;
 
@@ -843,10 +924,10 @@ export default function MediaInfoReviewPanel({
         <div><strong>Preset-Profil:</strong> {effectivePresetOverride ? 'user-preset' : (review.selectors?.presetProfileSource || '-')}</div>
         <div><strong>MIN_LENGTH_MINUTES:</strong> {review.minLengthMinutes}</div>
         <div><strong>Encode Input:</strong> {encodeInputTitle?.fileName || '-'}</div>
-        <div><strong>Audio Auswahl:</strong> {review.selectors?.audio?.mode || '-'}</div>
-        <div><strong>Audio Encoder:</strong> {(review.selectors?.audio?.encoders || []).join(', ') || 'Preset-Default'}</div>
-        <div><strong>Audio Copy-Mask:</strong> {(review.selectors?.audio?.copyMask || []).join(', ') || '-'}</div>
-        <div><strong>Audio Fallback:</strong> {review.selectors?.audio?.fallbackEncoder || '-'}</div>
+        <div><strong>Audio Auswahl:</strong> {effectiveAudioSelector?.mode || '-'}</div>
+        <div><strong>Audio Encoder:</strong> {(effectiveAudioSelector?.encoders || []).join(', ') || 'Preset-Default'}</div>
+        <div><strong>Audio Copy-Mask:</strong> {(effectiveAudioSelector?.copyMask || []).join(', ') || '-'}</div>
+        <div><strong>Audio Fallback:</strong> {effectiveAudioSelector?.fallbackEncoder || '-'}</div>
         <div><strong>Subtitle Auswahl:</strong> {review.selectors?.subtitle?.mode || '-'}</div>
         <div><strong>Subtitle Flags:</strong> {review.selectors?.subtitle?.forcedOnly ? 'forced-only' : '-'}{review.selectors?.subtitle?.burnBehavior === 'first' ? ' + burned(first)' : ''}</div>
       </div>
@@ -1206,7 +1287,7 @@ export default function MediaInfoReviewPanel({
                   type="audio"
                   allowSelection={allowTrackSelectionForTitle}
                   selectedTrackIds={selectedAudioTrackIds}
-                  audioSelector={review?.selectors?.audio || null}
+                  audioSelector={effectiveAudioSelector}
                   onToggleTrack={(trackId, checked) => {
                     if (!allowTrackSelectionForTitle || typeof onTrackSelectionChange !== 'function') {
                       return;

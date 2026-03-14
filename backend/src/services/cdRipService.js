@@ -585,6 +585,17 @@ async function ripAndEncode(options) {
       );
     }
 
+    // Safety net: some encoders (e.g. older flac without --no-delete-input-file) may remove
+    // the source WAV. Restore it from the encoded output so the RAW folder stays filled.
+    if (!fs.existsSync(wavFile) && fs.existsSync(outFile)) {
+      try {
+        fs.copyFileSync(outFile, wavFile);
+        log('info', `Track ${track.position}: WAV-Quelldatei vom Encoder gelöscht – aus Output wiederhergestellt.`);
+      } catch (restoreErr) {
+        log('warn', `Track ${track.position}: WAV-Wiederherstellung fehlgeschlagen: ${restoreErr.message}`);
+      }
+    }
+
     onProgress && onProgress({
       phase: 'encode',
       trackEvent: 'complete',
@@ -615,6 +626,7 @@ function buildEncodeArgs(format, opts, track, meta, wavFile, outFile) {
       cmd: 'flac',
       args: [
         `--compression-level-${clampedLevel}`,
+        '--no-delete-input-file', // flac deletes input WAV by default; keep RAW folder filled
         '--tag', `TITLE=${trackTitle}`,
         '--tag', `ARTIST=${artist}`,
         '--tag', `ALBUM=${album}`,
