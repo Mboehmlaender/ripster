@@ -1,6 +1,6 @@
 {
   "name": "ripster-backend",
-  "version": "0.10.0-2",
+  "version": "0.10.0-3",
   "private": true,
   "type": "commonjs",
   "scripts": {
