@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { execFile } = require('child_process');
 const { getDb } = require('../db/database');
 const settingsService = require('./settingsService');
 const historyService = require('./historyService');
 const omdbService = require('./omdbService');
 const musicBrainzService = require('./musicBrainzService');
 const cdRipService = require('./cdRipService');
+const audiobookService = require('./audiobookService');
 const scriptService = require('./scriptService');
 const scriptChainService = require('./scriptChainService');
 const runtimeActivityService = require('./runtimeActivityService');
@@ -249,11 +251,14 @@ function normalizeMediaProfile(value) {
   if (raw === 'cd' || raw === 'audio_cd') {
     return 'cd';
   }
+  if (raw === 'audiobook' || raw === 'audio_book' || raw === 'audio book' || raw === 'book') {
+    return 'audiobook';
+  }
   return null;
 }
 
 function isSpecificMediaProfile(value) {
-  return value === 'bluray' || value === 'dvd' || value === 'cd';
+  return value === 'bluray' || value === 'dvd' || value === 'cd' || value === 'audiobook';
 }
 
 function inferMediaProfileFromFsTypeAndModel(rawFsType, rawModel) {
@@ -365,6 +370,9 @@ function inferMediaProfileFromRawPath(rawPath) {
   try {
     const sourceStat = fs.statSync(source);
     if (sourceStat.isFile()) {
+      if (path.extname(source).toLowerCase() === '.aax') {
+        return 'audiobook';
+      }
       if (isLikelyExtensionlessDvdImageFile(source, sourceStat.size)) {
         return 'dvd';
       }
@@ -388,6 +396,15 @@ function inferMediaProfileFromRawPath(rawPath) {
   try {
     if (fs.existsSync(videoTsPath)) {
       return 'dvd';
+    }
+  } catch (_error) {
+    // ignore fs errors
+  }
+
+  try {
+    const audiobookFiles = findMediaFiles(source, ['.aax']);
+    if (audiobookFiles.length > 0) {
+      return 'audiobook';
     }
   } catch (_error) {
     // ignore fs errors
@@ -621,6 +638,69 @@ function finalizeOutputPathForCompletedEncode(incompleteOutputPath, preferredFin
   return {
     outputPath: targetPath,
     outputPathWithTimestamp
+  };
+}
+
+function buildAudiobookMetadataForJob(job, makemkvInfo = null, encodePlan = null) {
+  const mkInfo = makemkvInfo && typeof makemkvInfo === 'object' ? makemkvInfo : {};
+  const plan = encodePlan && typeof encodePlan === 'object' ? encodePlan : {};
+  const metadataSource = plan?.metadata && typeof plan.metadata === 'object'
+    ? plan.metadata
+    : (
+      mkInfo?.selectedMetadata && typeof mkInfo.selectedMetadata === 'object'
+        ? mkInfo.selectedMetadata
+        : (mkInfo?.detectedMetadata && typeof mkInfo.detectedMetadata === 'object' ? mkInfo.detectedMetadata : {})
+    );
+  return {
+    title: String(metadataSource?.title || job?.title || job?.detected_title || 'Audiobook').trim() || 'Audiobook',
+    author: String(metadataSource?.author || metadataSource?.artist || '').trim() || null,
+    narrator: String(metadataSource?.narrator || '').trim() || null,
+    series: String(metadataSource?.series || '').trim() || null,
+    part: String(metadataSource?.part || '').trim() || null,
+    year: Number.isFinite(Number(metadataSource?.year))
+      ? Math.trunc(Number(metadataSource.year))
+      : (Number.isFinite(Number(job?.year)) ? Math.trunc(Number(job.year)) : null),
+    durationMs: Number.isFinite(Number(metadataSource?.durationMs))
+      ? Number(metadataSource.durationMs)
+      : 0,
+    chapters: Array.isArray(metadataSource?.chapters)
+      ? metadataSource.chapters
+      : (Array.isArray(mkInfo?.chapters) ? mkInfo.chapters : [])
+  };
+}
+
+function buildAudiobookOutputConfig(settings, job, makemkvInfo = null, encodePlan = null, fallbackJobId = null) {
+  const metadata = buildAudiobookMetadataForJob(job, makemkvInfo, encodePlan);
+  const movieDir = String(
+    settings?.movie_dir
+    || settings?.raw_dir
+    || settingsService.DEFAULT_AUDIOBOOK_DIR
+    || settingsService.DEFAULT_AUDIOBOOK_RAW_DIR
+    || ''
+  ).trim();
+  const outputTemplate = String(
+    settings?.output_template
+    || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE
+  ).trim() || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE;
+  const outputFormat = audiobookService.normalizeOutputFormat(
+    encodePlan?.format || settings?.output_extension || 'mp3'
+  );
+  const preferredFinalOutputPath = audiobookService.buildOutputPath(
+    metadata,
+    movieDir,
+    outputTemplate,
+    outputFormat
+  );
+  const numericJobId = Number(fallbackJobId || job?.id || 0);
+  const incompleteFolder = Number.isFinite(numericJobId) && numericJobId > 0
+    ? `Incomplete_job-${numericJobId}`
+    : 'Incomplete_job-unknown';
+  const incompleteOutputPath = path.join(movieDir, incompleteFolder, path.basename(preferredFinalOutputPath));
+  return {
+    metadata,
+    outputFormat,
+    preferredFinalOutputPath,
+    incompleteOutputPath
   };
 }
 
@@ -3177,7 +3257,9 @@ function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedP
     if (sourceStat.isFile()) {
       const ext = path.extname(sourcePath).toLowerCase();
       if (
-        ext === '.mkv'
+        ext === '.aax'
+        || ext === '.m4b'
+        || ext === '.mkv'
         || ext === '.mp4'
         || isLikelyExtensionlessDvdImageFile(sourcePath, sourceStat.size)
       ) {
@@ -3206,11 +3288,11 @@ function collectRawMediaCandidates(rawPath, { playlistAnalysis = null, selectedP
     };
   }
 
-  const primary = findMediaFiles(sourcePath, ['.mkv', '.mp4']);
+  const primary = findMediaFiles(sourcePath, ['.aax', '.m4b', '.mkv', '.mp4']);
   if (primary.length > 0) {
     return {
       mediaFiles: primary,
-      source: 'mkv'
+      source: path.extname(primary[0]?.path || '').toLowerCase() === '.aax' ? 'audiobook' : 'mkv'
     };
   }
 
@@ -3700,6 +3782,8 @@ class PipelineService extends EventEmitter {
     const effectiveSettings = settingsService.resolveEffectiveToolSettings(sourceMap, normalizedMediaProfile);
     const preferredDefaultRawDir = normalizedMediaProfile === 'cd'
       ? settingsService.DEFAULT_CD_DIR
+      : normalizedMediaProfile === 'audiobook'
+        ? settingsService.DEFAULT_AUDIOBOOK_RAW_DIR
       : settingsService.DEFAULT_RAW_DIR;
     const uniqueRawDirs = Array.from(
       new Set(
@@ -3709,9 +3793,11 @@ class PipelineService extends EventEmitter {
           sourceMap?.raw_dir_bluray,
           sourceMap?.raw_dir_dvd,
           sourceMap?.raw_dir_cd,
+          sourceMap?.raw_dir_audiobook,
           preferredDefaultRawDir,
           settingsService.DEFAULT_RAW_DIR,
-          settingsService.DEFAULT_CD_DIR
+          settingsService.DEFAULT_CD_DIR,
+          settingsService.DEFAULT_AUDIOBOOK_RAW_DIR
         ]
           .map((item) => String(item || '').trim())
           .filter(Boolean)
@@ -3741,7 +3827,9 @@ class PipelineService extends EventEmitter {
       settings?.raw_dir_bluray,
       settings?.raw_dir_dvd,
       settings?.raw_dir_cd,
-      settingsService.DEFAULT_CD_DIR
+      settings?.raw_dir_audiobook,
+      settingsService.DEFAULT_CD_DIR,
+      settingsService.DEFAULT_AUDIOBOOK_RAW_DIR
     ].map((d) => String(d || '').trim()).filter(Boolean);
     const allRawDirs = [rawBaseDir, settingsService.DEFAULT_RAW_DIR, ...rawExtraDirs]
       .filter((d, i, arr) => arr.indexOf(d) === i && d && fs.existsSync(d));
@@ -5329,6 +5417,29 @@ class PipelineService extends EventEmitter {
       settings,
       mediaProfile
     };
+  }
+
+  async runCapturedCommand(cmd, args = []) {
+    const command = String(cmd || '').trim();
+    const argv = Array.isArray(args) ? args.map((item) => String(item)) : [];
+    if (!command) {
+      throw new Error('Kommando fehlt.');
+    }
+
+    return new Promise((resolve, reject) => {
+      execFile(command, argv, { maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+        resolve({
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
+        });
+      });
+    });
   }
 
   async ensureMakeMKVRegistration(jobId, stage) {
@@ -7021,6 +7132,16 @@ class PipelineService extends EventEmitter {
         throw error;
       }
 
+      const preloadedMakemkvInfo = this.safeParseJson(preloadedJob.makemkv_info_json);
+      const preloadedEncodePlan = this.safeParseJson(preloadedJob.encode_plan_json);
+      const preloadedMediaProfile = this.resolveMediaProfileForJob(preloadedJob, {
+        makemkvInfo: preloadedMakemkvInfo,
+        encodePlan: preloadedEncodePlan
+      });
+      if (preloadedMediaProfile === 'audiobook') {
+        return this.startAudiobookEncode(jobId, { ...options, preloadedJob });
+      }
+
       const isReadyToEncode = preloadedJob.status === 'READY_TO_ENCODE' || preloadedJob.last_state === 'READY_TO_ENCODE';
       if (isReadyToEncode) {
         // Check whether this confirmed job will rip first (pre_rip mode) or encode directly.
@@ -7061,16 +7182,26 @@ class PipelineService extends EventEmitter {
       return this.startPreparedJob(jobId, { ...options, immediate: true, preloadedJob });
     }
 
-    this.ensureNotBusy('startPreparedJob', jobId);
-    logger.info('startPreparedJob:requested', { jobId });
-    this.cancelRequestedByJob.delete(Number(jobId));
-
     const job = options?.preloadedJob || await historyService.getJobById(jobId);
     if (!job) {
       const error = new Error(`Job ${jobId} nicht gefunden.`);
       error.statusCode = 404;
       throw error;
     }
+
+    const jobMakemkvInfo = this.safeParseJson(job.makemkv_info_json);
+    const jobEncodePlan = this.safeParseJson(job.encode_plan_json);
+    const jobMediaProfile = this.resolveMediaProfileForJob(job, {
+      makemkvInfo: jobMakemkvInfo,
+      encodePlan: jobEncodePlan
+    });
+    if (jobMediaProfile === 'audiobook') {
+      return this.startAudiobookEncode(jobId, { ...options, immediate: true, preloadedJob: job });
+    }
+
+    this.ensureNotBusy('startPreparedJob', jobId);
+    logger.info('startPreparedJob:requested', { jobId });
+    this.cancelRequestedByJob.delete(Number(jobId));
 
     if (!job.title && !job.detected_title) {
       const error = new Error('Start nicht möglich: keine Metadaten vorhanden.');
@@ -7489,6 +7620,63 @@ class PipelineService extends EventEmitter {
     }
 
     const mkInfo = this.safeParseJson(sourceJob.makemkv_info_json);
+    const sourceEncodePlan = this.safeParseJson(sourceJob.encode_plan_json);
+    const reencodeMediaProfile = this.resolveMediaProfileForJob(sourceJob, {
+      makemkvInfo: mkInfo,
+      encodePlan: sourceEncodePlan,
+      rawPath: sourceJob.raw_path
+    });
+    if (reencodeMediaProfile === 'audiobook') {
+      const reencodeSettings = await settingsService.getSettingsMap();
+      const resolvedAudiobookRawPath = this.resolveCurrentRawPathForSettings(
+        reencodeSettings,
+        reencodeMediaProfile,
+        sourceJob.raw_path
+      );
+      if (!resolvedAudiobookRawPath) {
+        const error = new Error(`Re-Encode nicht möglich: RAW-Pfad existiert nicht (${sourceJob.raw_path}).`);
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const rawInput = findPreferredRawInput(resolvedAudiobookRawPath);
+      if (!rawInput) {
+        const error = new Error('Re-Encode nicht möglich: keine AAX-Datei im RAW-Pfad gefunden.');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const refreshedPlan = {
+        ...(sourceEncodePlan && typeof sourceEncodePlan === 'object' ? sourceEncodePlan : {}),
+        mediaProfile: 'audiobook',
+        mode: 'audiobook',
+        encodeInputPath: rawInput.path
+      };
+
+      await historyService.resetProcessLog(sourceJobId);
+      await historyService.updateJob(sourceJobId, {
+        status: 'READY_TO_START',
+        last_state: 'READY_TO_START',
+        start_time: null,
+        end_time: null,
+        error_message: null,
+        output_path: null,
+        handbrake_info_json: null,
+        mediainfo_info_json: null,
+        encode_plan_json: JSON.stringify(refreshedPlan),
+        encode_input_path: rawInput.path,
+        encode_review_confirmed: 1,
+        raw_path: resolvedAudiobookRawPath
+      });
+      await historyService.appendLog(
+        sourceJobId,
+        'USER_ACTION',
+        `Audiobook-Re-Encode angefordert. Bestehender Job wird wiederverwendet. Input: ${rawInput.path}`
+      );
+
+      return this.startPreparedJob(sourceJobId);
+    }
+
     const ripSuccessful = this.isRipSuccessful(sourceJob);
     if (!ripSuccessful) {
       const error = new Error(
@@ -7497,11 +7685,6 @@ class PipelineService extends EventEmitter {
       error.statusCode = 400;
       throw error;
     }
-
-    const reencodeMediaProfile = this.resolveMediaProfileForJob(sourceJob, {
-      makemkvInfo: mkInfo,
-      rawPath: sourceJob.raw_path
-    });
     const reencodeSettings = await settingsService.getSettingsMap();
     const resolvedReencodeRawPath = this.resolveCurrentRawPathForSettings(
       reencodeSettings,
@@ -9226,6 +9409,7 @@ class PipelineService extends EventEmitter {
       encodePlan: sourceEncodePlan
     });
     const isCdRetry = mediaProfile === 'cd';
+    const isAudiobookRetry = mediaProfile === 'audiobook';
 
     let cdRetryConfig = null;
     if (isCdRetry) {
@@ -9283,7 +9467,7 @@ class PipelineService extends EventEmitter {
         selectedPreEncodeChainIds: normalizeChainIdList(sourceEncodePlan?.preEncodeChainIds || []),
         selectedPostEncodeChainIds: normalizeChainIdList(sourceEncodePlan?.postEncodeChainIds || [])
       };
-    } else {
+    } else if (!isAudiobookRetry) {
       const retrySettings = await settingsService.getEffectiveSettingsMap(mediaProfile);
       const { rawBaseDir: retryRawBaseDir, rawExtraDirs: retryRawExtraDirs } = this.buildRawPathLookupConfig(
         retrySettings,
@@ -9353,7 +9537,7 @@ class PipelineService extends EventEmitter {
 
     const retryJob = await historyService.createJob({
       discDevice: sourceJob.disc_device || null,
-      status: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING',
+      status: isCdRetry ? 'CD_READY_TO_RIP' : (isAudiobookRetry ? 'READY_TO_START' : 'RIPPING'),
       detectedTitle: sourceJob.detected_title || sourceJob.title || null
     });
     const retryJobId = Number(retryJob?.id || 0);
@@ -9370,19 +9554,27 @@ class PipelineService extends EventEmitter {
       omdb_json: sourceJob.omdb_json || null,
       selected_from_omdb: Number(sourceJob.selected_from_omdb || 0),
       makemkv_info_json: sourceJob.makemkv_info_json || null,
-      rip_successful: 0,
+      rip_successful: isAudiobookRetry ? 1 : 0,
       error_message: null,
       end_time: null,
       handbrake_info_json: null,
       mediainfo_info_json: null,
-      encode_plan_json: isCdRetry
+      encode_plan_json: (isCdRetry || isAudiobookRetry)
         ? (sourceJob.encode_plan_json || null)
         : null,
-      encode_input_path: null,
-      encode_review_confirmed: 0,
+      encode_input_path: isAudiobookRetry
+        ? (
+          sourceJob.encode_input_path
+          || sourceEncodePlan?.encodeInputPath
+          || sourceMakemkvInfo?.rawFilePath
+          || null
+        )
+        : null,
+      encode_review_confirmed: isAudiobookRetry ? 1 : 0,
       output_path: null,
-      status: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING',
-      last_state: isCdRetry ? 'CD_READY_TO_RIP' : 'RIPPING'
+      raw_path: isAudiobookRetry ? (sourceJob.raw_path || null) : null,
+      status: isCdRetry ? 'CD_READY_TO_RIP' : (isAudiobookRetry ? 'READY_TO_START' : 'RIPPING'),
+      last_state: isCdRetry ? 'CD_READY_TO_RIP' : (isAudiobookRetry ? 'READY_TO_START' : 'RIPPING')
     };
     await historyService.updateJob(retryJobId, retryUpdatePayload);
 
@@ -9397,10 +9589,10 @@ class PipelineService extends EventEmitter {
     await historyService.appendLog(
       retryJobId,
       'USER_ACTION',
-      `Retry aus Job #${jobId} gestartet (${isCdRetry ? 'CD' : 'Disc'}).`
+      `Retry aus Job #${jobId} gestartet (${isCdRetry ? 'CD' : (isAudiobookRetry ? 'Audiobook' : 'Disc')}).`
     );
     await historyService.retireJobInFavorOf(jobId, retryJobId, {
-      reason: isCdRetry ? 'cd_retry' : 'retry'
+      reason: isCdRetry ? 'cd_retry' : (isAudiobookRetry ? 'audiobook_retry' : 'retry')
     });
     this.cancelRequestedByJob.delete(retryJobId);
 
@@ -9412,6 +9604,14 @@ class PipelineService extends EventEmitter {
           error: errorToMeta(error)
         });
       });
+    } else if (isAudiobookRetry) {
+      const startResult = await this.startPreparedJob(retryJobId);
+      return {
+        sourceJobId: Number(jobId),
+        jobId: retryJobId,
+        replacedSourceJob: true,
+        ...(startResult && typeof startResult === 'object' ? startResult : {})
+      };
     } else {
       this.startRipEncode(retryJobId).catch((error) => {
         logger.error('retry:background-failed', { jobId: retryJobId, sourceJobId: jobId, error: errorToMeta(error) });
@@ -10545,7 +10745,7 @@ class PipelineService extends EventEmitter {
           cdparanoiaCmd: String(makemkvInfo?.cdparanoiaCmd || jobProgressContext?.cdparanoiaCmd || '').trim() || null
         } : {}),
         canRestartEncodeFromLastSettings: hasConfirmedPlan,
-        canRestartReviewFromRaw: hasRawPath
+        canRestartReviewFromRaw: resolvedMediaProfile !== 'audiobook' && hasRawPath
       }
     });
     this.cancelRequestedByJob.delete(Number(jobId));
@@ -10554,6 +10754,410 @@ class PipelineService extends EventEmitter {
       title: isCancelled ? 'Ripster - Job abgebrochen' : 'Ripster - Job Fehler',
       message: `${title} (${stage}): ${message}`
     });
+  }
+
+  async uploadAudiobookFile(file, options = {}) {
+    const tempFilePath = String(file?.path || '').trim();
+    const originalName = String(file?.originalname || file?.originalName || '').trim()
+      || path.basename(tempFilePath || 'upload.aax');
+    const detectedTitle = path.basename(originalName, path.extname(originalName)) || 'Audiobook';
+    const requestedFormat = String(options?.format || '').trim().toLowerCase() || null;
+    const startImmediately = options?.startImmediately === undefined
+      ? true
+      : !['0', 'false', 'no', 'off'].includes(String(options.startImmediately).trim().toLowerCase());
+
+    if (!tempFilePath || !fs.existsSync(tempFilePath)) {
+      const error = new Error('Upload-Datei fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!audiobookService.isSupportedInputFile(originalName)) {
+      const error = new Error('Nur AAX-Dateien werden für Audiobooks unterstützt.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const settings = await settingsService.getEffectiveSettingsMap('audiobook');
+    const rawBaseDir = String(
+      settings?.raw_dir || settingsService.DEFAULT_AUDIOBOOK_RAW_DIR || settingsService.DEFAULT_RAW_DIR || ''
+    ).trim();
+    const rawTemplate = String(
+      settings?.audiobook_raw_template || audiobookService.DEFAULT_AUDIOBOOK_RAW_TEMPLATE
+    ).trim() || audiobookService.DEFAULT_AUDIOBOOK_RAW_TEMPLATE;
+    const outputTemplate = String(
+      settings?.output_template || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE
+    ).trim() || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE;
+    const outputFormat = audiobookService.normalizeOutputFormat(
+      requestedFormat || settings?.output_extension || 'mp3'
+    );
+    const ffprobeCommand = String(settings?.ffprobe_command || 'ffprobe').trim() || 'ffprobe';
+
+    const job = await historyService.createJob({
+      discDevice: null,
+      status: 'ANALYZING',
+      detectedTitle
+    });
+
+    let stagedRawDir = null;
+    let stagedRawFilePath = null;
+
+    try {
+      await historyService.resetProcessLog(job.id);
+      await historyService.appendLog(job.id, 'SYSTEM', `AAX-Upload empfangen: ${originalName}`);
+
+      const probeConfig = audiobookService.buildProbeCommand(ffprobeCommand, tempFilePath);
+      const captured = await this.runCapturedCommand(probeConfig.cmd, probeConfig.args);
+      const probe = audiobookService.parseProbeOutput(captured.stdout);
+      if (!probe) {
+        const error = new Error('FFprobe-Ausgabe konnte nicht gelesen werden.');
+        error.statusCode = 500;
+        throw error;
+      }
+
+      const metadata = audiobookService.buildMetadataFromProbe(probe, originalName);
+      const storagePaths = audiobookService.buildRawStoragePaths(
+        metadata,
+        job.id,
+        rawBaseDir,
+        rawTemplate,
+        originalName
+      );
+
+      ensureDir(storagePaths.rawDir);
+      fs.renameSync(tempFilePath, storagePaths.rawFilePath);
+      stagedRawDir = storagePaths.rawDir;
+      stagedRawFilePath = storagePaths.rawFilePath;
+      chownRecursive(storagePaths.rawDir, settings?.raw_dir_owner);
+
+      const makemkvInfo = this.withAnalyzeContextMediaProfile({
+        status: 'SUCCESS',
+        source: 'aax_upload',
+        importedAt: nowIso(),
+        mediaProfile: 'audiobook',
+        rawFileName: storagePaths.rawFileName,
+        rawFilePath: storagePaths.rawFilePath,
+        chapters: metadata.chapters,
+        detectedMetadata: metadata,
+        selectedMetadata: metadata,
+        probeSummary: {
+          durationMs: metadata.durationMs,
+          tagKeys: Object.keys(metadata.tags || {})
+        }
+      }, 'audiobook');
+
+      const encodePlan = {
+        mediaProfile: 'audiobook',
+        mode: 'audiobook',
+        sourceType: 'upload',
+        uploadedAt: nowIso(),
+        format: outputFormat,
+        rawTemplate,
+        outputTemplate,
+        encodeInputPath: storagePaths.rawFilePath,
+        metadata,
+        reviewConfirmed: true
+      };
+
+      await historyService.updateJob(job.id, {
+        status: 'READY_TO_START',
+        last_state: 'READY_TO_START',
+        title: metadata.title || detectedTitle,
+        detected_title: metadata.title || detectedTitle,
+        year: metadata.year ?? null,
+        raw_path: storagePaths.rawDir,
+        rip_successful: 1,
+        makemkv_info_json: JSON.stringify(makemkvInfo),
+        handbrake_info_json: null,
+        mediainfo_info_json: null,
+        encode_plan_json: JSON.stringify(encodePlan),
+        encode_input_path: storagePaths.rawFilePath,
+        encode_review_confirmed: 1,
+        output_path: null,
+        error_message: null,
+        start_time: null,
+        end_time: null
+      });
+
+      await historyService.appendLog(
+        job.id,
+        'SYSTEM',
+        `Audiobook analysiert: ${metadata.title || detectedTitle} | Autor: ${metadata.author || '-'} | Format: ${outputFormat.toUpperCase()}`
+      );
+
+      if (!startImmediately) {
+        return {
+          jobId: job.id,
+          started: false,
+          queued: false,
+          stage: 'READY_TO_START'
+        };
+      }
+
+      const startResult = await this.startPreparedJob(job.id);
+      return {
+        jobId: job.id,
+        ...(startResult && typeof startResult === 'object' ? startResult : {})
+      };
+    } catch (error) {
+      const updatePayload = {
+        status: 'ERROR',
+        last_state: 'ERROR',
+        end_time: nowIso(),
+        error_message: error?.message || 'Audiobook-Upload fehlgeschlagen.'
+      };
+      if (stagedRawDir) {
+        updatePayload.raw_path = stagedRawDir;
+      }
+      if (stagedRawFilePath) {
+        updatePayload.encode_input_path = stagedRawFilePath;
+      }
+      await historyService.updateJob(job.id, updatePayload).catch(() => {});
+      await historyService.appendLog(
+        job.id,
+        'SYSTEM',
+        `Audiobook-Upload fehlgeschlagen: ${error?.message || 'unknown'}`
+      ).catch(() => {});
+      throw error;
+    } finally {
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        try {
+          fs.rmSync(tempFilePath, { force: true });
+        } catch (_error) {
+          // best effort cleanup
+        }
+      }
+    }
+  }
+
+  async startAudiobookEncode(jobId, options = {}) {
+    const immediate = Boolean(options?.immediate);
+    if (!immediate) {
+      return this.enqueueOrStartAction(
+        QUEUE_ACTIONS.START_PREPARED,
+        jobId,
+        () => this.startAudiobookEncode(jobId, { ...options, immediate: true })
+      );
+    }
+
+    this.ensureNotBusy('startAudiobookEncode', jobId);
+    logger.info('audiobook:encode:start', { jobId });
+    this.cancelRequestedByJob.delete(Number(jobId));
+
+    const job = options?.preloadedJob || await historyService.getJobById(jobId);
+    if (!job) {
+      const error = new Error(`Job ${jobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const encodePlan = this.safeParseJson(job.encode_plan_json);
+    const makemkvInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan,
+      makemkvInfo,
+      mediaProfile: 'audiobook'
+    });
+    if (mediaProfile !== 'audiobook') {
+      const error = new Error(`Job ${jobId} ist kein Audiobook-Job.`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const settings = await settingsService.getEffectiveSettingsMap('audiobook');
+    const resolvedRawPath = this.resolveCurrentRawPathForSettings(
+      settings,
+      'audiobook',
+      job.raw_path
+    ) || String(job.raw_path || '').trim() || null;
+
+    let inputPath = String(
+      job.encode_input_path
+      || encodePlan?.encodeInputPath
+      || makemkvInfo?.rawFilePath
+      || ''
+    ).trim();
+
+    if ((!inputPath || !fs.existsSync(inputPath)) && resolvedRawPath) {
+      inputPath = findPreferredRawInput(resolvedRawPath)?.path || '';
+    }
+
+    if (!inputPath) {
+      const error = new Error('Audiobook-Encode nicht möglich: keine Input-Datei gefunden.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!fs.existsSync(inputPath)) {
+      const error = new Error(`Audiobook-Encode nicht möglich: Input-Datei fehlt (${inputPath}).`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const {
+      metadata,
+      outputFormat,
+      preferredFinalOutputPath,
+      incompleteOutputPath
+    } = buildAudiobookOutputConfig(settings, job, makemkvInfo, encodePlan, jobId);
+    ensureDir(path.dirname(incompleteOutputPath));
+
+    await historyService.resetProcessLog(jobId);
+    await this.setState('ENCODING', {
+      activeJobId: jobId,
+      progress: 0,
+      eta: null,
+      statusText: `Audiobook-Encoding (${outputFormat.toUpperCase()})`,
+      context: {
+        jobId,
+        mode: 'audiobook',
+        mediaProfile: 'audiobook',
+        inputPath,
+        outputPath: incompleteOutputPath,
+        format: outputFormat,
+        chapters: metadata.chapters,
+        selectedMetadata: {
+          title: metadata.title || job.title || job.detected_title || null,
+          year: metadata.year ?? job.year ?? null,
+          author: metadata.author || null,
+          narrator: metadata.narrator || null,
+          poster: job.poster_url || null
+        },
+        canRestartEncodeFromLastSettings: false,
+        canRestartReviewFromRaw: false
+      }
+    });
+
+    await historyService.updateJob(jobId, {
+      status: 'ENCODING',
+      last_state: 'ENCODING',
+      start_time: nowIso(),
+      end_time: null,
+      error_message: null,
+      raw_path: resolvedRawPath || job.raw_path || null,
+      output_path: incompleteOutputPath,
+      encode_input_path: inputPath
+    });
+
+    await historyService.appendLog(
+      jobId,
+      'SYSTEM',
+      `Audiobook-Encoding gestartet: ${path.basename(inputPath)} -> ${outputFormat.toUpperCase()}`
+    );
+
+    void this.notifyPushover('encoding_started', {
+      title: 'Ripster - Audiobook-Encoding gestartet',
+      message: `${metadata.title || job.title || job.detected_title || `Job #${jobId}`} -> ${preferredFinalOutputPath}`
+    });
+
+    try {
+      const ffmpegConfig = audiobookService.buildEncodeCommand(
+        settings?.ffmpeg_command || 'ffmpeg',
+        inputPath,
+        incompleteOutputPath,
+        outputFormat
+      );
+      logger.info('audiobook:encode:command', { jobId, cmd: ffmpegConfig.cmd, args: ffmpegConfig.args });
+      const ffmpegRunInfo = await this.runCommand({
+        jobId,
+        stage: 'ENCODING',
+        source: 'FFMPEG',
+        cmd: ffmpegConfig.cmd,
+        args: ffmpegConfig.args,
+        parser: audiobookService.buildProgressParser(metadata.durationMs)
+      });
+
+      const outputFinalization = finalizeOutputPathForCompletedEncode(
+        incompleteOutputPath,
+        preferredFinalOutputPath
+      );
+      const finalizedOutputPath = outputFinalization.outputPath;
+      chownRecursive(path.dirname(finalizedOutputPath), settings?.movie_dir_owner);
+
+      if (outputFinalization.outputPathWithTimestamp) {
+        await historyService.appendLog(
+          jobId,
+          'SYSTEM',
+          `Finaler Audiobook-Output existierte bereits. Zielpfad mit Timestamp verwendet: ${finalizedOutputPath}`
+        );
+      }
+
+      await historyService.appendLog(
+        jobId,
+        'SYSTEM',
+        `Audiobook-Output finalisiert: ${finalizedOutputPath}`
+      );
+
+      const ffmpegInfo = {
+        ...ffmpegRunInfo,
+        mode: 'audiobook_encode',
+        format: outputFormat,
+        metadata,
+        inputPath,
+        outputPath: finalizedOutputPath
+      };
+
+      await historyService.updateJob(jobId, {
+        handbrake_info_json: JSON.stringify(ffmpegInfo),
+        status: 'FINISHED',
+        last_state: 'FINISHED',
+        end_time: nowIso(),
+        rip_successful: 1,
+        raw_path: resolvedRawPath || job.raw_path || null,
+        output_path: finalizedOutputPath,
+        error_message: null
+      });
+
+      await this.setState('FINISHED', {
+        activeJobId: jobId,
+        progress: 100,
+        eta: null,
+        statusText: 'Audiobook abgeschlossen',
+        context: {
+          jobId,
+          mode: 'audiobook',
+          mediaProfile: 'audiobook',
+          outputPath: finalizedOutputPath
+        }
+      });
+
+      void this.notifyPushover('job_finished', {
+        title: 'Ripster - Audiobook abgeschlossen',
+        message: `${metadata.title || job.title || job.detected_title || `Job #${jobId}`} -> ${finalizedOutputPath}`
+      });
+
+      setTimeout(async () => {
+        if (this.snapshot.state === 'FINISHED' && this.snapshot.activeJobId === jobId) {
+          await this.setState('IDLE', {
+            finishingJobId: jobId,
+            activeJobId: null,
+            progress: 0,
+            eta: null,
+            statusText: 'Bereit',
+            context: {}
+          });
+        }
+      }, 3000);
+
+      return {
+        started: true,
+        stage: 'ENCODING',
+        outputPath: finalizedOutputPath
+      };
+    } catch (error) {
+      if (error.runInfo && error.runInfo.source === 'FFMPEG') {
+        await historyService.updateJob(jobId, {
+          handbrake_info_json: JSON.stringify({
+            ...error.runInfo,
+            mode: 'audiobook_encode',
+            format: outputFormat,
+            inputPath
+          })
+        }).catch(() => {});
+      }
+      logger.error('audiobook:encode:failed', { jobId, error: errorToMeta(error) });
+      await this.failJob(jobId, 'ENCODING', error);
+      error.jobAlreadyFailed = true;
+      throw error;
+    }
   }
 
   // ── CD Pipeline ─────────────────────────────────────────────────────────────
@@ -10775,24 +11379,54 @@ class PipelineService extends EventEmitter {
     const renamed = [];
     const mediaProfile = this.resolveMediaProfileForJob(job);
     const isCd = mediaProfile === 'cd';
+    const isAudiobook = mediaProfile === 'audiobook';
     const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+    const mkInfo = this.safeParseJson(job.makemkv_info_json) || {};
+    const encodePlan = this.safeParseJson(job.encode_plan_json) || {};
 
     // Rename raw folder
     const currentRawPath = job.raw_path ? path.resolve(job.raw_path) : null;
     if (currentRawPath && fs.existsSync(currentRawPath)) {
-      const rawBaseDir = path.dirname(currentRawPath);
-      const newMetadataBase = buildRawMetadataBase({
-        title: job.title || job.detected_title || null,
-        year: job.year || null
-      }, jobId);
-      const currentState = resolveRawFolderStateFromPath(currentRawPath);
-      const newRawDirName = buildRawDirName(newMetadataBase, jobId, { state: currentState });
-      const newRawPath = path.join(rawBaseDir, newRawDirName);
+      let newRawPath;
+      if (isAudiobook) {
+        const audiobookMeta = buildAudiobookMetadataForJob(job, mkInfo, encodePlan);
+        const rawTemplate = String(
+          settings?.audiobook_raw_template || audiobookService.DEFAULT_AUDIOBOOK_RAW_TEMPLATE
+        ).trim() || audiobookService.DEFAULT_AUDIOBOOK_RAW_TEMPLATE;
+        const currentInputPath = findPreferredRawInput(currentRawPath)?.path
+          || String(job.encode_input_path || mkInfo?.rawFilePath || '').trim()
+          || 'input.aax';
+        const nextRaw = audiobookService.buildRawStoragePaths(
+          audiobookMeta,
+          jobId,
+          settings?.raw_dir || settingsService.DEFAULT_AUDIOBOOK_RAW_DIR,
+          rawTemplate,
+          path.basename(currentInputPath)
+        );
+        newRawPath = nextRaw.rawDir;
+      } else {
+        const rawBaseDir = path.dirname(currentRawPath);
+        const newMetadataBase = buildRawMetadataBase({
+          title: job.title || job.detected_title || null,
+          year: job.year || null
+        }, jobId);
+        const currentState = resolveRawFolderStateFromPath(currentRawPath);
+        const newRawDirName = buildRawDirName(newMetadataBase, jobId, { state: currentState });
+        newRawPath = path.join(rawBaseDir, newRawDirName);
+      }
 
       if (normalizeComparablePath(currentRawPath) !== normalizeComparablePath(newRawPath) && !fs.existsSync(newRawPath)) {
         try {
+          fs.mkdirSync(path.dirname(newRawPath), { recursive: true });
           fs.renameSync(currentRawPath, newRawPath);
-          await historyService.updateJob(jobId, { raw_path: newRawPath });
+          const updatePayload = { raw_path: newRawPath };
+          if (isAudiobook) {
+            const previousInputPath = String(job.encode_input_path || mkInfo?.rawFilePath || '').trim();
+            if (previousInputPath && previousInputPath.startsWith(`${currentRawPath}${path.sep}`)) {
+              updatePayload.encode_input_path = path.join(newRawPath, path.basename(previousInputPath));
+            }
+          }
+          await historyService.updateJob(jobId, updatePayload);
           renamed.push({ type: 'raw', from: currentRawPath, to: newRawPath });
           logger.info('rename-job-folders:raw', { jobId, from: currentRawPath, to: newRawPath });
         } catch (err) {
@@ -10828,7 +11462,9 @@ class PipelineService extends EventEmitter {
             }
           }
         } else {
-          const newOutputPath = buildFinalOutputPathFromJob(settings, job, jobId);
+          const newOutputPath = isAudiobook
+            ? buildAudiobookOutputConfig(settings, job, mkInfo, encodePlan, jobId).preferredFinalOutputPath
+            : buildFinalOutputPathFromJob(settings, job, jobId);
           if (normalizeComparablePath(currentOutputPath) !== normalizeComparablePath(newOutputPath) && !fs.existsSync(newOutputPath)) {
             fs.mkdirSync(path.dirname(newOutputPath), { recursive: true });
             moveFileWithFallback(currentOutputPath, newOutputPath);
@@ -10840,7 +11476,11 @@ class PipelineService extends EventEmitter {
             } catch (_ignoreErr) {}
             await historyService.updateJob(jobId, { output_path: newOutputPath });
             renamed.push({ type: 'output', from: currentOutputPath, to: newOutputPath });
-            logger.info('rename-job-folders:film-output', { jobId, from: currentOutputPath, to: newOutputPath });
+            logger.info(isAudiobook ? 'rename-job-folders:audiobook-output' : 'rename-job-folders:film-output', {
+              jobId,
+              from: currentOutputPath,
+              to: newOutputPath
+            });
           }
         }
       } catch (err) {

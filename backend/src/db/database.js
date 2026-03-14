@@ -826,7 +826,9 @@ const SETTINGS_SCHEMA_METADATA_UPDATES = [
 const SETTINGS_CATEGORY_MOVES = [
   { key: 'cd_output_template', category: 'Pfade' },
   { key: 'output_template_bluray', category: 'Pfade' },
-  { key: 'output_template_dvd', category: 'Pfade' }
+  { key: 'output_template_dvd', category: 'Pfade' },
+  { key: 'output_template_audiobook', category: 'Pfade' },
+  { key: 'audiobook_raw_template', category: 'Pfade' }
 ];
 
 async function migrateSettingsSchemaMetadata(db) {
@@ -890,6 +892,60 @@ async function migrateSettingsSchemaMetadata(db) {
      VALUES ('movie_dir_cd_owner', 'Pfade', 'Eigentümer CD Output-Ordner', 'string', 0, 'Eigentümer der encodierten CD-Ausgaben im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1145)`
   );
   await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_cd_owner', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('ffmpeg_command', 'Tools', 'FFmpeg Kommando', 'string', 1, 'Pfad oder Befehl für ffmpeg. Wird für Audiobook-Encoding genutzt.', 'ffmpeg', '[]', '{"minLength":1}', 232)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('ffmpeg_command', 'ffmpeg')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('ffprobe_command', 'Tools', 'FFprobe Kommando', 'string', 1, 'Pfad oder Befehl für ffprobe. Wird für Audiobook-Metadaten und Kapitel genutzt.', 'ffprobe', '[]', '{"minLength":1}', 233)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('ffprobe_command', 'ffprobe')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('output_extension_audiobook', 'Tools', 'Ausgabeformat', 'select', 1, 'Dateiendung für finale Audiobook-Datei.', 'mp3', '[{"label":"M4B","value":"m4b"},{"label":"MP3","value":"mp3"},{"label":"FLAC","value":"flac"}]', '{}', 730)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_extension_audiobook', 'mp3')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('output_template_audiobook', 'Pfade', 'Output Template (Audiobook)', 'string', 1, 'Template für relative Audiobook-Ausgabepfade ohne Dateiendung. Platzhalter: {author}, {title}, {year}, {narrator}, {series}, {part}, {format}. Unterordner sind über "/" möglich.', '{author}/{author} - {title} ({year})', '[]', '{"minLength":1}', 735)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_template_audiobook', '{author}/{author} - {title} ({year})')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('audiobook_raw_template', 'Pfade', 'Audiobook RAW Template', 'string', 1, 'Template für relative Audiobook-RAW-Ordner. Platzhalter: {author}, {title}, {year}, {narrator}, {series}, {part}.', '{author} - {title} ({year})', '[]', '{"minLength":1}', 736)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('audiobook_raw_template', '{author} - {title} ({year})')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('raw_dir_audiobook', 'Pfade', 'Audiobook RAW-Ordner', 'path', 0, 'Basisordner für hochgeladene AAX-Dateien. Leer = Standardpfad (data/output/audiobook-raw).', NULL, '[]', '{}', 105)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_audiobook', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('raw_dir_audiobook_owner', 'Pfade', 'Eigentümer Audiobook RAW-Ordner', 'string', 0, 'Eigentümer der Audiobook-RAW-Dateien im Format user:gruppe. Nur aktiv wenn ein Pfad gesetzt ist. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1055)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('raw_dir_audiobook_owner', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('movie_dir_audiobook', 'Pfade', 'Audiobook Output-Ordner', 'path', 0, 'Zielordner für encodierte Audiobook-Dateien. Leer = Standardpfad (data/output/audiobooks).', NULL, '[]', '{}', 115)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_audiobook', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('movie_dir_audiobook_owner', 'Pfade', 'Eigentümer Audiobook Output-Ordner', 'string', 0, 'Eigentümer der encodierten Audiobook-Dateien im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1155)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_audiobook_owner', NULL)`);
 }
 
 async function getDb() {

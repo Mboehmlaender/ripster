@@ -80,12 +80,5 @@ Thumbs.db
 # Scripts
 # ----------------------------
 /scripts/
-/deploy-ripster.sh
-/setup.sh
-/install.sh
-/install-dev.sh
-/build-handbrake-nvdec.sh
-/gitea_setup.sh
-/gitea_install.sh
 /release.sh
 /Audible_Tool

@@ -23,5 +23,7 @@ module.exports = {
   logLevel: process.env.LOG_LEVEL || 'info',
   defaultRawDir: resolveOutputPath(process.env.DEFAULT_RAW_DIR, 'output', 'raw'),
   defaultMovieDir: resolveOutputPath(process.env.DEFAULT_MOVIE_DIR, 'output', 'movies'),
-  defaultCdDir: resolveOutputPath(process.env.DEFAULT_CD_DIR, 'output', 'cd')
+  defaultCdDir: resolveOutputPath(process.env.DEFAULT_CD_DIR, 'output', 'cd'),
+  defaultAudiobookRawDir: resolveOutputPath(process.env.DEFAULT_AUDIOBOOK_RAW_DIR, 'output', 'audiobook-raw'),
+  defaultAudiobookDir: resolveOutputPath(process.env.DEFAULT_AUDIOBOOK_DIR, 'output', 'audiobooks')
 };

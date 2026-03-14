@@ -46,6 +46,9 @@ function resolveMediaType(row) {
     if (['cd', 'audio_cd'].includes(raw)) {
       return 'cd';
     }
+    if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+      return 'audiobook';
+    }
   }
   return 'other';
 }
@@ -698,13 +701,13 @@ export default function DatabasePage() {
       : (mediaType === 'dvd' ? discIndicatorIcon : otherIndicatorIcon);
     const alt = mediaType === 'bluray'
       ? 'Blu-ray'
-      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+      : (mediaType === 'dvd' ? 'DVD' : (mediaType === 'audiobook' ? 'Audiobook' : 'Sonstiges Medium'));
     const title = mediaType === 'bluray'
       ? 'Blu-ray'
-      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges Medium');
+      : (mediaType === 'dvd' ? 'DVD' : (mediaType === 'audiobook' ? 'Audiobook' : 'Sonstiges Medium'));
     const label = mediaType === 'bluray'
       ? 'Blu-ray'
-      : (mediaType === 'dvd' ? 'DVD' : 'Sonstiges');
+      : (mediaType === 'dvd' ? 'DVD' : (mediaType === 'audiobook' ? 'Audiobook' : 'Sonstiges'));
     return (
       <span className="job-step-cell">
         <img src={src} alt={alt} title={title} className="media-indicator-icon" />
@@ -781,7 +784,7 @@ export default function DatabasePage() {
 
       <Card
         title="RAW ohne Historie"
-        subTitle="Ordner in den konfigurierten RAW-Pfaden (raw_dir sowie raw_dir_{bluray,dvd,other}) ohne zugehörigen Job können hier importiert werden"
+        subTitle="Ordner in den konfigurierten RAW-Pfaden (raw_dir sowie raw_dir_{bluray,dvd,cd,audiobook,other}) ohne zugehörigen Job können hier importiert werden"
       >
         <div className="table-filters">
           <Button

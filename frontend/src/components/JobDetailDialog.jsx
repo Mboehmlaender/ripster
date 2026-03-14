@@ -231,6 +231,9 @@ function resolveMediaType(job) {
     if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
       return 'cd';
     }
+    if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+      return 'audiobook';
+    }
   }
   const statusCandidates = [job?.status, job?.last_state, job?.makemkvInfo?.lastState];
   if (statusCandidates.some((v) => String(v || '').trim().toUpperCase().startsWith('CD_'))) {
@@ -246,6 +249,12 @@ function resolveMediaType(job) {
   }
   if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
     return 'cd';
+  }
+  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+    return 'audiobook';
+  }
+  if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
+    return 'audiobook';
   }
   return 'other';
 }
@@ -305,6 +314,26 @@ function resolveCdDetails(job) {
     formatLabel: format ? (CD_FORMAT_LABELS[format] || format.toUpperCase()) : null,
     totalDurationLabel: formatDurationSeconds(totalDurationSec),
     mbId
+  };
+}
+
+function resolveAudiobookDetails(job) {
+  const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : {};
+  const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
+  const selectedMetadata = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const chapters = Array.isArray(selectedMetadata?.chapters)
+    ? selectedMetadata.chapters
+    : (Array.isArray(makemkvInfo?.chapters) ? makemkvInfo.chapters : []);
+  const format = String(job?.handbrakeInfo?.format || encodePlan?.format || '').trim().toLowerCase() || null;
+  return {
+    author: String(selectedMetadata?.author || selectedMetadata?.artist || '').trim() || null,
+    narrator: String(selectedMetadata?.narrator || '').trim() || null,
+    series: String(selectedMetadata?.series || '').trim() || null,
+    part: String(selectedMetadata?.part || '').trim() || null,
+    chapterCount: chapters.length,
+    formatLabel: format ? format.toUpperCase() : null
   };
 }
 
@@ -404,6 +433,9 @@ export default function JobDetailDialog({
     && !running
     && typeof onResumeReady === 'function'
   );
+  const mediaType = resolveMediaType(job);
+  const isCd = mediaType === 'cd';
+  const isAudiobook = mediaType === 'audiobook';
   const hasConfirmedPlan = Boolean(
     job?.encodePlan
     && Array.isArray(job?.encodePlan?.titles)
@@ -416,6 +448,7 @@ export default function JobDetailDialog({
     job?.rawStatus?.exists
     && job?.rawStatus?.isEmpty !== true
     && !running
+    && mediaType !== 'audiobook'
     && typeof onRestartReview === 'function'
   );
   const canDeleteEntry = !running && typeof onDeleteEntry === 'function';
@@ -424,9 +457,8 @@ export default function JobDetailDialog({
   const logMeta = job?.logMeta && typeof job.logMeta === 'object' ? job.logMeta : null;
   const logLoaded = Boolean(logMeta?.loaded) || Boolean(job?.log);
   const logTruncated = Boolean(logMeta?.truncated);
-  const mediaType = resolveMediaType(job);
-  const isCd = mediaType === 'cd';
   const cdDetails = isCd ? resolveCdDetails(job) : null;
+  const audiobookDetails = isAudiobook ? resolveAudiobookDetails(job) : null;
   const canRetry = isCd && !running && typeof onRetry === 'function';
   const mediaTypeLabel = mediaType === 'bluray'
     ? 'Blu-ray'
@@ -434,7 +466,7 @@ export default function JobDetailDialog({
       ? 'DVD'
       : isCd
         ? 'Audio CD'
-        : 'Sonstiges Medium';
+        : (isAudiobook ? 'Audiobook' : 'Sonstiges Medium');
   const mediaTypeIcon = mediaType === 'bluray'
     ? blurayIndicatorIcon
     : mediaType === 'dvd'
@@ -535,7 +567,7 @@ export default function JobDetailDialog({
               ) : (
                 <>
                   <section className="job-meta-block job-meta-block-film">
-                    <h4>Film-Infos</h4>
+                    <h4>{isAudiobook ? 'Audiobook-Infos' : 'Film-Infos'}</h4>
                     <div className="job-meta-list">
                       <div className="job-meta-item">
                         <strong>Titel:</strong>
@@ -545,14 +577,45 @@ export default function JobDetailDialog({
                         <strong>Jahr:</strong>
                         <span>{job.year || '-'}</span>
                       </div>
-                      <div className="job-meta-item">
-                        <strong>IMDb:</strong>
-                        <span>{job.imdb_id || '-'}</span>
-                      </div>
-                      <div className="job-meta-item">
-                        <strong>OMDb Match:</strong>
-                        <BoolState value={job.selected_from_omdb} />
-                      </div>
+                      {isAudiobook ? (
+                        <>
+                          <div className="job-meta-item">
+                            <strong>Autor:</strong>
+                            <span>{audiobookDetails?.author || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Sprecher:</strong>
+                            <span>{audiobookDetails?.narrator || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Serie:</strong>
+                            <span>{audiobookDetails?.series || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Teil:</strong>
+                            <span>{audiobookDetails?.part || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Kapitel:</strong>
+                            <span>{audiobookDetails?.chapterCount || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Format:</strong>
+                            <span>{audiobookDetails?.formatLabel || '-'}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="job-meta-item">
+                            <strong>IMDb:</strong>
+                            <span>{job.imdb_id || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>OMDb Match:</strong>
+                            <BoolState value={job.selected_from_omdb} />
+                          </div>
+                        </>
+                      )}
                       <div className="job-meta-item">
                         <strong>Medium:</strong>
                         <span className="job-step-cell">
@@ -563,35 +626,37 @@ export default function JobDetailDialog({
                     </div>
                   </section>
 
-                  <section className="job-meta-block job-meta-block-film">
-                    <h4>OMDb Details</h4>
-                    <div className="job-meta-list">
-                      <div className="job-meta-item">
-                        <strong>Regisseur:</strong>
-                        <span>{omdbField(omdbInfo?.Director)}</span>
+                  {!isAudiobook ? (
+                    <section className="job-meta-block job-meta-block-film">
+                      <h4>OMDb Details</h4>
+                      <div className="job-meta-list">
+                        <div className="job-meta-item">
+                          <strong>Regisseur:</strong>
+                          <span>{omdbField(omdbInfo?.Director)}</span>
+                        </div>
+                        <div className="job-meta-item">
+                          <strong>Schauspieler:</strong>
+                          <span>{omdbField(omdbInfo?.Actors)}</span>
+                        </div>
+                        <div className="job-meta-item">
+                          <strong>Laufzeit:</strong>
+                          <span>{omdbField(omdbInfo?.Runtime)}</span>
+                        </div>
+                        <div className="job-meta-item">
+                          <strong>Genre:</strong>
+                          <span>{omdbField(omdbInfo?.Genre)}</span>
+                        </div>
+                        <div className="job-meta-item">
+                          <strong>Rotten Tomatoes:</strong>
+                          <span>{omdbRottenTomatoesScore(omdbInfo)}</span>
+                        </div>
+                        <div className="job-meta-item">
+                          <strong>imdbRating:</strong>
+                          <span>{omdbField(omdbInfo?.imdbRating)}</span>
+                        </div>
                       </div>
-                      <div className="job-meta-item">
-                        <strong>Schauspieler:</strong>
-                        <span>{omdbField(omdbInfo?.Actors)}</span>
-                      </div>
-                      <div className="job-meta-item">
-                        <strong>Laufzeit:</strong>
-                        <span>{omdbField(omdbInfo?.Runtime)}</span>
-                      </div>
-                      <div className="job-meta-item">
-                        <strong>Genre:</strong>
-                        <span>{omdbField(omdbInfo?.Genre)}</span>
-                      </div>
-                      <div className="job-meta-item">
-                        <strong>Rotten Tomatoes:</strong>
-                        <span>{omdbRottenTomatoesScore(omdbInfo)}</span>
-                      </div>
-                      <div className="job-meta-item">
-                        <strong>imdbRating:</strong>
-                        <span>{omdbField(omdbInfo?.imdbRating)}</span>
-                      </div>
-                    </div>
-                  </section>
+                    </section>
+                  ) : null}
                 </>
               )}
             </div>
@@ -631,7 +696,7 @@ export default function JobDetailDialog({
                 <strong>RAW vorhanden:</strong> <BoolState value={job.rawStatus?.exists} />
               </div>
               <div>
-                <strong>{isCd ? 'Audio-Dateien vorhanden:' : 'Movie Datei vorhanden:'}</strong> <BoolState value={job.outputStatus?.exists} />
+                <strong>{isCd ? 'Audio-Dateien vorhanden:' : (isAudiobook ? 'Audiobook-Datei vorhanden:' : 'Movie Datei vorhanden:')}</strong> <BoolState value={job.outputStatus?.exists} />
               </div>
               {isCd ? (
                 <div>
@@ -640,7 +705,7 @@ export default function JobDetailDialog({
               ) : (
                 <>
                   <div>
-                    <strong>Backup erfolgreich:</strong> <BoolState value={job?.backupSuccess} />
+                    <strong>{isAudiobook ? 'Import erfolgreich:' : 'Backup erfolgreich:'}</strong> <BoolState value={job?.backupSuccess} />
                   </div>
                   <div>
                     <strong>Encode erfolgreich:</strong> <BoolState value={job?.encodeSuccess} />
@@ -653,7 +718,7 @@ export default function JobDetailDialog({
             </div>
           </section>
 
-          {!isCd && (hasConfiguredSelection || encodePlanUserPreset) ? (
+          {!isCd && !isAudiobook && (hasConfiguredSelection || encodePlanUserPreset) ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Hinterlegte Encode-Auswahl</h4>
               <div className="job-configured-selection-grid">
@@ -683,13 +748,13 @@ export default function JobDetailDialog({
             <section className="job-meta-block job-meta-block-full">
               <h4>Ausgeführter Encode-Befehl</h4>
               <div className="handbrake-command-preview">
-                <small><strong>HandBrakeCLI (tatsächlich gestartet):</strong></small>
+                <small><strong>{isAudiobook ? 'FFmpeg' : 'HandBrakeCLI'} (tatsächlich gestartet):</strong></small>
                 <pre>{executedHandBrakeCommand}</pre>
               </div>
             </section>
           ) : null}
 
-          {!isCd && (job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
+          {!isCd && !isAudiobook && (job.handbrakeInfo?.preEncodeScripts?.configured > 0 || job.handbrakeInfo?.postEncodeScripts?.configured > 0) ? (
             <section className="job-meta-block job-meta-block-full">
               <h4>Skripte</h4>
               <div className="script-results-grid">
@@ -700,14 +765,14 @@ export default function JobDetailDialog({
           ) : null}
 
           <div className="job-json-grid">
-            {!isCd ? <JsonView title="OMDb Info" value={job.omdbInfo} /> : null}
-            <JsonView title={isCd ? 'cdparanoia Info' : 'MakeMKV Info'} value={job.makemkvInfo} />
-            {!isCd ? <JsonView title="Mediainfo Info" value={job.mediainfoInfo} /> : null}
+            {!isCd && !isAudiobook ? <JsonView title="OMDb Info" value={job.omdbInfo} /> : null}
+            <JsonView title={isCd ? 'cdparanoia Info' : (isAudiobook ? 'Audiobook Info' : 'MakeMKV Info')} value={job.makemkvInfo} />
+            {!isCd && !isAudiobook ? <JsonView title="Mediainfo Info" value={job.mediainfoInfo} /> : null}
             <JsonView title={isCd ? 'Rip-Plan' : 'Encode Plan'} value={job.encodePlan} />
-            {!isCd ? <JsonView title="HandBrake Info" value={job.handbrakeInfo} /> : null}
+            {!isCd ? <JsonView title={isAudiobook ? 'FFmpeg Info' : 'HandBrake Info'} value={job.handbrakeInfo} /> : null}
           </div>
 
-          {!isCd && job.encodePlan ? (
+          {!isCd && !isAudiobook && job.encodePlan ? (
             <>
               <h4>Mediainfo-Prüfung (Auswertung)</h4>
               <MediaInfoReviewPanel
@@ -740,7 +805,7 @@ export default function JobDetailDialog({
               />
             ) : (
               <>
-                {!isCd ? (
+                {!isCd && !isAudiobook ? (
                   <Button
                     label="OMDb neu zuordnen"
                     icon="pi pi-search"

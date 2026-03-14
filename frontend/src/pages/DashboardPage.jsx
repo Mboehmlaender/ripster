@@ -377,6 +377,9 @@ function resolveMediaType(job) {
     if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
       return 'cd';
     }
+    if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+      return 'audiobook';
+    }
   }
   const statusCandidates = [
     job?.status,
@@ -397,6 +400,12 @@ function resolveMediaType(job) {
   if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
     return 'cd';
   }
+  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+    return 'audiobook';
+  }
+  if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
+    return 'audiobook';
+  }
   return 'other';
 }
 
@@ -410,6 +419,9 @@ function mediaIndicatorMeta(job) {
   }
   if (mediaType === 'cd') {
     return { mediaType, src: otherIndicatorIcon, alt: 'Audio CD', title: 'Audio CD' };
+  }
+  if (mediaType === 'audiobook') {
+    return { mediaType, src: otherIndicatorIcon, alt: 'Audiobook', title: 'Audiobook' };
   }
   return { mediaType, src: otherIndicatorIcon, alt: 'Sonstiges Medium', title: 'Sonstiges Medium' };
 }
@@ -448,6 +460,7 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
 
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : null;
   const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
+  const resolvedMediaType = resolveMediaType(job);
   const analyzeContext = getAnalyzeContext(job);
   const normalizePlanIdList = (values) => {
     const list = Array.isArray(values) ? values : [];
@@ -575,15 +588,26 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     ? `${job.raw_path}/track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`
     : '<temp>/trackNN.cdda.wav';
   const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} ${previewWavPath}`;
-  const selectedMetadata = {
-    title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
-    artist: cdSelectedMeta?.artist || fallbackCdArtist || null,
-    year: cdSelectedMeta?.year ?? job?.year ?? null,
-    mbId: resolvedCdMbId,
-    coverUrl: resolvedCdCoverUrl,
-    imdbId: job?.imdb_id || null,
-    poster: job?.poster_url || resolvedCdCoverUrl || null
-  };
+  const audiobookSelectedMeta = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+    ? makemkvInfo.selectedMetadata
+    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const selectedMetadata = resolvedMediaType === 'audiobook'
+    ? {
+      title: audiobookSelectedMeta?.title || job?.title || job?.detected_title || null,
+      author: audiobookSelectedMeta?.author || audiobookSelectedMeta?.artist || null,
+      narrator: audiobookSelectedMeta?.narrator || null,
+      year: audiobookSelectedMeta?.year ?? job?.year ?? null,
+      poster: job?.poster_url || null
+    }
+    : {
+      title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,
+      artist: cdSelectedMeta?.artist || fallbackCdArtist || null,
+      year: cdSelectedMeta?.year ?? job?.year ?? null,
+      mbId: resolvedCdMbId,
+      coverUrl: resolvedCdCoverUrl,
+      imdbId: job?.imdb_id || null,
+      poster: job?.poster_url || resolvedCdCoverUrl || null
+    };
   const mode = String(encodePlan?.mode || 'rip').trim().toLowerCase();
   const isPreRip = mode === 'pre_rip' || Boolean(encodePlan?.preRip);
   const inputPath = isPreRip
@@ -623,13 +647,14 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
   const canRestartReviewFromRaw = Boolean(
     job?.raw_path
     && !processingStates.includes(jobStatus)
+    && resolvedMediaType !== 'audiobook'
   );
   const computedContext = {
     jobId,
     rawPath: job?.raw_path || null,
     outputPath: job?.output_path || null,
     detectedTitle: job?.detected_title || null,
-    mediaProfile: resolveMediaType(job),
+    mediaProfile: resolvedMediaType,
     lastState,
     devicePath,
     cdparanoiaCmd,
@@ -751,6 +776,8 @@ export default function DashboardPage({
   const [jobsLoading, setJobsLoading] = useState(false);
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
+  const [audiobookUploadFile, setAudiobookUploadFile] = useState(null);
+  const [audiobookUploadBusy, setAudiobookUploadBusy] = useState(false);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [expandedQueueScriptKeys, setExpandedQueueScriptKeys] = useState(() => new Set());
   const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
@@ -1245,6 +1272,8 @@ export default function DashboardPage({
     }
 
     const startOptions = options && typeof options === 'object' ? options : {};
+    const startJobRow = dashboardJobs.find((item) => normalizeJobId(item?.id) === normalizedJobId) || null;
+    const mediaType = resolveMediaType(startJobRow);
     setJobBusy(normalizedJobId, true);
     try {
       if (startOptions.ensureConfirmed) {
@@ -1270,7 +1299,9 @@ export default function DashboardPage({
         }
         await api.confirmEncodeReview(normalizedJobId, confirmPayload);
       }
-      const response = await api.startJob(normalizedJobId);
+      const response = mediaType === 'audiobook'
+        ? await api.startJob(normalizedJobId)
+        : await api.startJob(normalizedJobId);
       const result = getQueueActionResult(response);
       await refreshPipeline();
       await loadDashboardJobs();
@@ -1283,6 +1314,39 @@ export default function DashboardPage({
       showError(error);
     } finally {
       setJobBusy(normalizedJobId, false);
+    }
+  };
+
+  const handleAudiobookUpload = async () => {
+    if (!audiobookUploadFile) {
+      showError(new Error('Bitte zuerst eine AAX-Datei auswählen.'));
+      return;
+    }
+    setAudiobookUploadBusy(true);
+    try {
+      const response = await api.uploadAudiobook(audiobookUploadFile, { startImmediately: true });
+      const result = getQueueActionResult(response);
+      const uploadedJobId = normalizeJobId(response?.result?.jobId);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Audiobook', result);
+      } else {
+        toastRef.current?.show({
+          severity: 'success',
+          summary: 'Audiobook importiert',
+          detail: uploadedJobId ? `Job #${uploadedJobId} wurde angelegt.` : 'Audiobook wurde importiert.',
+          life: 3200
+        });
+      }
+      if (uploadedJobId) {
+        setExpandedJobId(uploadedJobId);
+      }
+      setAudiobookUploadFile(null);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setAudiobookUploadBusy(false);
     }
   };
 
@@ -1942,6 +2006,35 @@ export default function DashboardPage({
             </section>
           </div>
         )}
+      </Card>
+
+      <Card title="Audiobook Upload" subTitle="AAX-Datei hochladen, ins RAW-Verzeichnis übernehmen und direkt mit dem in den Settings gewählten Zielformat starten.">
+        <div className="actions-row">
+          <input
+            key={audiobookUploadFile ? `${audiobookUploadFile.name}-${audiobookUploadFile.size}` : 'audiobook-upload-input'}
+            type="file"
+            accept=".aax"
+            onChange={(event) => {
+              const nextFile = event.target?.files?.[0] || null;
+              setAudiobookUploadFile(nextFile);
+            }}
+            disabled={audiobookUploadBusy}
+          />
+          <Button
+            label="Audiobook hochladen"
+            icon="pi pi-upload"
+            onClick={() => {
+              void handleAudiobookUpload();
+            }}
+            loading={audiobookUploadBusy}
+            disabled={!audiobookUploadFile}
+          />
+        </div>
+        <small>
+          {audiobookUploadFile
+            ? `Ausgewählt: ${audiobookUploadFile.name}`
+            : 'Unterstützt im MVP: AAX-Upload. Das Ausgabeformat wird aus den Audiobook-Settings gelesen.'}
+        </small>
       </Card>
 
       <Card title="Job Queue" subTitle="Starts werden nach Typ- und Gesamtlimit abgearbeitet. Queue-Elemente können per Drag-and-Drop umsortiert werden.">

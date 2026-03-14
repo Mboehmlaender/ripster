@@ -1,4 +1,7 @@
 const express = require('express');
+const os = require('os');
+const path = require('path');
+const multer = require('multer');
 const asyncHandler = require('../middleware/asyncHandler');
 const pipelineService = require('../services/pipelineService');
 const diskDetectionService = require('../services/diskDetectionService');
@@ -6,6 +9,9 @@ const hardwareMonitorService = require('../services/hardwareMonitorService');
 const logger = require('../services/logger').child('PIPELINE_ROUTE');
 
 const router = express.Router();
+const audiobookUpload = multer({
+  dest: path.join(os.tmpdir(), 'ripster-audiobook-uploads')
+});
 
 router.get(
   '/state',
@@ -121,6 +127,28 @@ router.post(
       ripConfig,
       () => pipelineService.startCdRip(jobId, ripConfig)
     );
+    res.json({ result });
+  })
+);
+
+router.post(
+  '/audiobook/upload',
+  audiobookUpload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      const error = new Error('Upload-Datei fehlt.');
+      error.statusCode = 400;
+      throw error;
+    }
+    logger.info('post:audiobook:upload', {
+      reqId: req.reqId,
+      originalName: req.file.originalname,
+      sizeBytes: Number(req.file.size || 0)
+    });
+    const result = await pipelineService.uploadAudiobookFile(req.file, {
+      format: req.body?.format,
+      startImmediately: req.body?.startImmediately
+    });
     res.json({ result });
   })
 );

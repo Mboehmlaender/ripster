@@ -24,6 +24,7 @@ const MEDIA_FILTER_OPTIONS = [
   { label: 'Blu-ray', value: 'bluray' },
   { label: 'DVD', value: 'dvd' },
   { label: 'Audio CD', value: 'cd' },
+  { label: 'Audiobook', value: 'audiobook' },
   { label: 'Sonstiges', value: 'other' }
 ];
 
@@ -80,6 +81,9 @@ function resolveMediaType(row) {
     if (['cd', 'audio_cd', 'audio cd'].includes(raw)) {
       return 'cd';
     }
+    if (['audiobook', 'audio_book', 'audio book', 'book'].includes(raw)) {
+      return 'audiobook';
+    }
   }
   const statusCandidates = [
     row?.status,
@@ -99,6 +103,12 @@ function resolveMediaType(row) {
   }
   if (Array.isArray(row?.makemkvInfo?.tracks) && row.makemkvInfo.tracks.length > 0) {
     return 'cd';
+  }
+  if (String(row?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+    return 'audiobook';
+  }
+  if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
+    return 'audiobook';
   }
   return 'other';
 }
@@ -127,6 +137,14 @@ function resolveMediaTypeMeta(row) {
       icon: otherIndicatorIcon,
       label: 'Audio CD',
       alt: 'Audio CD'
+    };
+  }
+  if (mediaType === 'audiobook') {
+    return {
+      mediaType,
+      icon: otherIndicatorIcon,
+      label: 'Audiobook',
+      alt: 'Audiobook'
     };
   }
   return {
@@ -216,12 +234,47 @@ function resolveCdDetails(row) {
   };
 }
 
+function resolveAudiobookDetails(row) {
+  const encodePlan = row?.encodePlan && typeof row.encodePlan === 'object' ? row.encodePlan : {};
+  const selectedMetadata = row?.makemkvInfo?.selectedMetadata && typeof row.makemkvInfo.selectedMetadata === 'object'
+    ? row.makemkvInfo.selectedMetadata
+    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const chapters = Array.isArray(selectedMetadata?.chapters)
+    ? selectedMetadata.chapters
+    : (Array.isArray(row?.makemkvInfo?.chapters) ? row.makemkvInfo.chapters : []);
+  const format = String(
+    row?.handbrakeInfo?.format
+    || encodePlan?.format
+    || ''
+  ).trim().toLowerCase() || null;
+  return {
+    author: String(selectedMetadata?.author || selectedMetadata?.artist || '').trim() || null,
+    narrator: String(selectedMetadata?.narrator || '').trim() || null,
+    chapterCount: chapters.length,
+    formatLabel: format ? format.toUpperCase() : null
+  };
+}
+
 function getOutputLabelForRow(row) {
-  return resolveMediaType(row) === 'cd' ? 'Audio-Dateien' : 'Movie-Datei(en)';
+  const mediaType = resolveMediaType(row);
+  if (mediaType === 'cd') {
+    return 'Audio-Dateien';
+  }
+  if (mediaType === 'audiobook') {
+    return 'Audiobook-Datei(en)';
+  }
+  return 'Movie-Datei(en)';
 }
 
 function getOutputShortLabelForRow(row) {
-  return resolveMediaType(row) === 'cd' ? 'Audio' : 'Movie';
+  const mediaType = resolveMediaType(row);
+  if (mediaType === 'cd') {
+    return 'Audio';
+  }
+  if (mediaType === 'audiobook') {
+    return 'Audiobook';
+  }
+  return 'Movie';
 }
 
 function normalizeJobId(value) {
@@ -760,7 +813,7 @@ export default function HistoryPage() {
     if (row?.poster_url && row.poster_url !== 'N/A') {
       return <img src={row.poster_url} alt={title} className={className} loading="lazy" />;
     }
-    return <div className="history-dv-poster-fallback">{mediaMeta.mediaType === 'cd' ? 'Kein Cover' : 'Kein Poster'}</div>;
+    return <div className="history-dv-poster-fallback">{['cd', 'audiobook'].includes(mediaMeta.mediaType) ? 'Kein Cover' : 'Kein Poster'}</div>;
   };
 
   const renderPresenceChip = (label, available) => (
@@ -794,6 +847,32 @@ export default function HistoryPage() {
       }
       if (infoItems.length === 0) {
         return <span className="history-dv-subtle">Keine CD-Details</span>;
+      }
+      return infoItems.map((item) => (
+        <span key={`${row?.id}-${item.key}`} className="history-dv-rating-chip">
+          <strong>{item.label}</strong>
+          <span>{item.value}</span>
+        </span>
+      ));
+    }
+
+    if (resolveMediaType(row) === 'audiobook') {
+      const audiobookDetails = resolveAudiobookDetails(row);
+      const infoItems = [];
+      if (audiobookDetails.author) {
+        infoItems.push({ key: 'author', label: 'Autor', value: audiobookDetails.author });
+      }
+      if (audiobookDetails.narrator) {
+        infoItems.push({ key: 'narrator', label: 'Sprecher', value: audiobookDetails.narrator });
+      }
+      if (audiobookDetails.chapterCount > 0) {
+        infoItems.push({ key: 'chapters', label: 'Kapitel', value: String(audiobookDetails.chapterCount) });
+      }
+      if (audiobookDetails.formatLabel) {
+        infoItems.push({ key: 'format', label: 'Format', value: audiobookDetails.formatLabel });
+      }
+      if (infoItems.length === 0) {
+        return <span className="history-dv-subtle">Keine Audiobook-Details</span>;
       }
       return infoItems.map((item) => (
         <span key={`${row?.id}-${item.key}`} className="history-dv-rating-chip">

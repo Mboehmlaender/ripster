@@ -1,6 +1,6 @@
 {
   "name": "ripster-backend",
-  "version": "0.9.1-6",
+  "version": "0.10.0",
   "private": true,
   "type": "commonjs",
   "scripts": {
@@ -11,6 +11,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "multer": "^2.1.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "ws": "^8.18.0"
