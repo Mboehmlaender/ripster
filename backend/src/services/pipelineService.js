@@ -10804,6 +10804,14 @@ class PipelineService extends EventEmitter {
     try {
       await historyService.resetProcessLog(job.id);
       await historyService.appendLog(job.id, 'SYSTEM', `AAX-Upload empfangen: ${originalName}`);
+      logger.info('audiobook:upload:received', {
+        jobId: job.id,
+        originalName,
+        tempFilePath,
+        rawBaseDir,
+        outputFormat,
+        startImmediately
+      });
 
       const probeConfig = audiobookService.buildProbeCommand(ffprobeCommand, tempFilePath);
       const captured = await this.runCapturedCommand(probeConfig.cmd, probeConfig.args);
@@ -10822,12 +10830,25 @@ class PipelineService extends EventEmitter {
         rawTemplate,
         originalName
       );
+      logger.info('audiobook:upload:staging', {
+        jobId: job.id,
+        tempFilePath,
+        rawDir: storagePaths.rawDir,
+        rawFilePath: storagePaths.rawFilePath,
+        rawTemplate,
+        outputTemplate
+      });
 
       ensureDir(storagePaths.rawDir);
-      fs.renameSync(tempFilePath, storagePaths.rawFilePath);
+      moveFileWithFallback(tempFilePath, storagePaths.rawFilePath);
       stagedRawDir = storagePaths.rawDir;
       stagedRawFilePath = storagePaths.rawFilePath;
       chownRecursive(storagePaths.rawDir, settings?.raw_dir_owner);
+      logger.info('audiobook:upload:staged', {
+        jobId: job.id,
+        stagedRawDir,
+        stagedRawFilePath
+      });
 
       const makemkvInfo = this.withAnalyzeContextMediaProfile({
         status: 'SUCCESS',
@@ -10899,6 +10920,14 @@ class PipelineService extends EventEmitter {
         ...(startResult && typeof startResult === 'object' ? startResult : {})
       };
     } catch (error) {
+      logger.error('audiobook:upload:failed', {
+        jobId: job.id,
+        originalName,
+        tempFilePath,
+        stagedRawDir,
+        stagedRawFilePath,
+        error: errorToMeta(error)
+      });
       const updatePayload = {
         status: 'ERROR',
         last_state: 'ERROR',

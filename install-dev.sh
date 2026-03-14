@@ -119,6 +119,64 @@ info "Frontend-Host:         $FRONTEND_HOST"
 
 command_exists() { command -v "$1" &>/dev/null; }
 
+nginx_replace_or_insert_directive() {
+  local file="$1"
+  local directive_regex="$2"
+  local desired_line="$3"
+  local anchor_regex="$4"
+  local directive_sed_regex="${directive_regex//\//\\/}"
+  local anchor_sed_regex="${anchor_regex//\//\\/}"
+  local desired_sed_line="${desired_line//\//\\/}"
+
+  if grep -Eq "$directive_regex" "$file"; then
+    sed -i -E "0,/$directive_sed_regex/s//${desired_sed_line}/" "$file"
+    return 0
+  fi
+
+  sed -i "/$anchor_sed_regex/a\\$desired_line" "$file"
+}
+
+patch_existing_ripster_nginx_site() {
+  local file="$1"
+  local backup_file="${file}.bak-$(date +%Y%m%d%H%M%S)"
+
+  [[ -f "$file" ]] || return 1
+
+  cp -a "$file" "$backup_file"
+  info "Bestehende nginx-Konfiguration erkannt - ergänze Upload-/Proxy-Settings"
+  info "Backup erstellt: $backup_file"
+
+  nginx_replace_or_insert_directive \
+    "$file" \
+    '^[[:space:]]*client_max_body_size[[:space:]]+[^;]+;' \
+    '    client_max_body_size 8G;' \
+    'server_name .*;'
+
+  nginx_replace_or_insert_directive \
+    "$file" \
+    '^[[:space:]]*proxy_connect_timeout[[:space:]]+[^;]+;' \
+    '        proxy_connect_timeout 60s;' \
+    'location /api/ {'
+
+  nginx_replace_or_insert_directive \
+    "$file" \
+    '^[[:space:]]*proxy_send_timeout[[:space:]]+[^;]+;' \
+    '        proxy_send_timeout 3600s;' \
+    'location /api/ {'
+
+  nginx_replace_or_insert_directive \
+    "$file" \
+    '^[[:space:]]*proxy_read_timeout[[:space:]]+[^;]+;' \
+    '        proxy_read_timeout 3600s;' \
+    'location /api/ {'
+
+  nginx_replace_or_insert_directive \
+    "$file" \
+    '^[[:space:]]*proxy_request_buffering[[:space:]]+[^;]+;' \
+    '        proxy_request_buffering off;' \
+    'location /api/ {'
+}
+
 install_node() {
   header "Node.js installieren"
   local required_major=20
@@ -844,7 +902,10 @@ ok "ripster-backend.service erstellt"
 if [[ "$SKIP_NGINX" == false ]]; then
   header "nginx konfigurieren"
 
-  cat > /etc/nginx/sites-available/ripster <<EOF
+  if [[ -f /etc/nginx/sites-available/ripster ]]; then
+    patch_existing_ripster_nginx_site /etc/nginx/sites-available/ripster
+  else
+    cat > /etc/nginx/sites-available/ripster <<EOF
 server {
     listen 80;
     server_name ${FRONTEND_HOST} _;
@@ -866,8 +927,10 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 10s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 60s;
+        proxy_request_buffering off;
     }
 
     # WebSocket → Backend
@@ -882,6 +945,7 @@ server {
     }
 }
 EOF
+  fi
 
   # Alte Default-Seite deaktivieren, Ripster aktivieren
   rm -f /etc/nginx/sites-enabled/default

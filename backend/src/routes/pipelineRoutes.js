@@ -143,7 +143,9 @@ router.post(
     logger.info('post:audiobook:upload', {
       reqId: req.reqId,
       originalName: req.file.originalname,
-      sizeBytes: Number(req.file.size || 0)
+      sizeBytes: Number(req.file.size || 0),
+      mimeType: String(req.file.mimetype || '').trim() || null,
+      tempPath: String(req.file.path || '').trim() || null
     });
     const result = await pipelineService.uploadAudiobookFile(req.file, {
       format: req.body?.format,
