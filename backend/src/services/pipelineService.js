@@ -10766,6 +10766,91 @@ class PipelineService extends EventEmitter {
     return historyService.getJobById(jobId);
   }
 
+  async renameJobFolders(jobId) {
+    const job = await historyService.getJobById(jobId);
+    if (!job) {
+      return { renamed: [] };
+    }
+
+    const renamed = [];
+    const mediaProfile = this.resolveMediaProfileForJob(job);
+    const isCd = mediaProfile === 'cd';
+    const settings = await settingsService.getEffectiveSettingsMap(mediaProfile);
+
+    // Rename raw folder
+    const currentRawPath = job.raw_path ? path.resolve(job.raw_path) : null;
+    if (currentRawPath && fs.existsSync(currentRawPath)) {
+      const rawBaseDir = path.dirname(currentRawPath);
+      const newMetadataBase = buildRawMetadataBase({
+        title: job.title || job.detected_title || null,
+        year: job.year || null
+      }, jobId);
+      const currentState = resolveRawFolderStateFromPath(currentRawPath);
+      const newRawDirName = buildRawDirName(newMetadataBase, jobId, { state: currentState });
+      const newRawPath = path.join(rawBaseDir, newRawDirName);
+
+      if (normalizeComparablePath(currentRawPath) !== normalizeComparablePath(newRawPath) && !fs.existsSync(newRawPath)) {
+        try {
+          fs.renameSync(currentRawPath, newRawPath);
+          await historyService.updateJob(jobId, { raw_path: newRawPath });
+          renamed.push({ type: 'raw', from: currentRawPath, to: newRawPath });
+          logger.info('rename-job-folders:raw', { jobId, from: currentRawPath, to: newRawPath });
+        } catch (err) {
+          logger.warn('rename-job-folders:raw-failed', { jobId, error: err.message });
+        }
+      }
+    }
+
+    // Rename output file (film) or output directory (CD)
+    const currentOutputPath = job.output_path ? path.resolve(job.output_path) : null;
+    if (currentOutputPath && fs.existsSync(currentOutputPath)) {
+      try {
+        if (isCd) {
+          const cdInfo = this.safeParseJson(job.makemkv_info_json) || {};
+          const selectedMeta = cdInfo.selectedMetadata && typeof cdInfo.selectedMetadata === 'object'
+            ? cdInfo.selectedMetadata
+            : {};
+          const cdMeta = {
+            artist: String(selectedMeta.artist || '').trim() || String(job.title || '').trim() || null,
+            album: String(job.title || selectedMeta.title || '').trim() || null,
+            year: job.year || selectedMeta.year || null
+          };
+          const cdOutputBaseDir = String(settings.movie_dir || '').trim();
+          const cdOutputTemplate = String(settings.cd_output_template || cdRipService.DEFAULT_CD_OUTPUT_TEMPLATE).trim();
+          if (cdOutputBaseDir) {
+            const newCdOutputDir = cdRipService.buildOutputDir(cdMeta, cdOutputBaseDir, cdOutputTemplate);
+            if (normalizeComparablePath(currentOutputPath) !== normalizeComparablePath(newCdOutputDir) && !fs.existsSync(newCdOutputDir)) {
+              fs.mkdirSync(path.dirname(newCdOutputDir), { recursive: true });
+              fs.renameSync(currentOutputPath, newCdOutputDir);
+              await historyService.updateJob(jobId, { output_path: newCdOutputDir });
+              renamed.push({ type: 'output', from: currentOutputPath, to: newCdOutputDir });
+              logger.info('rename-job-folders:cd-output', { jobId, from: currentOutputPath, to: newCdOutputDir });
+            }
+          }
+        } else {
+          const newOutputPath = buildFinalOutputPathFromJob(settings, job, jobId);
+          if (normalizeComparablePath(currentOutputPath) !== normalizeComparablePath(newOutputPath) && !fs.existsSync(newOutputPath)) {
+            fs.mkdirSync(path.dirname(newOutputPath), { recursive: true });
+            moveFileWithFallback(currentOutputPath, newOutputPath);
+            try {
+              const oldParentDir = path.dirname(currentOutputPath);
+              if (fs.readdirSync(oldParentDir).length === 0) {
+                fs.rmdirSync(oldParentDir);
+              }
+            } catch (_ignoreErr) {}
+            await historyService.updateJob(jobId, { output_path: newOutputPath });
+            renamed.push({ type: 'output', from: currentOutputPath, to: newOutputPath });
+            logger.info('rename-job-folders:film-output', { jobId, from: currentOutputPath, to: newOutputPath });
+          }
+        }
+      } catch (err) {
+        logger.warn('rename-job-folders:output-failed', { jobId, isCd, error: err.message });
+      }
+    }
+
+    return { renamed };
+  }
+
   async startCdRip(jobId, ripConfig) {
     this.ensureNotBusy('startCdRip', jobId);
     this.cancelRequestedByJob.delete(Number(jobId));

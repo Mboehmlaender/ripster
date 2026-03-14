@@ -1662,11 +1662,10 @@ class HistoryService {
     const imdbIdInput = String(payload.imdbId || '').trim().toLowerCase();
     let omdb = null;
     if (imdbIdInput) {
-      omdb = await omdbService.fetchByImdbId(imdbIdInput);
-      if (!omdb) {
-        const error = new Error(`OMDb Eintrag für ${imdbIdInput} nicht gefunden.`);
-        error.statusCode = 404;
-        throw error;
+      try {
+        omdb = await omdbService.fetchByImdbId(imdbIdInput);
+      } catch (omdbErr) {
+        logger.warn('assignOmdbMetadata:fetch-failed', { jobId, imdbId: imdbIdInput, message: omdbErr.message });
       }
     }
 
@@ -1685,7 +1684,7 @@ class HistoryService {
     const year = Number.isFinite(Number(omdb?.year))
       ? Number(omdb.year)
       : (manualYear !== null ? manualYear : (job.year ?? null));
-    const imdbId = omdb?.imdbId || (imdbIdInput || job.imdb_id || null);
+    const imdbId = omdb?.imdbId || imdbIdInput || job.imdb_id || null;
     const posterUrl = omdb?.poster || manualPoster || job.poster_url || null;
     const selectedFromOmdb = omdb ? 1 : Number(payload.fromOmdb ? 1 : 0);
 

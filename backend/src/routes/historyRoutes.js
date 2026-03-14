@@ -91,6 +91,12 @@ router.post(
     });
 
     const job = await historyService.assignOmdbMetadata(id, payload);
+
+    // Rename raw/output folders to reflect new metadata (best-effort, non-blocking)
+    pipelineService.renameJobFolders(id).catch((err) => {
+      logger.warn('post:job:omdb:assign:rename-failed', { id, error: err.message });
+    });
+
     res.json({ job });
   })
 );
@@ -110,6 +116,12 @@ router.post(
     });
 
     const job = await historyService.assignCdMetadata(id, payload);
+
+    // Rename raw/output folders to reflect new metadata (best-effort, non-blocking)
+    pipelineService.renameJobFolders(id).catch((err) => {
+      logger.warn('post:job:cd:assign:rename-failed', { id, error: err.message });
+    });
+
     res.json({ job });
   })
 );
