@@ -321,6 +321,14 @@ export const api = {
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;
   },
+  async startAudiobook(jobId, payload = {}) {
+    const result = await request(`/pipeline/audiobook/start/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
+    afterMutationInvalidate(['/history', '/pipeline/queue']);
+    return result;
+  },
   async selectMetadata(payload) {
     const result = await request('/pipeline/select-metadata', {
       method: 'POST',

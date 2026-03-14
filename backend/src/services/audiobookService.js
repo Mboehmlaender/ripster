@@ -5,6 +5,17 @@ const SUPPORTED_INPUT_EXTENSIONS = new Set(['.aax']);
 const SUPPORTED_OUTPUT_FORMATS = new Set(['m4b', 'mp3', 'flac']);
 const DEFAULT_AUDIOBOOK_RAW_TEMPLATE = '{author} - {title} ({year})';
 const DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE = '{author}/{author} - {title} ({year})';
+const AUDIOBOOK_FORMAT_DEFAULTS = {
+  m4b: {},
+  flac: {
+    flacCompression: 5
+  },
+  mp3: {
+    mp3Mode: 'cbr',
+    mp3Bitrate: 192,
+    mp3Quality: 4
+  }
+};
 
 function normalizeText(value) {
   return String(value || '')
@@ -30,6 +41,50 @@ function parseOptionalYear(value) {
 function normalizeOutputFormat(value) {
   const format = String(value || '').trim().toLowerCase();
   return SUPPORTED_OUTPUT_FORMATS.has(format) ? format : 'mp3';
+}
+
+function clonePlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+}
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function getDefaultFormatOptions(format) {
+  const normalizedFormat = normalizeOutputFormat(format);
+  return clonePlainObject(AUDIOBOOK_FORMAT_DEFAULTS[normalizedFormat]);
+}
+
+function normalizeFormatOptions(format, formatOptions = {}) {
+  const normalizedFormat = normalizeOutputFormat(format);
+  const source = clonePlainObject(formatOptions);
+  const defaults = getDefaultFormatOptions(normalizedFormat);
+
+  if (normalizedFormat === 'flac') {
+    return {
+      flacCompression: clampInteger(source.flacCompression, 0, 8, defaults.flacCompression)
+    };
+  }
+
+  if (normalizedFormat === 'mp3') {
+    const mp3Mode = String(source.mp3Mode || defaults.mp3Mode || 'cbr').trim().toLowerCase() === 'vbr'
+      ? 'vbr'
+      : 'cbr';
+    const allowedBitrates = new Set([128, 160, 192, 256, 320]);
+    const normalizedBitrate = clampInteger(source.mp3Bitrate, 96, 320, defaults.mp3Bitrate);
+    return {
+      mp3Mode,
+      mp3Bitrate: allowedBitrates.has(normalizedBitrate) ? normalizedBitrate : defaults.mp3Bitrate,
+      mp3Quality: clampInteger(source.mp3Quality, 0, 9, defaults.mp3Quality)
+    };
+  }
+
+  return {};
 }
 
 function normalizeInputExtension(filePath) {
@@ -241,17 +296,32 @@ function buildProbeCommand(ffprobeCommand, inputPath) {
   };
 }
 
-function buildEncodeCommand(ffmpegCommand, inputPath, outputPath, outputFormat = 'mp3') {
+function buildEncodeCommand(ffmpegCommand, inputPath, outputPath, outputFormat = 'mp3', formatOptions = {}) {
   const cmd = String(ffmpegCommand || 'ffmpeg').trim() || 'ffmpeg';
   const format = normalizeOutputFormat(outputFormat);
-  const codecArgs = format === 'm4b'
-    ? ['-codec', 'copy']
-    : (format === 'flac'
-      ? ['-codec:a', 'flac']
-      : ['-codec:a', 'libmp3lame']);
+  const normalizedOptions = normalizeFormatOptions(format, formatOptions);
+  const commonArgs = [
+    '-y',
+    '-i', inputPath,
+    '-map', '0:a:0?',
+    '-map_metadata', '0',
+    '-map_chapters', '0',
+    '-vn',
+    '-sn',
+    '-dn'
+  ];
+  let codecArgs = ['-codec:a', 'libmp3lame', '-b:a', `${normalizedOptions.mp3Bitrate}k`];
+  if (format === 'm4b') {
+    codecArgs = ['-c:a', 'copy'];
+  } else if (format === 'flac') {
+    codecArgs = ['-codec:a', 'flac', '-compression_level', String(normalizedOptions.flacCompression)];
+  } else if (normalizedOptions.mp3Mode === 'vbr') {
+    codecArgs = ['-codec:a', 'libmp3lame', '-q:a', String(normalizedOptions.mp3Quality)];
+  }
   return {
     cmd,
-    args: ['-y', '-i', inputPath, ...codecArgs, outputPath]
+    args: [...commonArgs, ...codecArgs, outputPath],
+    formatOptions: normalizedOptions
   };
 }
 
@@ -298,7 +368,10 @@ module.exports = {
   SUPPORTED_OUTPUT_FORMATS,
   DEFAULT_AUDIOBOOK_RAW_TEMPLATE,
   DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE,
+  AUDIOBOOK_FORMAT_DEFAULTS,
   normalizeOutputFormat,
+  getDefaultFormatOptions,
+  normalizeFormatOptions,
   isSupportedInputFile,
   buildMetadataFromProbe,
   buildRawStoragePaths,

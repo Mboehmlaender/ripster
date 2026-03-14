@@ -9605,12 +9605,13 @@ class PipelineService extends EventEmitter {
         });
       });
     } else if (isAudiobookRetry) {
-      const startResult = await this.startPreparedJob(retryJobId);
       return {
-        sourceJobId: Number(jobId),
         jobId: retryJobId,
+        sourceJobId: Number(jobId),
         replacedSourceJob: true,
-        ...(startResult && typeof startResult === 'object' ? startResult : {})
+        started: false,
+        queued: false,
+        stage: 'READY_TO_START'
       };
     } else {
       this.startRipEncode(retryJobId).catch((error) => {
@@ -10763,7 +10764,7 @@ class PipelineService extends EventEmitter {
     const detectedTitle = path.basename(originalName, path.extname(originalName)) || 'Audiobook';
     const requestedFormat = String(options?.format || '').trim().toLowerCase() || null;
     const startImmediately = options?.startImmediately === undefined
-      ? true
+      ? false
       : !['0', 'false', 'no', 'off'].includes(String(options.startImmediately).trim().toLowerCase());
 
     if (!tempFilePath || !fs.existsSync(tempFilePath)) {
@@ -10790,6 +10791,7 @@ class PipelineService extends EventEmitter {
     const outputFormat = audiobookService.normalizeOutputFormat(
       requestedFormat || settings?.output_extension || 'mp3'
     );
+    const formatOptions = audiobookService.getDefaultFormatOptions(outputFormat);
     const ffprobeCommand = String(settings?.ffprobe_command || 'ffprobe').trim() || 'ffprobe';
 
     const job = await historyService.createJob({
@@ -10872,6 +10874,7 @@ class PipelineService extends EventEmitter {
         sourceType: 'upload',
         uploadedAt: nowIso(),
         format: outputFormat,
+        formatOptions,
         rawTemplate,
         outputTemplate,
         encodeInputPath: storagePaths.rawFilePath,
@@ -10958,6 +10961,78 @@ class PipelineService extends EventEmitter {
     }
   }
 
+  async startAudiobookWithConfig(jobId, config = {}) {
+    const normalizedJobId = Number(jobId);
+    if (!Number.isFinite(normalizedJobId) || normalizedJobId <= 0) {
+      const error = new Error('Ungültige Job-ID für Audiobook-Start.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await historyService.getJobById(normalizedJobId);
+    if (!job) {
+      const error = new Error(`Job ${normalizedJobId} nicht gefunden.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const encodePlan = this.safeParseJson(job.encode_plan_json);
+    const makemkvInfo = this.safeParseJson(job.makemkv_info_json);
+    const mediaProfile = this.resolveMediaProfileForJob(job, {
+      encodePlan,
+      makemkvInfo,
+      mediaProfile: 'audiobook'
+    });
+    if (mediaProfile !== 'audiobook') {
+      const error = new Error(`Job ${normalizedJobId} ist kein Audiobook-Job.`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const format = audiobookService.normalizeOutputFormat(
+      config?.format || encodePlan?.format || 'mp3'
+    );
+    const formatOptions = audiobookService.normalizeFormatOptions(
+      format,
+      config?.formatOptions || encodePlan?.formatOptions || {}
+    );
+    const metadata = buildAudiobookMetadataForJob(job, makemkvInfo, encodePlan);
+
+    const nextEncodePlan = {
+      ...(encodePlan && typeof encodePlan === 'object' ? encodePlan : {}),
+      mediaProfile: 'audiobook',
+      mode: 'audiobook',
+      format,
+      formatOptions,
+      metadata,
+      reviewConfirmed: true
+    };
+
+    await historyService.updateJob(normalizedJobId, {
+      status: 'READY_TO_START',
+      last_state: 'READY_TO_START',
+      title: metadata.title || job.title || job.detected_title || 'Audiobook',
+      year: metadata.year ?? job.year ?? null,
+      encode_plan_json: JSON.stringify(nextEncodePlan),
+      encode_review_confirmed: 1,
+      error_message: null,
+      handbrake_info_json: null,
+      end_time: null
+    });
+
+    await historyService.appendLog(
+      normalizedJobId,
+      'USER_ACTION',
+      `Audiobook-Encoding konfiguriert: Format ${format.toUpperCase()}`
+    );
+
+    const startResult = await this.startPreparedJob(normalizedJobId);
+    return {
+      jobId: normalizedJobId,
+      ...(startResult && typeof startResult === 'object' ? startResult : {})
+    };
+  }
+
   async startAudiobookEncode(jobId, options = {}) {
     const immediate = Boolean(options?.immediate);
     if (!immediate) {
@@ -11027,6 +11102,10 @@ class PipelineService extends EventEmitter {
       preferredFinalOutputPath,
       incompleteOutputPath
     } = buildAudiobookOutputConfig(settings, job, makemkvInfo, encodePlan, jobId);
+    const formatOptions = audiobookService.normalizeFormatOptions(
+      outputFormat,
+      encodePlan?.formatOptions || {}
+    );
     ensureDir(path.dirname(incompleteOutputPath));
 
     await historyService.resetProcessLog(jobId);
@@ -11042,13 +11121,22 @@ class PipelineService extends EventEmitter {
         inputPath,
         outputPath: incompleteOutputPath,
         format: outputFormat,
+        formatOptions,
         chapters: metadata.chapters,
         selectedMetadata: {
           title: metadata.title || job.title || job.detected_title || null,
           year: metadata.year ?? job.year ?? null,
           author: metadata.author || null,
           narrator: metadata.narrator || null,
+          series: metadata.series || null,
+          part: metadata.part || null,
+          chapters: Array.isArray(metadata.chapters) ? metadata.chapters : [],
+          durationMs: metadata.durationMs || 0,
           poster: job.poster_url || null
+        },
+        audiobookConfig: {
+          format: outputFormat,
+          formatOptions
         },
         canRestartEncodeFromLastSettings: false,
         canRestartReviewFromRaw: false
@@ -11082,7 +11170,8 @@ class PipelineService extends EventEmitter {
         settings?.ffmpeg_command || 'ffmpeg',
         inputPath,
         incompleteOutputPath,
-        outputFormat
+        outputFormat,
+        formatOptions
       );
       logger.info('audiobook:encode:command', { jobId, cmd: ffmpegConfig.cmd, args: ffmpegConfig.args });
       const ffmpegRunInfo = await this.runCommand({
@@ -11119,6 +11208,7 @@ class PipelineService extends EventEmitter {
         ...ffmpegRunInfo,
         mode: 'audiobook_encode',
         format: outputFormat,
+        formatOptions,
         metadata,
         inputPath,
         outputPath: finalizedOutputPath
@@ -11178,6 +11268,7 @@ class PipelineService extends EventEmitter {
             ...error.runInfo,
             mode: 'audiobook_encode',
             format: outputFormat,
+            formatOptions,
             inputPath
           })
         }).catch(() => {});

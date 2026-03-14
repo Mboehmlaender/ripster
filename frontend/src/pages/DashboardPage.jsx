@@ -11,6 +11,7 @@ import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import CdMetadataDialog from '../components/CdMetadataDialog';
 import CdRipConfigPanel from '../components/CdRipConfigPanel';
+import AudiobookConfigPanel from '../components/AudiobookConfigPanel';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
 import otherIndicatorIcon from '../assets/media-other.svg';
@@ -596,7 +597,11 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
       title: audiobookSelectedMeta?.title || job?.title || job?.detected_title || null,
       author: audiobookSelectedMeta?.author || audiobookSelectedMeta?.artist || null,
       narrator: audiobookSelectedMeta?.narrator || null,
+      series: audiobookSelectedMeta?.series || null,
+      part: audiobookSelectedMeta?.part || null,
       year: audiobookSelectedMeta?.year ?? job?.year ?? null,
+      chapters: Array.isArray(audiobookSelectedMeta?.chapters) ? audiobookSelectedMeta.chapters : [],
+      durationMs: audiobookSelectedMeta?.durationMs || 0,
       poster: job?.poster_url || null
     }
     : {
@@ -667,6 +672,14 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     mode,
     sourceJobId: encodePlan?.sourceJobId || null,
     selectedMetadata,
+    audiobookConfig: resolvedMediaType === 'audiobook'
+      ? {
+        format: String(encodePlan?.format || '').trim().toLowerCase() || 'mp3',
+        formatOptions: encodePlan?.formatOptions && typeof encodePlan.formatOptions === 'object'
+          ? encodePlan.formatOptions
+          : {}
+      }
+      : null,
     mediaInfoReview: encodePlan,
     playlistAnalysis: analyzeContext.playlistAnalysis || null,
     playlistDecisionRequired: Boolean(analyzeContext.playlistDecisionRequired),
@@ -1324,7 +1337,7 @@ export default function DashboardPage({
     }
     setAudiobookUploadBusy(true);
     try {
-      const response = await api.uploadAudiobook(audiobookUploadFile, { startImmediately: true });
+      const response = await api.uploadAudiobook(audiobookUploadFile, { startImmediately: false });
       const result = getQueueActionResult(response);
       const uploadedJobId = normalizeJobId(response?.result?.jobId);
       await refreshPipeline();
@@ -1347,6 +1360,29 @@ export default function DashboardPage({
       showError(error);
     } finally {
       setAudiobookUploadBusy(false);
+    }
+  };
+
+  const handleAudiobookStart = async (jobId, audiobookConfig) => {
+    const normalizedJobId = normalizeJobId(jobId);
+    if (!normalizedJobId) {
+      return;
+    }
+    setJobBusy(normalizedJobId, true);
+    try {
+      const response = await api.startAudiobook(normalizedJobId, audiobookConfig || {});
+      const result = getQueueActionResult(response);
+      await refreshPipeline();
+      await loadDashboardJobs();
+      if (result.queued) {
+        showQueuedToast(toastRef, 'Audiobook', result);
+      } else {
+        setExpandedJobId(normalizedJobId);
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setJobBusy(normalizedJobId, false);
     }
   };
 
@@ -2008,7 +2044,7 @@ export default function DashboardPage({
         )}
       </Card>
 
-      <Card title="Audiobook Upload" subTitle="AAX-Datei hochladen, ins RAW-Verzeichnis übernehmen und direkt mit dem in den Settings gewählten Zielformat starten.">
+      <Card title="Audiobook Upload" subTitle="AAX-Datei hochladen, analysieren und danach Format/Qualität vor dem Start auswählen.">
         <div className="actions-row">
           <input
             key={audiobookUploadFile ? `${audiobookUploadFile.name}-${audiobookUploadFile.size}` : 'audiobook-upload-input'}
@@ -2033,7 +2069,7 @@ export default function DashboardPage({
         <small>
           {audiobookUploadFile
             ? `Ausgewählt: ${audiobookUploadFile.name}`
-            : 'Unterstützt im MVP: AAX-Upload. Das Ausgabeformat wird aus den Audiobook-Settings gelesen.'}
+            : 'Unterstützt im MVP: AAX-Upload. Danach erscheint ein eigener Audiobook-Startschritt mit Format- und Qualitätswahl.'}
         </small>
       </Card>
 
@@ -2374,11 +2410,14 @@ export default function DashboardPage({
               const statusBadgeSeverity = getStatusSeverity(normalizedStatus, { queued: isQueued });
               const isExpanded = normalizeJobId(expandedJobId) === jobId;
               const isCurrentSession = currentPipelineJobId === jobId && state !== 'IDLE';
-              const isResumable = normalizedStatus === 'READY_TO_ENCODE' && !isCurrentSession;
               const reviewConfirmed = Boolean(Number(job?.encode_review_confirmed || 0));
               const pipelineForJob = pipelineByJobId.get(jobId) || pipeline;
               const jobTitle = job?.title || job?.detected_title || `Job #${jobId}`;
               const mediaIndicator = mediaIndicatorMeta(job);
+              const isResumable = (
+                normalizedStatus === 'READY_TO_ENCODE'
+                || (mediaIndicator.mediaType === 'audiobook' && normalizedStatus === 'READY_TO_START')
+              ) && !isCurrentSession;
               const mediaProfile = String(pipelineForJob?.context?.mediaProfile || '').trim().toLowerCase();
               const jobState = String(pipelineForJob?.state || normalizedStatus).trim().toUpperCase();
               const pipelineStage = String(pipelineForJob?.context?.stage || '').trim().toUpperCase();
@@ -2388,6 +2427,9 @@ export default function DashboardPage({
                 || mediaProfile === 'cd'
                 || mediaIndicator.mediaType === 'cd'
                 || pipelineStatusText.includes('CD_');
+              const isAudiobookJob = mediaProfile === 'audiobook'
+                || mediaIndicator.mediaType === 'audiobook'
+                || String(pipelineForJob?.context?.mode || '').trim().toLowerCase() === 'audiobook';
               const rawProgress = Number(pipelineForJob?.progress ?? 0);
               const clampedProgress = Number.isFinite(rawProgress)
                 ? Math.max(0, Math.min(100, rawProgress))
@@ -2395,14 +2437,19 @@ export default function DashboardPage({
               const progressLabel = `${Math.round(clampedProgress)}%`;
               const etaLabel = String(pipelineForJob?.eta || '').trim();
 
+              const audiobookMeta = pipelineForJob?.context?.selectedMetadata && typeof pipelineForJob.context.selectedMetadata === 'object'
+                ? pipelineForJob.context.selectedMetadata
+                : {};
+              const audiobookChapterCount = Array.isArray(audiobookMeta?.chapters) ? audiobookMeta.chapters.length : 0;
+
               if (isExpanded) {
                 return (
                   <div key={jobId} className="dashboard-job-expanded">
                     <div className="dashboard-job-expanded-head">
-                      {job?.poster_url && job.poster_url !== 'N/A' ? (
+                      {(job?.poster_url && job.poster_url !== 'N/A') ? (
                         <img src={job.poster_url} alt={jobTitle} className="poster-thumb" />
                       ) : (
-                        <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
+                        <div className="poster-thumb dashboard-job-poster-fallback">{isAudiobookJob ? 'Kein Cover' : 'Kein Poster'}</div>
                       )}
                       <div className="dashboard-job-expanded-title">
                         <strong className="dashboard-job-title-line">
@@ -2456,9 +2503,20 @@ export default function DashboardPage({
                           </>
                         );
                       }
+                      if (isAudiobookJob) {
+                        return (
+                          <AudiobookConfigPanel
+                            pipeline={pipelineForJob}
+                            onStart={(config) => handleAudiobookStart(jobId, config)}
+                            onCancel={() => handleCancel(jobId, jobState)}
+                            onRetry={() => handleRetry(jobId)}
+                            busy={busyJobIds.has(jobId)}
+                          />
+                        );
+                      }
                       return null;
                     })()}
-                    {!isCdJob ? (
+                    {!isCdJob && !isAudiobookJob ? (
                     <PipelineStatusCard
                       pipeline={pipelineForJob}
                       onAnalyze={handleAnalyze}
@@ -2492,7 +2550,7 @@ export default function DashboardPage({
                   {job?.poster_url && job.poster_url !== 'N/A' ? (
                     <img src={job.poster_url} alt={jobTitle} className="poster-thumb" />
                   ) : (
-                    <div className="poster-thumb dashboard-job-poster-fallback">Kein Poster</div>
+                    <div className="poster-thumb dashboard-job-poster-fallback">{isAudiobookJob ? 'Kein Cover' : 'Kein Poster'}</div>
                   )}
                   <div className="dashboard-job-row-content">
                     <div className="dashboard-job-row-main">
@@ -2507,8 +2565,16 @@ export default function DashboardPage({
                       </strong>
                       <small>
                         #{jobId}
-                        {job?.year ? ` | ${job.year}` : ''}
-                        {job?.imdb_id ? ` | ${job.imdb_id}` : ''}
+                        {isAudiobookJob
+                          ? (
+                            `${audiobookMeta?.author ? ` | ${audiobookMeta.author}` : ''}`
+                            + `${audiobookMeta?.narrator ? ` | ${audiobookMeta.narrator}` : ''}`
+                            + `${audiobookChapterCount > 0 ? ` | ${audiobookChapterCount} Kapitel` : ''}`
+                          )
+                          : (
+                            `${job?.year ? ` | ${job.year}` : ''}`
+                            + `${job?.imdb_id ? ` | ${job.imdb_id}` : ''}`
+                          )}
                       </small>
                     </div>
                     <div className="dashboard-job-badges">

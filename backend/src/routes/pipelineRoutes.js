@@ -156,6 +156,24 @@ router.post(
 );
 
 router.post(
+  '/audiobook/start/:jobId',
+  asyncHandler(async (req, res) => {
+    const jobId = Number(req.params.jobId);
+    const config = req.body || {};
+    logger.info('post:audiobook:start', {
+      reqId: req.reqId,
+      jobId,
+      format: config?.format,
+      formatOptions: config?.formatOptions && typeof config.formatOptions === 'object'
+        ? config.formatOptions
+        : null
+    });
+    const result = await pipelineService.startAudiobookWithConfig(jobId, config);
+    res.json({ result });
+  })
+);
+
+router.post(
   '/select-metadata',
   asyncHandler(async (req, res) => {
     const { jobId, title, year, imdbId, poster, fromOmdb, selectedPlaylist } = req.body;

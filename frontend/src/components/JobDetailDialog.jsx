@@ -327,13 +327,26 @@ function resolveAudiobookDetails(job) {
     ? selectedMetadata.chapters
     : (Array.isArray(makemkvInfo?.chapters) ? makemkvInfo.chapters : []);
   const format = String(job?.handbrakeInfo?.format || encodePlan?.format || '').trim().toLowerCase() || null;
+  const formatOptions = job?.handbrakeInfo?.formatOptions && typeof job.handbrakeInfo.formatOptions === 'object'
+    ? job.handbrakeInfo.formatOptions
+    : (encodePlan?.formatOptions && typeof encodePlan.formatOptions === 'object' ? encodePlan.formatOptions : {});
+  const qualityLabel = format === 'mp3'
+    ? (
+      String(formatOptions?.mp3Mode || '').trim().toLowerCase() === 'vbr'
+        ? `VBR V${Number(formatOptions?.mp3Quality ?? 4)}`
+        : `CBR ${Number(formatOptions?.mp3Bitrate ?? 192)} kbps`
+    )
+    : (format === 'flac'
+      ? `Kompression ${Number(formatOptions?.flacCompression ?? 5)}`
+      : (format === 'm4b' ? 'Original-Audio' : null));
   return {
     author: String(selectedMetadata?.author || selectedMetadata?.artist || '').trim() || null,
     narrator: String(selectedMetadata?.narrator || '').trim() || null,
     series: String(selectedMetadata?.series || '').trim() || null,
     part: String(selectedMetadata?.part || '').trim() || null,
     chapterCount: chapters.length,
-    formatLabel: format ? format.toUpperCase() : null
+    formatLabel: format ? format.toUpperCase() : null,
+    qualityLabel
   };
 }
 
@@ -513,7 +526,7 @@ export default function JobDetailDialog({
             {job.poster_url && job.poster_url !== 'N/A' ? (
               <img src={job.poster_url} alt={job.title || 'Poster'} className="poster-large" />
             ) : (
-              <div className="poster-large poster-fallback">{isCd ? 'Kein Cover' : 'Kein Poster'}</div>
+              <div className="poster-large poster-fallback">{isCd || isAudiobook ? 'Kein Cover' : 'Kein Poster'}</div>
             )}
 
             <div className="job-film-info-grid">
@@ -602,6 +615,10 @@ export default function JobDetailDialog({
                           <div className="job-meta-item">
                             <strong>Format:</strong>
                             <span>{audiobookDetails?.formatLabel || '-'}</span>
+                          </div>
+                          <div className="job-meta-item">
+                            <strong>Qualität:</strong>
+                            <span>{audiobookDetails?.qualityLabel || '-'}</span>
                           </div>
                         </>
                       ) : (
