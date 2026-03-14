@@ -379,6 +379,7 @@ export default function JobDetailDialog({
   onLoadLog,
   logLoadingMode = null,
   onAssignOmdb,
+  onAssignCdMetadata,
   onResumeReady,
   onRestartEncode,
   onRestartReview,
@@ -389,6 +390,7 @@ export default function JobDetailDialog({
   onRemoveFromQueue,
   isQueued = false,
   omdbAssignBusy = false,
+  cdMetadataAssignBusy = false,
   actionBusy = false,
   reencodeBusy = false,
   deleteEntryBusy = false
@@ -748,7 +750,17 @@ export default function JobDetailDialog({
                     loading={omdbAssignBusy}
                     disabled={running || typeof onAssignOmdb !== 'function'}
                   />
-                ) : null}
+                ) : (
+                  <Button
+                    label="MusicBrainz neu zuordnen"
+                    icon="pi pi-search"
+                    severity="secondary"
+                    size="small"
+                    onClick={() => onAssignCdMetadata?.(job)}
+                    loading={cdMetadataAssignBusy}
+                    disabled={running || typeof onAssignCdMetadata !== 'function'}
+                  />
+                )}
                 {!isCd && canResumeReady ? (
                   <Button
                     label="Im Dashboard öffnen"

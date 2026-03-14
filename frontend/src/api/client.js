@@ -435,6 +435,14 @@ export const api = {
     afterMutationInvalidate(['/history']);
     return result;
   },
+  async assignJobCdMetadata(jobId, payload = {}) {
+    const result = await request(`/history/${jobId}/cd/assign`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
+    afterMutationInvalidate(['/history']);
+    return result;
+  },
   async deleteJobFiles(jobId, target = 'both') {
     const result = await request(`/history/${jobId}/delete-files`, {
       method: 'POST',

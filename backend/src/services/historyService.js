@@ -1718,6 +1718,85 @@ class HistoryService {
     return enrichJobRow(updated, settings);
   }
 
+  async assignCdMetadata(jobId, payload = {}) {
+    const job = await this.getJobById(jobId);
+    if (!job) {
+      const error = new Error('Job nicht gefunden.');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const title = String(payload.title || '').trim() || null;
+    const artist = String(payload.artist || '').trim() || null;
+    const yearRaw = Number(payload.year);
+    const year = Number.isFinite(yearRaw) && yearRaw > 0 ? Math.trunc(yearRaw) : null;
+    const mbId = String(payload.mbId || '').trim() || null;
+    const coverUrl = String(payload.coverUrl || '').trim() || null;
+    const selectedTracks = Array.isArray(payload.tracks) ? payload.tracks : null;
+
+    if (!title && !artist && !mbId) {
+      const error = new Error('Keine CD-Metadaten zum Aktualisieren angegeben.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const cdInfo = parseJsonSafe(job.makemkv_info_json, {});
+    const tocTracks = Array.isArray(cdInfo.tracks) ? cdInfo.tracks : [];
+
+    let mergedTracks = tocTracks;
+    if (selectedTracks && tocTracks.length > 0) {
+      mergedTracks = tocTracks.map((t) => {
+        const selected = selectedTracks.find((st) => Number(st.position) === Number(t.position));
+        const resolvedTitle = String(selected?.title || t.title || `Track ${t.position}`).replace(/\s+/g, ' ').trim();
+        const resolvedArtist = String(selected?.artist || t.artist || artist || '').replace(/\s+/g, ' ').trim() || null;
+        return {
+          ...t,
+          title: resolvedTitle,
+          artist: resolvedArtist,
+          selected: selected ? Boolean(selected.selected) : true
+        };
+      });
+    }
+
+    const prevSelected = cdInfo.selectedMetadata && typeof cdInfo.selectedMetadata === 'object' ? cdInfo.selectedMetadata : {};
+    const updatedCdInfo = {
+      ...cdInfo,
+      tracks: mergedTracks,
+      selectedMetadata: {
+        ...prevSelected,
+        title: title || prevSelected.title || null,
+        artist: artist || prevSelected.artist || null,
+        year: year !== null ? year : (prevSelected.year || null),
+        mbId: mbId || prevSelected.mbId || null,
+        coverUrl: coverUrl || prevSelected.coverUrl || null
+      }
+    };
+
+    await this.updateJob(jobId, {
+      title: title || null,
+      year: year || null,
+      imdb_id: mbId || null,
+      poster_url: coverUrl || null,
+      makemkv_info_json: JSON.stringify(updatedCdInfo)
+    });
+
+    if (coverUrl && !thumbnailService.isLocalUrl(coverUrl)) {
+      thumbnailService.cacheJobThumbnail(jobId, coverUrl).catch(() => {});
+    }
+
+    await this.appendLog(
+      jobId,
+      'USER_ACTION',
+      `CD-Metadaten aktualisiert: album="${title || '-'}", artist="${artist || '-'}", year="${year || '-'}", mbId="${mbId || '-'}"`
+    );
+
+    const [updated, settings] = await Promise.all([
+      this.getJobById(jobId),
+      settingsService.getSettingsMap()
+    ]);
+    return enrichJobRow(updated, settings);
+  }
+
   async _resolveRelatedJobsForDeletion(jobId, options = {}) {
     const includeRelated = options?.includeRelated !== false;
     const normalizedJobId = normalizeJobIdValue(jobId);

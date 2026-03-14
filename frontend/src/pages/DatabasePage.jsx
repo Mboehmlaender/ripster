@@ -10,6 +10,7 @@ import { Toast } from 'primereact/toast';
 import { api } from '../api/client';
 import JobDetailDialog from '../components/JobDetailDialog';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
+import CdMetadataDialog from '../components/CdMetadataDialog';
 import blurayIndicatorIcon from '../assets/media-bluray.svg';
 import discIndicatorIcon from '../assets/media-disc.svg';
 import otherIndicatorIcon from '../assets/media-other.svg';
@@ -75,6 +76,9 @@ export default function DatabasePage() {
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
   const [metadataDialogBusy, setMetadataDialogBusy] = useState(false);
+  const [cdMetadataDialogVisible, setCdMetadataDialogVisible] = useState(false);
+  const [cdMetadataDialogContext, setCdMetadataDialogContext] = useState(null);
+  const [cdMetadataDialogBusy, setCdMetadataDialogBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [reencodeBusyJobId, setReencodeBusyJobId] = useState(null);
   const [deleteEntryBusyJobId, setDeleteEntryBusyJobId] = useState(null);
@@ -527,6 +531,77 @@ export default function DatabasePage() {
     }
   };
 
+  const handleMusicBrainzSearch = async (query) => {
+    try {
+      const response = await api.searchMusicBrainz(query);
+      return response.results || [];
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'MusicBrainz Suche fehlgeschlagen', detail: error.message, life: 4500 });
+      return [];
+    }
+  };
+
+  const handleMusicBrainzReleaseFetch = async (mbId) => {
+    try {
+      const response = await api.getMusicBrainzRelease(mbId);
+      return response.release || null;
+    } catch (error) {
+      toastRef.current?.show({ severity: 'error', summary: 'MusicBrainz Release fehlgeschlagen', detail: error.message, life: 4500 });
+      return null;
+    }
+  };
+
+  const openCdMetadataAssignDialog = (row) => {
+    if (!row?.id) {
+      return;
+    }
+    const makemkvInfo = row.makemkvInfo && typeof row.makemkvInfo === 'object' ? row.makemkvInfo : {};
+    const tocTracks = Array.isArray(makemkvInfo.tracks) ? makemkvInfo.tracks : [];
+    const selectedMetadata = makemkvInfo.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+      ? makemkvInfo.selectedMetadata
+      : {};
+    setCdMetadataDialogContext({
+      jobId: row.id,
+      detectedTitle: row.title || row.detected_title || selectedMetadata.title || '',
+      tracks: tocTracks
+    });
+    setCdMetadataDialogVisible(true);
+  };
+
+  const handleCdMetadataAssignSubmit = async (payload) => {
+    const jobId = Number(payload?.jobId || cdMetadataDialogContext?.jobId || 0);
+    if (!jobId) {
+      return;
+    }
+
+    setCdMetadataDialogBusy(true);
+    try {
+      const response = await api.assignJobCdMetadata(jobId, payload);
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'CD-Metadaten aktualisiert',
+        detail: `Job #${jobId} wurde aktualisiert.`,
+        life: 3500
+      });
+      setCdMetadataDialogVisible(false);
+      await load();
+      if (detailVisible && selectedJob?.id === jobId && response?.job) {
+        setSelectedJob(response.job);
+      } else {
+        await refreshDetailIfOpen(jobId);
+      }
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'CD-Metadaten fehlgeschlagen',
+        detail: error.message,
+        life: 5000
+      });
+    } finally {
+      setCdMetadataDialogBusy(false);
+    }
+  };
+
   const openMetadataAssignDialog = (row) => {
     if (!row?.id) {
       return;
@@ -751,6 +826,7 @@ export default function DatabasePage() {
           setLogLoadingMode(null);
         }}
         onAssignOmdb={openMetadataAssignDialog}
+        onAssignCdMetadata={openCdMetadataAssignDialog}
         onResumeReady={handleResumeReady}
         onRestartEncode={handleRestartEncode}
         onRestartReview={handleRestartReview}
@@ -760,6 +836,7 @@ export default function DatabasePage() {
         onRemoveFromQueue={handleRemoveFromQueue}
         isQueued={Boolean(selectedJob?.id && queuedJobIdSet.has(normalizeJobId(selectedJob.id)))}
         omdbAssignBusy={metadataDialogBusy}
+        cdMetadataAssignBusy={cdMetadataDialogBusy}
         actionBusy={actionBusy}
         reencodeBusy={reencodeBusyJobId === selectedJob?.id}
         deleteEntryBusy={deleteEntryBusyJobId === selectedJob?.id}
@@ -772,6 +849,19 @@ export default function DatabasePage() {
         onSubmit={handleMetadataAssignSubmit}
         onSearch={handleOmdbSearch}
         busy={metadataDialogBusy}
+      />
+
+      <CdMetadataDialog
+        visible={cdMetadataDialogVisible}
+        context={cdMetadataDialogContext || {}}
+        onHide={() => {
+          setCdMetadataDialogVisible(false);
+          setCdMetadataDialogContext(null);
+        }}
+        onSubmit={handleCdMetadataAssignSubmit}
+        onSearch={handleMusicBrainzSearch}
+        onFetchRelease={handleMusicBrainzReleaseFetch}
+        busy={cdMetadataDialogBusy}
       />
     </div>
   );

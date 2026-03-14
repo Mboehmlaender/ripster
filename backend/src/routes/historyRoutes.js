@@ -96,6 +96,25 @@ router.post(
 );
 
 router.post(
+  '/:id/cd/assign',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const payload = req.body || {};
+    logger.info('post:job:cd:assign', {
+      reqId: req.reqId,
+      id,
+      mbId: payload?.mbId || null,
+      hasTitle: Boolean(payload?.title),
+      hasArtist: Boolean(payload?.artist),
+      trackCount: Array.isArray(payload?.tracks) ? payload.tracks.length : 0
+    });
+
+    const job = await historyService.assignCdMetadata(id, payload);
+    res.json({ job });
+  })
+);
+
+router.post(
   '/:id/delete-files',
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
