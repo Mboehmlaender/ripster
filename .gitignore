@@ -79,8 +79,12 @@ Thumbs.db
 # ----------------------------
 # Scripts
 # ----------------------------
-deploy-ripster.sh
-build-handbrake-nvdec.sh
-gitea-setup.sh
-gitea_install.sh
 /scripts/
+/deploy-ripster.sh
+/setup.sh
+/install.sh
+/install-dev.sh
+/build-handbrake-nvdec.sh
+/gitea_setup.sh
+/gitea_install.sh
+/release.sh
