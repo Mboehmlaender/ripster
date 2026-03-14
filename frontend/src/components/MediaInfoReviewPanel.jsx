@@ -673,6 +673,11 @@ function TrackList({
             const actionInfo = type === 'audio'
               ? (checked
                 ? (() => {
+                  // When encoder comes from user preset extraArgs, always recompute
+                  // (server-stored summary reflects a different/default preset)
+                  if (audioSelector?.encoderSource === 'args') {
+                    return buildAudioActionPreviewSummary(track, selectedIndex, audioSelector);
+                  }
                   const base = String(track.encodePreviewSummary || track.encodeActionSummary || '').trim();
                   const staleUnselectedSummary = /^nicht übernommen$/i.test(base);
                   if (staleUnselectedSummary) {
