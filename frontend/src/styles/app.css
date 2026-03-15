@@ -200,6 +200,63 @@ body {
   margin: 1rem auto 2rem;
 }
 
+.app-upload-banner {
+  width: min(1280px, 96vw);
+  margin: 0.9rem auto 0;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.7rem;
+  background: linear-gradient(135deg, rgba(255, 250, 241, 0.96), rgba(250, 237, 210, 0.92));
+  box-shadow: 0 10px 24px rgba(58, 29, 18, 0.08);
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+}
+
+.app-upload-banner.phase-error {
+  border-color: #d8a19a;
+  background: linear-gradient(135deg, #fff8f5, #f9e1dc);
+}
+
+.app-upload-banner.phase-completed {
+  border-color: #a7cda5;
+  background: linear-gradient(135deg, #f8fff7, #e8f3de);
+}
+
+.app-upload-banner-copy,
+.app-upload-banner-progress {
+  min-width: 0;
+  display: grid;
+  gap: 0.22rem;
+}
+
+.app-upload-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.app-upload-banner-copy small,
+.app-upload-banner-progress small {
+  color: var(--rip-muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.app-upload-banner-progress .p-progressbar {
+  height: 0.52rem;
+  background: rgba(111, 57, 34, 0.12);
+}
+
+.app-upload-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  justify-self: end;
+}
+
 .page-grid {
   display: grid;
   gap: 1rem;
@@ -969,6 +1026,53 @@ body {
 .dashboard-job-row-progress small {
   color: var(--rip-muted);
   white-space: normal;
+}
+
+.audiobook-upload-status {
+  margin-top: 0.8rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--rip-border);
+  border-radius: 0.55rem;
+  background: var(--rip-panel-soft);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.audiobook-upload-status.tone-warning {
+  border-color: #d9b26d;
+  background: #fff7e8;
+}
+
+.audiobook-upload-status.tone-info {
+  border-color: #c7b086;
+  background: #fbf5ea;
+}
+
+.audiobook-upload-status.tone-success {
+  border-color: #9cc7a1;
+  background: #f5fbf3;
+}
+
+.audiobook-upload-status.tone-danger {
+  border-color: #d8a19a;
+  background: #fff6f3;
+}
+
+.audiobook-upload-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.audiobook-upload-file {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.audiobook-upload-progress {
+  margin-top: 0.15rem;
 }
 
 .dashboard-job-badges {
@@ -2539,6 +2643,16 @@ body {
     padding: 0.8rem 1rem;
   }
 
+  .app-upload-banner {
+    width: calc(100% - 1.5rem);
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .app-upload-banner-actions {
+    justify-self: start;
+  }
+
   .brand-logo {
     width: 60px;
     height: 60px;
@@ -2674,6 +2788,11 @@ body {
 @media (max-width: 640px) {
   .app-main {
     width: min(1280px, 98vw);
+  }
+
+  .app-upload-banner {
+    width: min(1280px, 98vw);
+    padding: 0.75rem 0.8rem;
   }
 
   .hardware-storage-head {

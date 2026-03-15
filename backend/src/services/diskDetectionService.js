@@ -191,6 +191,7 @@ class DiskDetectionService extends EventEmitter {
     this.lastDetected = null;
     this.lastPresent = false;
     this.deviceLocks = new Map();
+    this.pollingSuspended = false;
   }
 
   start() {
@@ -211,6 +212,20 @@ class DiskDetectionService extends EventEmitter {
     logger.info('stop');
   }
 
+  suspendPolling() {
+    if (!this.pollingSuspended) {
+      this.pollingSuspended = true;
+      logger.info('polling:suspended');
+    }
+  }
+
+  resumePolling() {
+    if (this.pollingSuspended) {
+      this.pollingSuspended = false;
+      logger.info('polling:resumed');
+    }
+  }
+
   scheduleNext(delayMs) {
     if (!this.running) {
       return;
@@ -227,9 +242,12 @@ class DiskDetectionService extends EventEmitter {
           driveMode: map.drive_mode,
           driveDevice: map.drive_device,
           nextDelay,
-          autoDetectionEnabled
+          autoDetectionEnabled,
+          suspended: this.pollingSuspended
         });
-        if (autoDetectionEnabled) {
+        if (this.pollingSuspended) {
+          logger.debug('poll:skip:suspended', { nextDelay });
+        } else if (autoDetectionEnabled) {
           const detected = await this.detectDisc(map);
           this.applyDetectionResult(detected, { forceInsertEvent: false });
         } else {

@@ -111,6 +111,123 @@ async function request(path, options = {}) {
   return response.text();
 }
 
+async function requestWithXhr(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const method = String(options?.method || 'GET').trim().toUpperCase() || 'GET';
+    const url = `${API_BASE}${path}`;
+    const headers = options?.headers && typeof options.headers === 'object' ? options.headers : {};
+    const signal = options?.signal;
+    const onUploadProgress = typeof options?.onUploadProgress === 'function'
+      ? options.onUploadProgress
+      : null;
+
+    let finished = false;
+    let abortListener = null;
+
+    const cleanup = () => {
+      if (signal && abortListener) {
+        signal.removeEventListener('abort', abortListener);
+      }
+    };
+
+    const settle = (callback) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      callback();
+    };
+
+    xhr.open(method, url, true);
+    xhr.responseType = 'text';
+
+    Object.entries(headers).forEach(([key, value]) => {
+      if (value == null) {
+        return;
+      }
+      xhr.setRequestHeader(key, String(value));
+    });
+
+    if (onUploadProgress && xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        const loaded = Number(event?.loaded || 0);
+        const total = Number(event?.total || 0);
+        const hasKnownTotal = Boolean(event?.lengthComputable && total > 0);
+        onUploadProgress({
+          loaded,
+          total: hasKnownTotal ? total : null,
+          percent: hasKnownTotal ? (loaded / total) * 100 : null
+        });
+      };
+    }
+
+    xhr.onerror = () => {
+      settle(() => {
+        reject(new Error('Netzwerkfehler'));
+      });
+    };
+
+    xhr.onabort = () => {
+      settle(() => {
+        const error = new Error('Request abgebrochen.');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    };
+
+    xhr.onload = () => {
+      settle(() => {
+        const contentType = xhr.getResponseHeader('content-type') || '';
+        const rawText = xhr.responseText || '';
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          let errorPayload = null;
+          let message = `HTTP ${xhr.status}`;
+          try {
+            errorPayload = rawText ? JSON.parse(rawText) : null;
+            message = errorPayload?.error?.message || message;
+          } catch (_error) {
+            // ignore parse errors
+          }
+          const error = new Error(message);
+          error.status = xhr.status;
+          error.details = errorPayload?.error?.details || null;
+          reject(error);
+          return;
+        }
+
+        if (contentType.includes('application/json')) {
+          try {
+            resolve(rawText ? JSON.parse(rawText) : {});
+          } catch (_error) {
+            reject(new Error('Ungültige JSON-Antwort vom Server.'));
+          }
+          return;
+        }
+
+        resolve(rawText);
+      });
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      abortListener = () => {
+        if (!finished) {
+          xhr.abort();
+        }
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
+
+    xhr.send(options?.body ?? null);
+  });
+}
+
 export const api = {
   getSettings(options = {}) {
     return requestCachedGet('/settings', {
@@ -303,7 +420,7 @@ export const api = {
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;
   },
-  async uploadAudiobook(file, payload = {}) {
+  async uploadAudiobook(file, payload = {}, options = {}) {
     const formData = new FormData();
     if (file) {
       formData.append('file', file);
@@ -314,9 +431,11 @@ export const api = {
     if (payload?.startImmediately !== undefined) {
       formData.append('startImmediately', String(payload.startImmediately));
     }
-    const result = await request('/pipeline/audiobook/upload', {
+    const result = await requestWithXhr('/pipeline/audiobook/upload', {
       method: 'POST',
-      body: formData
+      body: formData,
+      signal: options?.signal,
+      onUploadProgress: options?.onProgress
     });
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;

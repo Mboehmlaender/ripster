@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Card } from 'primereact/card';
 import { DataView, DataViewLayoutOptions } from 'primereact/dataview';
 import { InputText } from 'primereact/inputtext';
@@ -347,6 +348,8 @@ function formatDateTime(value) {
 }
 
 export default function HistoryPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -435,6 +438,17 @@ export default function HistoryPage() {
 
     return () => clearTimeout(timer);
   }, [search, status]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const openJobId = Number(params.get('open') || 0);
+    if (!openJobId) {
+      return;
+    }
+    // URL-Parameter entfernen, dann Job-Modal öffnen
+    navigate('/history', { replace: true });
+    openDetail({ id: openJobId });
+  }, [location.search]);
 
   const onSortChange = (event) => {
     const value = String(event.value || '').trim();

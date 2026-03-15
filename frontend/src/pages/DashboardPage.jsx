@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Toast } from 'primereact/toast';
 import { Card } from 'primereact/card';
 import { Button } from 'primereact/button';
@@ -18,6 +19,7 @@ import otherIndicatorIcon from '../assets/media-other.svg';
 import { getStatusLabel, getStatusSeverity, normalizeStatus } from '../utils/statusPresentation';
 
 const processingStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING'];
+const driveActiveStates = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'CD_ANALYZING', 'CD_RIPPING'];
 const dashboardStatuses = new Set([
   'ANALYZING',
   'METADATA_SELECTION',
@@ -749,8 +751,14 @@ export default function DashboardPage({
   pipeline,
   hardwareMonitoring,
   lastDiscEvent,
-  refreshPipeline
+  refreshPipeline,
+  audiobookUpload,
+  onAudiobookUpload,
+  jobsRefreshToken,
+  pendingExpandedJobId,
+  onPendingExpandedJobHandled
 }) {
+  const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [busyJobIds, setBusyJobIds] = useState(() => new Set());
   const setJobBusy = (jobId, isBusy) => {
@@ -767,6 +775,7 @@ export default function DashboardPage({
   const [metadataDialogVisible, setMetadataDialogVisible] = useState(false);
   const [metadataDialogContext, setMetadataDialogContext] = useState(null);
   const [metadataDialogReassignMode, setMetadataDialogReassignMode] = useState(false);
+  const [duplicateJobDialog, setDuplicateJobDialog] = useState({ visible: false, existingJob: null, pendingPayload: null });
   const [cdMetadataDialogVisible, setCdMetadataDialogVisible] = useState(false);
   const [cdMetadataDialogContext, setCdMetadataDialogContext] = useState(null);
   const [cdRipPanelJobId, setCdRipPanelJobId] = useState(null);
@@ -790,7 +799,6 @@ export default function DashboardPage({
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
   const [audiobookUploadFile, setAudiobookUploadFile] = useState(null);
-  const [audiobookUploadBusy, setAudiobookUploadBusy] = useState(false);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [expandedQueueScriptKeys, setExpandedQueueScriptKeys] = useState(() => new Set());
   const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
@@ -825,6 +833,34 @@ export default function DashboardPage({
   }, [storageMetrics]);
   const cpuPerCoreMetrics = Array.isArray(cpuMetrics?.perCore) ? cpuMetrics.perCore : [];
   const gpuDevices = Array.isArray(gpuMetrics?.devices) ? gpuMetrics.devices : [];
+  const audiobookUploadPhase = String(audiobookUpload?.phase || 'idle').trim().toLowerCase();
+  const audiobookUploadBusy = audiobookUploadPhase === 'uploading' || audiobookUploadPhase === 'processing';
+  const audiobookUploadProgress = Number.isFinite(Number(audiobookUpload?.progressPercent))
+    ? Math.max(0, Math.min(100, Number(audiobookUpload.progressPercent)))
+    : 0;
+  const audiobookUploadLoadedBytes = Number(audiobookUpload?.loadedBytes || 0);
+  const audiobookUploadTotalBytes = Number(audiobookUpload?.totalBytes || 0);
+  const audiobookUploadFileName = String(audiobookUpload?.fileName || '').trim()
+    || String(audiobookUploadFile?.name || '').trim()
+    || null;
+  const audiobookUploadStatusTone = audiobookUploadPhase === 'error'
+    ? 'danger'
+    : audiobookUploadPhase === 'completed'
+      ? 'success'
+      : audiobookUploadPhase === 'processing'
+        ? 'info'
+        : audiobookUploadPhase === 'uploading'
+          ? 'warning'
+          : 'secondary';
+  const audiobookUploadStatusLabel = audiobookUploadPhase === 'uploading'
+    ? 'Upload läuft'
+    : audiobookUploadPhase === 'processing'
+      ? 'Server verarbeitet'
+      : audiobookUploadPhase === 'completed'
+        ? 'Bereit'
+        : audiobookUploadPhase === 'error'
+          ? 'Fehler'
+          : 'Inaktiv';
 
   const loadDashboardJobs = async () => {
     setJobsLoading(true);
@@ -913,7 +949,20 @@ export default function DashboardPage({
 
   useEffect(() => {
     void loadDashboardJobs();
-  }, [pipeline?.state, pipeline?.activeJobId, pipeline?.context?.jobId]);
+  }, [pipeline?.state, pipeline?.activeJobId, pipeline?.context?.jobId, jobsRefreshToken]);
+
+  useEffect(() => {
+    const requestedJobId = normalizeJobId(pendingExpandedJobId);
+    if (!requestedJobId) {
+      return;
+    }
+    const hasRequestedJob = dashboardJobs.some((job) => normalizeJobId(job?.id) === requestedJobId);
+    if (!hasRequestedJob) {
+      return;
+    }
+    setExpandedJobId(requestedJobId);
+    onPendingExpandedJobHandled?.(requestedJobId);
+  }, [pendingExpandedJobId, dashboardJobs, onPendingExpandedJobHandled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1128,22 +1177,6 @@ export default function DashboardPage({
   };
 
   const handleReanalyze = async () => {
-    const hasActiveJob = Boolean(pipeline?.context?.jobId || pipeline?.activeJobId);
-    if (state === 'ENCODING') {
-      const confirmed = window.confirm(
-        'Laufendes Encoding bleibt aktiv. Neue Disk jetzt als separaten Job analysieren?'
-      );
-      if (!confirmed) {
-        return;
-      }
-    } else if (hasActiveJob && !['IDLE', 'DISC_DETECTED', 'FINISHED'].includes(state)) {
-      const confirmed = window.confirm(
-        'Aktuellen Ablauf verwerfen und die Disk ab der ersten MakeMKV-Analyse neu starten?'
-      );
-      if (!confirmed) {
-        return;
-      }
-    }
     await handleAnalyze();
   };
 
@@ -1335,31 +1368,20 @@ export default function DashboardPage({
       showError(new Error('Bitte zuerst eine AAX-Datei auswählen.'));
       return;
     }
-    setAudiobookUploadBusy(true);
     try {
-      const response = await api.uploadAudiobook(audiobookUploadFile, { startImmediately: false });
-      const result = getQueueActionResult(response);
+      const response = await onAudiobookUpload?.(audiobookUploadFile, { startImmediately: false });
       const uploadedJobId = normalizeJobId(response?.result?.jobId);
-      await refreshPipeline();
-      await loadDashboardJobs();
-      if (result.queued) {
-        showQueuedToast(toastRef, 'Audiobook', result);
-      } else {
+      if (uploadedJobId) {
         toastRef.current?.show({
           severity: 'success',
           summary: 'Audiobook importiert',
-          detail: uploadedJobId ? `Job #${uploadedJobId} wurde angelegt.` : 'Audiobook wurde importiert.',
+          detail: `Job #${uploadedJobId} wurde angelegt und wird geoeffnet.`,
           life: 3200
         });
-      }
-      if (uploadedJobId) {
-        setExpandedJobId(uploadedJobId);
       }
       setAudiobookUploadFile(null);
     } catch (error) {
       showError(error);
-    } finally {
-      setAudiobookUploadBusy(false);
     }
   };
 
@@ -1626,7 +1648,7 @@ export default function DashboardPage({
     }
   };
 
-  const handleMetadataSubmit = async (payload) => {
+  const doSelectMetadata = async (payload) => {
     setBusy(true);
     try {
       if (metadataDialogReassignMode) {
@@ -1644,6 +1666,51 @@ export default function DashboardPage({
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleMetadataSubmit = async (payload) => {
+    if (metadataDialogReassignMode) {
+      await doSelectMetadata(payload);
+      return;
+    }
+
+    // Duplikatprüfung: nur bei OMDB-Auswahl mit imdbId sinnvoll
+    const searchTitle = payload.title || '';
+    const searchImdbId = payload.imdbId || null;
+    if (searchTitle) {
+      try {
+        const currentJobMediaProfile = String(effectiveMetadataDialogContext?.mediaProfile || '').trim().toLowerCase();
+        const historyResponse = await api.getJobs({ search: searchTitle, limit: 50, lite: true });
+        const historyJobs = Array.isArray(historyResponse?.jobs) ? historyResponse.jobs : [];
+        const duplicate = historyJobs.find((job) => {
+          if (normalizeJobId(job.id) === normalizeJobId(payload.jobId)) {
+            return false; // aktueller Job selbst
+          }
+          // Gleicher Titel / imdbId?
+          const titleMatch = searchImdbId
+            ? (job.imdb_id && job.imdb_id === searchImdbId)
+            : (String(job.title || '').toLowerCase() === searchTitle.toLowerCase());
+          if (!titleMatch) {
+            return false;
+          }
+          // Gleiches Medium? Verschiedene Medien (DVD vs. Bluray) → kein Duplikat
+          if (!currentJobMediaProfile || currentJobMediaProfile === 'other') {
+            return false;
+          }
+          const jobMediaType = resolveMediaType(job);
+          return jobMediaType === currentJobMediaProfile;
+        });
+
+        if (duplicate) {
+          setDuplicateJobDialog({ visible: true, existingJob: duplicate, pendingPayload: payload });
+          return;
+        }
+      } catch (_error) {
+        // Bei Fehler einfach fortfahren
+      }
+    }
+
+    await doSelectMetadata(payload);
   };
 
   const handleMusicBrainzSearch = async (query) => {
@@ -1711,9 +1778,9 @@ export default function DashboardPage({
   };
 
   const device = lastDiscEvent || pipeline?.context?.device;
-  const canReanalyze = state === 'ENCODING'
-    ? Boolean(device)
-    : !processingStates.includes(state);
+  const isDriveActive = driveActiveStates.includes(state);
+  const canRescan = !isDriveActive;
+  const canReanalyze = !isDriveActive && (state === 'ENCODING' ? Boolean(device) : !processingStates.includes(state));
   const canOpenMetadataModal = Boolean(defaultMetadataDialogContext?.jobId);
   const queueRunningJobs = Array.isArray(queueState?.runningJobs) ? queueState.runningJobs : [];
   const queuedJobs = Array.isArray(queueState?.queuedJobs) ? queueState.queuedJobs : [];
@@ -2066,9 +2133,36 @@ export default function DashboardPage({
             disabled={!audiobookUploadFile}
           />
         </div>
+        {audiobookUploadPhase !== 'idle' ? (
+          <div className={`audiobook-upload-status tone-${audiobookUploadStatusTone}`}>
+            <div className="audiobook-upload-status-head">
+              <strong>{audiobookUploadStatusLabel}</strong>
+              <Tag value={audiobookUploadStatusLabel} severity={audiobookUploadStatusTone} />
+            </div>
+            {audiobookUpload?.statusText ? <small>{audiobookUpload.statusText}</small> : null}
+            {audiobookUploadFileName ? (
+              <small className="audiobook-upload-file" title={audiobookUploadFileName}>
+                Datei: {audiobookUploadFileName}
+              </small>
+            ) : null}
+            <div
+              className="dashboard-job-row-progress audiobook-upload-progress"
+              aria-label={`Audiobook Upload ${Math.round(audiobookUploadProgress)} Prozent`}
+            >
+              <ProgressBar value={audiobookUploadProgress} showValue={false} />
+              <small>
+                {audiobookUploadPhase === 'processing'
+                  ? '100% | Upload fertig, Job wird vorbereitet ...'
+                  : audiobookUploadTotalBytes > 0
+                    ? `${Math.round(audiobookUploadProgress)}% | ${formatBytes(audiobookUploadLoadedBytes)} / ${formatBytes(audiobookUploadTotalBytes)}`
+                    : `${Math.round(audiobookUploadProgress)}%`}
+              </small>
+            </div>
+          </div>
+        ) : null}
         <small>
-          {audiobookUploadFile
-            ? `Ausgewählt: ${audiobookUploadFile.name}`
+          {audiobookUploadFileName && audiobookUploadPhase === 'idle'
+            ? `Ausgewählt: ${audiobookUploadFileName}`
             : 'Unterstützt im MVP: AAX-Upload. Danach erscheint ein eigener Audiobook-Startschritt mit Format- und Qualitätswahl.'}
         </small>
       </Card>
@@ -2607,6 +2701,7 @@ export default function DashboardPage({
             severity="secondary"
             onClick={handleRescan}
             loading={busy}
+            disabled={!canRescan}
           />
           <Button
             label="Disk neu analysieren"
@@ -2671,6 +2766,40 @@ export default function DashboardPage({
         onFetchRelease={handleMusicBrainzReleaseFetch}
         busy={busy}
       />
+
+      <Dialog
+        header="Titel bereits in der Historie"
+        visible={duplicateJobDialog.visible}
+        onHide={() => setDuplicateJobDialog({ visible: false, existingJob: null, pendingPayload: null })}
+        style={{ width: '30rem', maxWidth: '96vw' }}
+        modal
+      >
+        <p>
+          <strong>{duplicateJobDialog.existingJob?.title || duplicateJobDialog.pendingPayload?.title}</strong> ist bereits als Job #{duplicateJobDialog.existingJob?.id} in der Historie vorhanden.
+        </p>
+        <p>Neuen Job anlegen oder mit dem vorhandenen Eintrag weiterarbeiten?</p>
+        <div className="dialog-actions">
+          <Button
+            label="Vorhandenen Job öffnen"
+            icon="pi pi-history"
+            onClick={() => {
+              const jobId = duplicateJobDialog.existingJob?.id;
+              setDuplicateJobDialog({ visible: false, existingJob: null, pendingPayload: null });
+              navigate(`/history?open=${jobId}`);
+            }}
+          />
+          <Button
+            label="Neuen Job anlegen"
+            severity="secondary"
+            outlined
+            onClick={async () => {
+              const payload = duplicateJobDialog.pendingPayload;
+              setDuplicateJobDialog({ visible: false, existingJob: null, pendingPayload: null });
+              await doSelectMetadata(payload);
+            }}
+          />
+        </div>
+      </Dialog>
 
       <Dialog
         header={cancelCleanupDialog?.target === 'raw' ? 'Rip abgebrochen' : 'Encode abgebrochen'}

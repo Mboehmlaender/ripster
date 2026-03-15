@@ -5094,6 +5094,13 @@ class PipelineService extends EventEmitter {
       statusText: this.snapshot.statusText
     });
 
+    const DRIVE_ACTIVE_STATES = new Set(['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'CD_ANALYZING', 'CD_RIPPING']);
+    if (DRIVE_ACTIVE_STATES.has(state)) {
+      diskDetectionService.suspendPolling();
+    } else if (DRIVE_ACTIVE_STATES.has(previous)) {
+      diskDetectionService.resumePolling();
+    }
+
     await this.persistSnapshot();
     const snapshotPayload = this.getSnapshot();
     wsService.broadcast('PIPELINE_STATE_CHANGED', snapshotPayload);
