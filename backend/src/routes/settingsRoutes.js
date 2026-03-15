@@ -385,4 +385,19 @@ router.get(
   })
 );
 
+router.post(
+  '/activation-bytes',
+  asyncHandler(async (req, res) => {
+    const { checksum, activationBytes } = req.body || {};
+    if (!checksum || !activationBytes) {
+      const error = new Error('checksum und activationBytes sind erforderlich');
+      error.statusCode = 400;
+      throw error;
+    }
+    logger.debug('post:settings:activation-bytes', { reqId: req.reqId, checksum });
+    const saved = await activationBytesService.saveActivationBytes(checksum, activationBytes);
+    res.json({ success: true, checksum, activationBytes: saved });
+  })
+);
+
 module.exports = router;

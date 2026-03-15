@@ -10947,25 +10947,22 @@ class PipelineService extends EventEmitter {
         stagedRawFilePath
       });
 
-      // Activation Bytes: erst Cache prüfen, dann einmalig Azure-API anfragen und persistent speichern
+      // Activation Bytes: Cache prüfen und Checksum am Job speichern
+      let aaxChecksum = null;
+      let aaxNeedsActivationBytes = false;
       try {
-        const { checksum, activationBytes, source } = await activationBytesService.resolveActivationBytes(stagedRawFilePath);
-        await historyService.appendLog(
-          job.id,
-          'SYSTEM',
-          `Activation Bytes aufgelöst (${source}): checksum=${checksum} bytes=${activationBytes}`
-        );
-        logger.info('audiobook:upload:activation-bytes', { jobId: job.id, checksum, activationBytes, source });
+        const abResult = await activationBytesService.resolveActivationBytes(stagedRawFilePath);
+        aaxChecksum = abResult.checksum;
+        await historyService.updateJob(job.id, { aax_checksum: aaxChecksum });
+        if (abResult.activationBytes) {
+          await historyService.appendLog(job.id, 'SYSTEM', `Activation Bytes im Cache gefunden: checksum=${abResult.checksum}`);
+          logger.info('audiobook:upload:activation-bytes', { jobId: job.id, checksum: abResult.checksum, source: 'cache' });
+        } else {
+          aaxNeedsActivationBytes = true;
+          logger.info('audiobook:upload:activation-bytes-needed', { jobId: job.id, checksum: abResult.checksum });
+        }
       } catch (abError) {
-        logger.warn('audiobook:upload:activation-bytes-failed', {
-          jobId: job.id,
-          error: errorToMeta(abError)
-        });
-        await historyService.appendLog(
-          job.id,
-          'SYSTEM',
-          `Activation Bytes konnten nicht aufgelöst werden: ${abError?.message || 'unknown'}`
-        ).catch(() => {});
+        logger.warn('audiobook:upload:activation-bytes-failed', { jobId: job.id, error: errorToMeta(abError) });
       }
 
       let detectedAsin = null;
@@ -11104,7 +11101,8 @@ class PipelineService extends EventEmitter {
           jobId: job.id,
           started: false,
           queued: false,
-          stage: 'READY_TO_START'
+          stage: 'READY_TO_START',
+          ...(aaxNeedsActivationBytes ? { needsActivationBytes: true, checksum: aaxChecksum } : {})
         };
       }
 
@@ -11401,6 +11399,22 @@ class PipelineService extends EventEmitter {
 
     let temporaryChapterMetadataPath = null;
 
+    // Activation Bytes für AAX-Dateien aus Cache lesen
+    let encodeActivationBytes = null;
+    if (path.extname(inputPath).toLowerCase() === '.aax') {
+      try {
+        const abResult = await activationBytesService.resolveActivationBytes(inputPath);
+        encodeActivationBytes = abResult.activationBytes || null;
+        if (!encodeActivationBytes) {
+          throw new Error('Activation Bytes nicht im Cache – bitte zuerst über den Upload-Dialog eintragen');
+        }
+        logger.info('audiobook:encode:activation-bytes', { jobId, checksum: abResult.checksum });
+      } catch (abError) {
+        logger.error('audiobook:encode:activation-bytes-failed', { jobId, error: errorToMeta(abError) });
+        throw abError;
+      }
+    }
+
     try {
       let ffmpegRunInfo = null;
       if (isSplitOutput) {
@@ -11451,7 +11465,8 @@ class PipelineService extends EventEmitter {
             formatOptions,
             metadata,
             chapter,
-            outputFiles.length
+            outputFiles.length,
+            { activationBytes: encodeActivationBytes }
           );
           const baseParser = audiobookService.buildProgressParser(chapter?.durationMs || 0);
           const scaledParser = baseParser
@@ -11525,7 +11540,8 @@ class PipelineService extends EventEmitter {
           formatOptions,
           {
             chapterMetadataPath: temporaryChapterMetadataPath,
-            metadata
+            metadata,
+            activationBytes: encodeActivationBytes
           }
         );
         logger.info('audiobook:encode:command', { jobId, cmd: ffmpegConfig.cmd, args: ffmpegConfig.args });

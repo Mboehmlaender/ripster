@@ -47,6 +47,7 @@ CREATE TABLE jobs (
   encode_plan_json TEXT,
   encode_input_path TEXT,
   encode_review_confirmed INTEGER DEFAULT 0,
+  aax_checksum TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (parent_job_id) REFERENCES jobs(id) ON DELETE SET NULL

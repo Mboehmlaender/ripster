@@ -7,6 +7,8 @@ const pipelineService = require('../services/pipelineService');
 const diskDetectionService = require('../services/diskDetectionService');
 const hardwareMonitorService = require('../services/hardwareMonitorService');
 const logger = require('../services/logger').child('PIPELINE_ROUTE');
+const activationBytesService = require('../services/activationBytesService');
+const { getDb } = require('../db/database');
 
 const router = express.Router();
 const audiobookUpload = multer({
@@ -152,6 +154,25 @@ router.post(
       startImmediately: req.body?.startImmediately
     });
     res.json({ result });
+  })
+);
+
+router.get(
+  '/audiobook/pending-activation',
+  asyncHandler(async (req, res) => {
+    const db = await getDb();
+    // Jobs die eine Checksum haben, aber noch keine Activation Bytes im Cache
+    const pending = await db.all(`
+      SELECT j.id AS jobId, j.aax_checksum AS checksum
+      FROM jobs j
+      WHERE j.aax_checksum IS NOT NULL
+        AND j.status NOT IN ('DONE', 'ERROR', 'CANCELLED')
+        AND NOT EXISTS (
+          SELECT 1 FROM aax_activation_bytes ab WHERE ab.checksum = j.aax_checksum
+        )
+      ORDER BY j.created_at DESC
+    `);
+    res.json({ pending });
   })
 );
 

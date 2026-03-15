@@ -247,6 +247,17 @@ export const api = {
       forceRefresh: options.forceRefresh ?? true
     });
   },
+  async saveActivationBytes(checksum, activationBytes) {
+    const result = await request('/settings/activation-bytes', {
+      method: 'POST',
+      body: JSON.stringify({ checksum, activationBytes })
+    });
+    afterMutationInvalidate(['/settings/activation-bytes']);
+    return result;
+  },
+  getPendingActivation() {
+    return request('/pipeline/audiobook/pending-activation');
+  },
   getHandBrakePresets(options = {}) {
     return requestCachedGet('/settings/handbrake-presets', {
       ttlMs: 10 * 60 * 1000,

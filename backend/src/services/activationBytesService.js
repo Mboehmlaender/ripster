@@ -1,13 +1,11 @@
 const fs = require('fs');
 const crypto = require('crypto');
-const https = require('https');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('ActivationBytes');
 
 const FIXED_KEY = Buffer.from([0x77, 0x21, 0x4d, 0x4b, 0x19, 0x6a, 0x87, 0xcd, 0x52, 0x00, 0x45, 0xfd, 0x20, 0xa5, 0x1d, 0x67]);
 const AAX_CHECKSUM_OFFSET = 653;
 const AAX_CHECKSUM_LENGTH = 20;
-const AUDIBLE_TOOLS_API = 'https://aaxapiserverfunction20220831180001.azurewebsites.net';
 
 function sha1(data) {
   return crypto.createHash('sha1').update(data).digest();
@@ -41,69 +39,36 @@ async function lookupCached(checksum) {
   return row ? row.activation_bytes : null;
 }
 
-async function saveToCache(checksum, activationBytes) {
+async function saveActivationBytes(checksum, activationBytesHex) {
+  const normalized = String(activationBytesHex || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(normalized)) {
+    throw new Error('Activation Bytes müssen genau 8 Hex-Zeichen (4 Bytes) sein');
+  }
+  if (!verifyActivationBytes(normalized, checksum)) {
+    throw new Error('Activation Bytes passen nicht zur Checksum – bitte nochmals prüfen');
+  }
   const db = await getDb();
   await db.run(
-    'INSERT OR IGNORE INTO aax_activation_bytes (checksum, activation_bytes) VALUES (?, ?)',
+    'INSERT OR REPLACE INTO aax_activation_bytes (checksum, activation_bytes) VALUES (?, ?)',
     checksum,
-    activationBytes
+    normalized
   );
-}
-
-function fetchFromApi(checksum) {
-  return new Promise((resolve, reject) => {
-    const url = `${AUDIBLE_TOOLS_API}/api/v2/activation/${checksum}`;
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error('Ungültige API-Antwort'));
-        }
-      });
-    }).on('error', reject);
-  });
+  logger.info({ checksum, activationBytes: normalized }, 'Activation Bytes manuell gespeichert');
+  return normalized;
 }
 
 async function resolveActivationBytes(filePath) {
   const checksum = readAaxChecksum(filePath);
   logger.info({ checksum }, 'AAX Checksum gelesen');
 
-  // 1. Cache prüfen
   const cached = await lookupCached(checksum);
   if (cached) {
     logger.info({ checksum }, 'Activation Bytes aus lokalem Cache');
-    return { checksum, activationBytes: cached, source: 'cache' };
+    return { checksum, activationBytes: cached };
   }
 
-  // 2. Audible-Tools API anfragen
-  logger.info({ checksum }, 'Frage Audible-Tools API an...');
-  let activationBytes = null;
-  try {
-    const result = await fetchFromApi(checksum);
-    if (result.success === true && result.activationBytes) {
-      if (verifyActivationBytes(result.activationBytes, checksum)) {
-        activationBytes = result.activationBytes;
-        logger.info({ checksum, activationBytes }, 'Activation Bytes via API verifiziert');
-      } else {
-        logger.warn({ checksum }, 'API-Antwort konnte nicht verifiziert werden');
-      }
-    } else {
-      logger.warn({ checksum }, 'Checksum der API unbekannt');
-    }
-  } catch (err) {
-    logger.warn({ checksum, err: err.message }, 'API nicht erreichbar');
-  }
-
-  if (!activationBytes) {
-    throw new Error(`Activation Bytes für Checksum ${checksum} nicht gefunden (API unbekannt oder nicht erreichbar)`);
-  }
-
-  // 3. Lokal cachen
-  await saveToCache(checksum, activationBytes);
-  return { checksum, activationBytes, source: 'api' };
+  logger.info({ checksum }, 'Keine Activation Bytes im Cache – manuelle Eingabe erforderlich');
+  return { checksum, activationBytes: null };
 }
 
 async function listCachedEntries() {
@@ -111,4 +76,4 @@ async function listCachedEntries() {
   return db.all('SELECT checksum, activation_bytes, created_at FROM aax_activation_bytes ORDER BY created_at DESC');
 }
 
-module.exports = { resolveActivationBytes, readAaxChecksum, listCachedEntries };
+module.exports = { resolveActivationBytes, readAaxChecksum, saveActivationBytes, verifyActivationBytes, listCachedEntries };

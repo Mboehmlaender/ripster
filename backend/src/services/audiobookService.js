@@ -618,6 +618,7 @@ function buildEncodeCommand(ffmpegCommand, inputPath, outputPath, outputFormat =
   const extra = options && typeof options === 'object' ? options : {};
   const commonArgs = [
     '-y',
+    ...(extra.activationBytes ? ['-activation_bytes', extra.activationBytes] : []),
     '-i', inputPath
   ];
   if (extra.chapterMetadataPath) {
@@ -657,11 +658,13 @@ function buildChapterEncodeCommand(
   formatOptions = {},
   metadata = {},
   chapter = {},
-  chapterTotal = 1
+  chapterTotal = 1,
+  options = {}
 ) {
   const cmd = String(ffmpegCommand || 'ffmpeg').trim() || 'ffmpeg';
   const format = normalizeOutputFormat(outputFormat);
   const normalizedOptions = normalizeFormatOptions(format, formatOptions);
+  const extra = options && typeof options === 'object' ? options : {};
   const safeChapter = normalizeChapterList([chapter], {
     durationMs: metadata?.durationMs,
     fallbackTitle: metadata?.title || 'Kapitel',
@@ -679,6 +682,7 @@ function buildChapterEncodeCommand(
     cmd,
     args: [
       '-y',
+      ...(extra.activationBytes ? ['-activation_bytes', extra.activationBytes] : []),
       '-i', inputPath,
       '-ss', formatSecondsArg(safeChapter?.startSeconds),
       '-t', formatSecondsArg(durationSeconds),

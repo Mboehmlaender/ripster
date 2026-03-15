@@ -7,6 +7,7 @@ import { Tag } from 'primereact/tag';
 import { ProgressBar } from 'primereact/progressbar';
 import { Dialog } from 'primereact/dialog';
 import { InputNumber } from 'primereact/inputnumber';
+import { InputText } from 'primereact/inputtext';
 import { api } from '../api/client';
 import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
@@ -805,6 +806,10 @@ export default function DashboardPage({
   const [dashboardJobs, setDashboardJobs] = useState([]);
   const [expandedJobId, setExpandedJobId] = useState(undefined);
   const [audiobookUploadFile, setAudiobookUploadFile] = useState(null);
+  const [activationBytesDialog, setActivationBytesDialog] = useState({ visible: false, checksum: null, jobId: null });
+  const [activationBytesInput, setActivationBytesInput] = useState('');
+  const [activationBytesBusy, setActivationBytesBusy] = useState(false);
+  const [pendingActivationJobIds, setPendingActivationJobIds] = useState(() => new Set());
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [expandedQueueScriptKeys, setExpandedQueueScriptKeys] = useState(() => new Set());
   const [queueCatalog, setQueueCatalog] = useState({ scripts: [], chains: [] });
@@ -912,6 +917,25 @@ export default function DashboardPage({
       }
 
       setDashboardJobs(deduped);
+
+      // Prüfen ob Audiobook-Jobs auf Activation Bytes warten
+      try {
+        const { pending } = await api.getPendingActivation();
+        if (Array.isArray(pending) && pending.length > 0) {
+          setPendingActivationJobIds(new Set(pending.map((p) => p.jobId)));
+          // Modal automatisch öffnen wenn noch nicht sichtbar
+          setActivationBytesDialog((prev) => {
+            if (prev.visible) return prev;
+            const first = pending[0];
+            setActivationBytesInput('');
+            return { visible: true, checksum: first.checksum, jobId: first.jobId };
+          });
+        } else {
+          setPendingActivationJobIds(new Set());
+        }
+      } catch (_err) {
+        // ignorieren
+      }
     } catch (_error) {
       setDashboardJobs([]);
     } finally {
@@ -1376,8 +1400,12 @@ export default function DashboardPage({
     }
     try {
       const response = await onAudiobookUpload?.(audiobookUploadFile, { startImmediately: false });
-      const uploadedJobId = normalizeJobId(response?.result?.jobId);
-      if (uploadedJobId) {
+      const result = response?.result || {};
+      const uploadedJobId = normalizeJobId(result.jobId);
+      if (result.needsActivationBytes && result.checksum) {
+        setActivationBytesInput('');
+        setActivationBytesDialog({ visible: true, checksum: result.checksum, jobId: uploadedJobId });
+      } else if (uploadedJobId) {
         toastRef.current?.show({
           severity: 'success',
           summary: 'Audiobook importiert',
@@ -1391,9 +1419,40 @@ export default function DashboardPage({
     }
   };
 
+  const handleSaveActivationBytes = async () => {
+    const { checksum, jobId } = activationBytesDialog;
+    const bytes = activationBytesInput.trim().toLowerCase();
+    setActivationBytesBusy(true);
+    try {
+      await api.saveActivationBytes(checksum, bytes);
+      setPendingActivationJobIds(new Set());
+      setActivationBytesDialog({ visible: false, checksum: null, jobId: null });
+      toastRef.current?.show({
+        severity: 'success',
+        summary: 'Activation Bytes gespeichert',
+        detail: jobId ? `Job #${jobId} kann jetzt gestartet werden.` : 'Bytes wurden lokal gespeichert.',
+        life: 4000
+      });
+      await loadDashboardJobs();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setActivationBytesBusy(false);
+    }
+  };
+
   const handleAudiobookStart = async (jobId, audiobookConfig) => {
     const normalizedJobId = normalizeJobId(jobId);
     if (!normalizedJobId) {
+      return;
+    }
+    if (pendingActivationJobIds.has(normalizedJobId)) {
+      setActivationBytesInput('');
+      const pending = await api.getPendingActivation().catch(() => ({ pending: [] }));
+      const entry = (pending?.pending || []).find((p) => p.jobId === normalizedJobId);
+      if (entry) {
+        setActivationBytesDialog({ visible: true, checksum: entry.checksum, jobId: normalizedJobId });
+      }
       return;
     }
     setJobBusy(normalizedJobId, true);
@@ -2604,14 +2663,26 @@ export default function DashboardPage({
                         );
                       }
                       if (isAudiobookJob) {
+                        const needsBytes = pendingActivationJobIds.has(jobId);
                         return (
-                          <AudiobookConfigPanel
-                            pipeline={pipelineForJob}
-                            onStart={(config) => handleAudiobookStart(jobId, config)}
-                            onCancel={() => handleCancel(jobId, jobState)}
-                            onRetry={() => handleRetry(jobId)}
-                            busy={busyJobIds.has(jobId)}
-                          />
+                          <>
+                            {needsBytes && (
+                              <div style={{ padding: '0.75rem 1rem', marginBottom: '0.5rem', background: 'var(--yellow-100)', border: '1px solid var(--yellow-400)', borderRadius: '6px', color: 'var(--yellow-900)', fontSize: '0.875rem' }}>
+                                <i className="pi pi-lock" style={{ marginRight: '0.5rem' }} />
+                                <strong>Activation Bytes fehlen.</strong>{' '}
+                                <button type="button" style={{ background: 'none', border: 'none', color: 'var(--primary-color)', cursor: 'pointer', textDecoration: 'underline', padding: 0 }} onClick={() => handleAudiobookStart(jobId, null)}>
+                                  Jetzt eintragen
+                                </button>
+                              </div>
+                            )}
+                            <AudiobookConfigPanel
+                              pipeline={pipelineForJob}
+                              onStart={(config) => handleAudiobookStart(jobId, config)}
+                              onCancel={() => handleCancel(jobId, jobState)}
+                              onRetry={() => handleRetry(jobId)}
+                              busy={busyJobIds.has(jobId) || needsBytes}
+                            />
+                          </>
                         );
                       }
                       return null;
@@ -2914,6 +2985,62 @@ export default function DashboardPage({
           {queueCatalog.scripts.length === 0 && queueCatalog.chains.length === 0 ? (
             <small className="muted-inline">Keine Skripte oder Ketten konfiguriert. In den Settings anlegen.</small>
           ) : null}
+        </div>
+      </Dialog>
+
+      <Dialog
+        header="Audible Activation Bytes eintragen"
+        visible={activationBytesDialog.visible}
+        onHide={() => setActivationBytesDialog({ visible: false, checksum: null, jobId: null })}
+        style={{ width: '36rem', maxWidth: '96vw' }}
+        modal
+        footer={(
+          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+            <Button label="Abbrechen" severity="secondary" outlined onClick={() => setActivationBytesDialog({ visible: false, checksum: null, jobId: null })} disabled={activationBytesBusy} />
+            <Button label="Speichern" icon="pi pi-check" onClick={() => void handleSaveActivationBytes()} loading={activationBytesBusy} disabled={activationBytesInput.trim().length !== 8} />
+          </div>
+        )}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>Checksum (aus der AAX-Datei)</label>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <InputText
+                value={activationBytesDialog.checksum || ''}
+                readOnly
+                style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem' }}
+              />
+              <Button
+                icon="pi pi-copy"
+                severity="secondary"
+                outlined
+                tooltip="Kopieren"
+                onClick={() => navigator.clipboard.writeText(activationBytesDialog.checksum || '')}
+              />
+            </div>
+          </div>
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.375rem', fontWeight: 600 }}>Activation Bytes (8 Hex-Zeichen)</label>
+            <InputText
+              value={activationBytesInput}
+              onChange={(e) => setActivationBytesInput(e.target.value)}
+              placeholder="z.B. 1a2b3c4d"
+              style={{ width: '100%', fontFamily: 'monospace' }}
+              maxLength={8}
+            />
+          </div>
+          <div style={{ background: 'var(--surface-100)', borderRadius: '6px', padding: '0.875rem', fontSize: '0.875rem', lineHeight: 1.6 }}>
+            <strong>So bekommst du die Activation Bytes:</strong>
+            <ol style={{ margin: '0.5rem 0 0 1.25rem', padding: 0 }}>
+              <li>Öffne <strong>audible-tools.kamsker.at</strong></li>
+              <li>Aktiviere den <strong>Experten-Modus</strong></li>
+              <li>Gib die obige Checksum ein</li>
+              <li>Kopiere die zurückgegebenen Activation Bytes hier rein</li>
+            </ol>
+            <p style={{ margin: '0.5rem 0 0', color: 'var(--text-color-secondary)' }}>
+              Die Bytes werden lokal gespeichert und für alle weiteren AAX-Dateien desselben Accounts wiederverwendet.
+            </p>
+          </div>
         </div>
       </Dialog>
     </div>
