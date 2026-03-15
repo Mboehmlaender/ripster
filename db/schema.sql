@@ -323,8 +323,10 @@ VALUES ('mediainfo_extra_args_dvd', 'Tools', 'Mediainfo Extra Args', 'string', 0
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('mediainfo_extra_args_dvd', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('makemkv_rip_mode_dvd', 'Tools', 'MakeMKV Rip Modus', 'select', 1, 'mkv: direkte MKV-Dateien; backup: vollständige Disc-Struktur im RAW-Ordner.', 'mkv', '[{"label":"MKV","value":"mkv"},{"label":"Backup","value":"backup"}]', '{}', 505);
+VALUES ('makemkv_rip_mode_dvd', 'Tools', 'MakeMKV Rip Modus', 'select', 1, 'backup: vollständige Disc-Struktur im RAW-Ordner (einzig gültige Option für DVDs).', 'backup', '[{"label":"Backup","value":"backup"}]', '{}', 505);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_mode_dvd', 'backup');
+UPDATE settings_schema SET default_value = 'backup', description = 'backup: vollständige Disc-Struktur im RAW-Ordner (einzig gültige Option für DVDs).', options_json = '[{"label":"Backup","value":"backup"}]' WHERE key = 'makemkv_rip_mode_dvd';
+UPDATE settings_values SET value = 'backup' WHERE key = 'makemkv_rip_mode_dvd';
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('makemkv_analyze_extra_args_dvd', 'Tools', 'MakeMKV Analyze Extra Args', 'string', 0, 'Zusätzliche CLI-Parameter für Analyze (DVD).', NULL, '[]', '{}', 510);
