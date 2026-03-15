@@ -370,6 +370,7 @@ export default function HistoryPage({ refreshToken = 0 }) {
   const [deleteEntryPreview, setDeleteEntryPreview] = useState(null);
   const [deleteEntryPreviewLoading, setDeleteEntryPreviewLoading] = useState(false);
   const [deleteEntryTargetBusy, setDeleteEntryTargetBusy] = useState(null);
+  const [downloadBusyTarget, setDownloadBusyTarget] = useState(null);
   const [loading, setLoading] = useState(false);
   const [queuedJobIds, setQueuedJobIds] = useState([]);
   const toastRef = useRef(null);
@@ -554,6 +555,28 @@ export default function HistoryPage({ refreshToken = 0 }) {
       toastRef.current?.show({ severity: 'error', summary: 'Löschen fehlgeschlagen', detail: error.message, life: 4500 });
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  const handleDownloadArchive = async (row, target) => {
+    const jobId = Number(row?.id || selectedJob?.id || 0);
+    const normalizedTarget = String(target || '').trim().toLowerCase();
+    if (!jobId || !['raw', 'output'].includes(normalizedTarget)) {
+      return;
+    }
+
+    setDownloadBusyTarget(normalizedTarget);
+    try {
+      await api.downloadJobArchive(jobId, normalizedTarget);
+    } catch (error) {
+      toastRef.current?.show({
+        severity: 'error',
+        summary: 'Download fehlgeschlagen',
+        detail: error.message,
+        life: 4500
+      });
+    } finally {
+      setDownloadBusyTarget(null);
     }
   };
 
@@ -1169,15 +1192,18 @@ export default function HistoryPage({ refreshToken = 0 }) {
         onRetry={handleRetry}
         onDeleteFiles={handleDeleteFiles}
         onDeleteEntry={handleDeleteEntry}
+        onDownloadArchive={handleDownloadArchive}
         onRemoveFromQueue={handleRemoveFromQueue}
         isQueued={Boolean(selectedJob?.id && queuedJobIdSet.has(normalizeJobId(selectedJob.id)))}
         actionBusy={actionBusy}
         reencodeBusy={reencodeBusyJobId === selectedJob?.id}
         deleteEntryBusy={deleteEntryBusy}
+        downloadBusyTarget={downloadBusyTarget}
         onHide={() => {
           setDetailVisible(false);
           setDetailLoading(false);
           setLogLoadingMode(null);
+          setDownloadBusyTarget(null);
         }}
       />
 

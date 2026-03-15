@@ -764,6 +764,36 @@ function normalizeJobIdValue(value) {
   return Math.trunc(parsed);
 }
 
+function normalizeArchiveTarget(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'raw') {
+    return 'raw';
+  }
+  if (raw === 'output' || raw === 'movie' || raw === 'encode') {
+    return 'output';
+  }
+  return null;
+}
+
+function sanitizeArchiveNamePart(value, fallback = 'job') {
+  const normalized = String(value || '')
+    .normalize('NFKD')
+    .replace(/[^\x00-\x7F]+/g, '');
+  const safe = normalized
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
+    .slice(0, 80);
+  return safe || fallback;
+}
+
+function buildJobArchiveName(job, target) {
+  const jobId = normalizeJobIdValue(job?.id) || 'unknown';
+  const titlePart = sanitizeArchiveNamePart(job?.title || job?.detected_title || '', 'job');
+  const targetPart = target === 'raw' ? 'raw' : 'encode';
+  return `job-${jobId}-${titlePart}-${targetPart}.zip`;
+}
+
 function parseSourceJobIdFromPlan(encodePlanRaw) {
   const plan = parseInfoFromValue(encodePlanRaw, null);
   const sourceJobId = normalizeJobIdValue(plan?.sourceJobId);
@@ -1424,6 +1454,76 @@ class HistoryService {
         returned: processLog.returned,
         truncated: processLog.truncated
       }
+    };
+  }
+
+  async getJobArchiveDescriptor(jobId, target) {
+    const normalizedJobId = normalizeJobIdValue(jobId);
+    if (!normalizedJobId) {
+      const error = new Error('Ungültige Job-ID.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedTarget = normalizeArchiveTarget(target);
+    if (!normalizedTarget) {
+      const error = new Error('Ungültiges Download-Ziel. Erlaubt sind raw und output.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const [job, settings] = await Promise.all([
+      this.getJobById(normalizedJobId),
+      settingsService.getSettingsMap()
+    ]);
+
+    if (!job) {
+      const error = new Error('Job nicht gefunden.');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
+    const sourcePath = normalizedTarget === 'raw'
+      ? resolvedPaths.effectiveRawPath
+      : resolvedPaths.effectiveOutputPath;
+
+    if (!sourcePath) {
+      const error = new Error(
+        normalizedTarget === 'raw'
+          ? 'Kein RAW-Pfad für diesen Job vorhanden.'
+          : 'Kein Output-Pfad für diesen Job vorhanden.'
+      );
+      error.statusCode = 404;
+      throw error;
+    }
+
+    let sourceStat;
+    try {
+      sourceStat = await fs.promises.stat(sourcePath);
+    } catch (_error) {
+      const error = new Error(
+        normalizedTarget === 'raw'
+          ? 'RAW-Pfad wurde nicht gefunden.'
+          : 'Output-Pfad wurde nicht gefunden.'
+      );
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!sourceStat.isDirectory() && !sourceStat.isFile()) {
+      const error = new Error('Nur Dateien oder Verzeichnisse können als ZIP heruntergeladen werden.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return {
+      jobId: normalizedJobId,
+      target: normalizedTarget,
+      sourcePath,
+      sourceType: sourceStat.isDirectory() ? 'directory' : 'file',
+      entryName: path.basename(sourcePath) || (normalizedTarget === 'raw' ? 'raw' : 'output'),
+      archiveName: buildJobArchiveName(job, normalizedTarget)
     };
   }
 

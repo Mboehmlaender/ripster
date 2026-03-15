@@ -111,6 +111,69 @@ async function request(path, options = {}) {
   return response.text();
 }
 
+function resolveFilenameFromDisposition(contentDisposition, fallback = 'download.zip') {
+  const raw = String(contentDisposition || '').trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  const encodedMatch = raw.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch (_error) {
+      // ignore malformed content-disposition values
+    }
+  }
+
+  const plainMatch = raw.match(/filename\s*=\s*"([^"]+)"/i) || raw.match(/filename\s*=\s*([^;]+)/i);
+  if (plainMatch?.[1]) {
+    return String(plainMatch[1]).trim();
+  }
+
+  return fallback;
+}
+
+async function download(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: options?.headers || {},
+    method: options?.method || 'GET'
+  });
+
+  if (!response.ok) {
+    let errorPayload = null;
+    let message = `HTTP ${response.status}`;
+    try {
+      errorPayload = await response.json();
+      message = errorPayload?.error?.message || message;
+    } catch (_error) {
+      // ignore parse errors
+    }
+    const error = new Error(message);
+    error.status = response.status;
+    error.details = errorPayload?.error?.details || null;
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const fallbackFilename = String(options?.filename || 'download.zip').trim() || 'download.zip';
+  const filename = resolveFilenameFromDisposition(response.headers.get('content-disposition'), fallbackFilename);
+
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+
+  return {
+    filename,
+    sizeBytes: blob.size
+  };
+}
+
 async function requestWithXhr(path, options = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -629,6 +692,11 @@ export const api = {
     });
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;
+  },
+  downloadJobArchive(jobId, target = 'raw') {
+    const query = new URLSearchParams();
+    query.set('target', String(target || 'raw').trim());
+    return download(`/history/${jobId}/download?${query.toString()}`);
   },
   getJob(jobId, options = {}) {
     const query = new URLSearchParams();

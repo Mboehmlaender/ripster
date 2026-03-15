@@ -2205,6 +2205,30 @@ body {
   font-weight: 600;
 }
 
+.job-path-field {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.job-path-field-value {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem;
+  align-items: start;
+}
+
+.job-path-field-value > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.job-path-download-button {
+  flex-shrink: 0;
+}
+
 .job-meta-col-span-2 {
   grid-column: 1 / -1;
 }

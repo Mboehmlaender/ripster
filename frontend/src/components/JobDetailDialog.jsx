@@ -416,6 +416,42 @@ function BoolState({ value }) {
   );
 }
 
+function PathField({
+  label,
+  value,
+  onDownload = null,
+  downloadDisabled = false,
+  downloadLoading = false
+}) {
+  const hasValue = Boolean(String(value || '').trim());
+  const canDownload = hasValue && typeof onDownload === 'function' && !downloadDisabled;
+
+  return (
+    <div className="job-path-field">
+      <strong>{label}</strong>
+      <div className="job-path-field-value">
+        <span>{hasValue ? value : '-'}</span>
+        {canDownload ? (
+          <Button
+            type="button"
+            icon="pi pi-download"
+            text
+            rounded
+            size="small"
+            className="job-path-download-button"
+            aria-label={`${label} als ZIP herunterladen`}
+            tooltip={`${label} als ZIP herunterladen`}
+            tooltipOptions={{ position: 'top' }}
+            onClick={onDownload}
+            disabled={downloadDisabled || downloadLoading}
+            loading={downloadLoading}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function JobDetailDialog({
   visible,
   job,
@@ -432,13 +468,15 @@ export default function JobDetailDialog({
   onRetry,
   onDeleteFiles,
   onDeleteEntry,
+  onDownloadArchive,
   onRemoveFromQueue,
   isQueued = false,
   omdbAssignBusy = false,
   cdMetadataAssignBusy = false,
   actionBusy = false,
   reencodeBusy = false,
-  deleteEntryBusy = false
+  deleteEntryBusy = false,
+  downloadBusyTarget = null
 }) {
   const mkDone = Boolean(job?.ripSuccessful) || !job?.makemkvInfo || job?.makemkvInfo?.status === 'SUCCESS';
   const running = ['ANALYZING', 'RIPPING', 'MEDIAINFO_CHECK', 'ENCODING'].includes(job?.status);
@@ -510,6 +548,8 @@ export default function JobDetailDialog({
   const encodePlanUserPresetId = Number(encodePlanUserPreset?.id);
   const reviewUserPresets = encodePlanUserPreset ? [encodePlanUserPreset] : [];
   const executedHandBrakeCommand = buildExecutedHandBrakeCommand(job?.handbrakeInfo);
+  const canDownloadRaw = Boolean(job?.raw_path && job?.rawStatus?.exists && typeof onDownloadArchive === 'function');
+  const canDownloadOutput = Boolean(job?.output_path && job?.outputStatus?.exists && typeof onDownloadArchive === 'function');
 
   return (
     <Dialog
@@ -701,12 +741,20 @@ export default function JobDetailDialog({
               <div>
                 <strong>Ende:</strong> {job.end_time || '-'}
               </div>
-              <div>
-                <strong>{isCd ? 'WAV Pfad:' : 'RAW Pfad:'}</strong> {job.raw_path || '-'}
-              </div>
-              <div>
-                <strong>Output:</strong> {job.output_path || '-'}
-              </div>
+              <PathField
+                label={isCd ? 'WAV Pfad:' : 'RAW Pfad:'}
+                value={job.raw_path}
+                onDownload={canDownloadRaw ? () => onDownloadArchive?.(job, 'raw') : null}
+                downloadDisabled={!canDownloadRaw}
+                downloadLoading={downloadBusyTarget === 'raw'}
+              />
+              <PathField
+                label="Output:"
+                value={job.output_path}
+                onDownload={canDownloadOutput ? () => onDownloadArchive?.(job, 'output') : null}
+                downloadDisabled={!canDownloadOutput}
+                downloadLoading={downloadBusyTarget === 'output'}
+              />
               {!isCd ? (
                 <div>
                   <strong>Encode Input:</strong> {job.encode_input_path || '-'}

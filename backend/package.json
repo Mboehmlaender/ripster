@@ -1,6 +1,6 @@
 {
   "name": "ripster-backend",
-  "version": "0.10.1-1",
+  "version": "0.10.2",
   "private": true,
   "type": "commonjs",
   "scripts": {
@@ -8,6 +8,7 @@
     "dev": "nodemon src/index.js"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
