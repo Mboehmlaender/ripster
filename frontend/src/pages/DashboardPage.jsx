@@ -403,7 +403,7 @@ function resolveMediaType(job) {
   if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
     return 'cd';
   }
-  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+  if (['audiobook_encode', 'audiobook_encode_split'].includes(String(job?.handbrakeInfo?.mode || '').trim().toLowerCase())) {
     return 'audiobook';
   }
   if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
@@ -591,20 +591,26 @@ function buildPipelineFromJob(job, currentPipeline, currentPipelineJobId) {
     ? `${job.raw_path}/track${String(previewTrackPos).padStart(2, '0')}.cdda.wav`
     : '<temp>/trackNN.cdda.wav';
   const cdparanoiaCommandPreview = `${cdparanoiaCmd} -d ${devicePath || '<device>'} ${previewTrackPos || '<trackNr>'} ${previewWavPath}`;
-  const audiobookSelectedMeta = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
-    ? makemkvInfo.selectedMetadata
-    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const audiobookSelectedMeta = {
+    ...(makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+      ? makemkvInfo.selectedMetadata
+      : {}),
+    ...(encodePlan?.metadata && typeof encodePlan.metadata === 'object'
+      ? encodePlan.metadata
+      : {})
+  };
   const selectedMetadata = resolvedMediaType === 'audiobook'
     ? {
       title: audiobookSelectedMeta?.title || job?.title || job?.detected_title || null,
       author: audiobookSelectedMeta?.author || audiobookSelectedMeta?.artist || null,
       narrator: audiobookSelectedMeta?.narrator || null,
+      description: audiobookSelectedMeta?.description || null,
       series: audiobookSelectedMeta?.series || null,
       part: audiobookSelectedMeta?.part || null,
       year: audiobookSelectedMeta?.year ?? job?.year ?? null,
       chapters: Array.isArray(audiobookSelectedMeta?.chapters) ? audiobookSelectedMeta.chapters : [],
       durationMs: audiobookSelectedMeta?.durationMs || 0,
-      poster: job?.poster_url || null
+      poster: audiobookSelectedMeta?.poster || job?.poster_url || null
     }
     : {
       title: cdSelectedMeta?.title || job?.title || job?.detected_title || null,

@@ -84,6 +84,7 @@ function App() {
   const [lastDiscEvent, setLastDiscEvent] = useState(null);
   const [audiobookUpload, setAudiobookUpload] = useState(() => createInitialAudiobookUploadState());
   const [dashboardJobsRefreshToken, setDashboardJobsRefreshToken] = useState(0);
+  const [historyJobsRefreshToken, setHistoryJobsRefreshToken] = useState(0);
   const [pendingDashboardJobId, setPendingDashboardJobId] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -151,6 +152,7 @@ function App() {
       const uploadedJobId = normalizeJobId(response?.result?.jobId);
       await refreshPipeline().catch(() => null);
       setDashboardJobsRefreshToken((prev) => prev + 1);
+      setHistoryJobsRefreshToken((prev) => prev + 1);
       if (uploadedJobId) {
         setPendingDashboardJobId(uploadedJobId);
       }
@@ -391,7 +393,7 @@ function App() {
             }
           />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/history" element={<HistoryPage refreshToken={historyJobsRefreshToken} />} />
           <Route path="/database" element={<DatabasePage />} />
         </Routes>
       </main>

@@ -345,7 +345,7 @@ function inferMediaType(job, makemkvInfo, mediainfoInfo, encodePlan, handbrakeIn
   if (hasAudiobookStructure(rawPath) || hasAudiobookStructure(encodeInputPath)) {
     return 'audiobook';
   }
-  if (String(hbInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+  if (['audiobook_encode', 'audiobook_encode_split'].includes(String(hbInfo?.mode || '').trim().toLowerCase())) {
     return 'audiobook';
   }
   if (String(plan?.mode || '').trim().toLowerCase() === 'audiobook') {
@@ -504,12 +504,28 @@ function getConfiguredMediaPathList(settings = {}, baseKey) {
   return unique;
 }
 
+function isDirectoryLikeOutput(mediaType, encodePlan = null, handbrakeInfo = null) {
+  if (mediaType === 'cd') {
+    return true;
+  }
+  if (mediaType !== 'audiobook') {
+    return false;
+  }
+  const hbMode = String(handbrakeInfo?.mode || '').trim().toLowerCase();
+  if (hbMode === 'audiobook_encode_split') {
+    return true;
+  }
+  const format = String(encodePlan?.format || '').trim().toLowerCase();
+  return Boolean(format && format !== 'm4b');
+}
+
 function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = {}) {
   const mkInfo = parsed?.makemkvInfo || parseJsonSafe(job?.makemkv_info_json, null);
   const miInfo = parsed?.mediainfoInfo || parseJsonSafe(job?.mediainfo_info_json, null);
   const plan = parsed?.encodePlan || parseJsonSafe(job?.encode_plan_json, null);
   const handbrakeInfo = parsed?.handbrakeInfo || parseJsonSafe(job?.handbrake_info_json, null);
   const mediaType = inferMediaType(job, mkInfo, miInfo, plan, handbrakeInfo);
+  const directoryLikeOutput = isDirectoryLikeOutput(mediaType, plan, handbrakeInfo);
   const effectiveSettings = settingsService.resolveEffectiveToolSettings(settings || {}, mediaType);
   const rawDir = String(effectiveSettings?.raw_dir || '').trim();
   const configuredMovieDir = String(effectiveSettings?.movie_dir || '').trim();
@@ -519,13 +535,13 @@ function resolveEffectiveStoragePathsForJob(settings = null, job = {}, parsed = 
   const effectiveRawPath = job?.raw_path
     ? resolveEffectiveRawPath(job.raw_path, rawDir, rawLookupDirs)
     : (job?.raw_path || null);
-  // For CD, output_path is a directory (album folder) — skip path-relocation heuristic
-  const effectiveOutputPath = (mediaType !== 'cd' && configuredMovieDir && job?.output_path)
+  const effectiveOutputPath = (!directoryLikeOutput && configuredMovieDir && job?.output_path)
     ? resolveEffectiveOutputPath(job.output_path, configuredMovieDir)
     : (job?.output_path || null);
 
   return {
     mediaType,
+    directoryLikeOutput,
     rawDir,
     movieDir,
     effectiveRawPath,
@@ -561,11 +577,12 @@ function enrichJobRow(job, settings = null, options = {}) {
   const omdbInfo = parseJsonSafe(job.omdb_json, null);
   const resolvedPaths = resolveEffectiveStoragePathsForJob(settings, job);
   const handbrakeInfo = resolvedPaths.handbrakeInfo;
+  const directoryLikeOutput = Boolean(resolvedPaths.directoryLikeOutput);
   const outputStatus = includeFsChecks
-    ? (resolvedPaths.mediaType === 'cd'
+    ? (directoryLikeOutput
       ? inspectDirectory(resolvedPaths.effectiveOutputPath)
       : inspectOutputFile(resolvedPaths.effectiveOutputPath))
-    : (resolvedPaths.mediaType === 'cd'
+    : (directoryLikeOutput
       ? buildUnknownDirectoryStatus(resolvedPaths.effectiveOutputPath)
       : buildUnknownFileStatus(resolvedPaths.effectiveOutputPath));
   const rawStatus = includeFsChecks
@@ -582,7 +599,7 @@ function enrichJobRow(job, settings = null, options = {}) {
   const ripSuccessful = Number(job?.rip_successful || 0) === 1
     || String(makemkvInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
   const backupSuccess = ripSuccessful;
-  const encodeSuccess = mediaType === 'cd'
+  const encodeSuccess = directoryLikeOutput
     ? (String(job?.status || '').trim().toUpperCase() === 'FINISHED' && Boolean(outputStatus?.exists))
     : String(handbrakeInfo?.status || '').trim().toUpperCase() === 'SUCCESS';
 

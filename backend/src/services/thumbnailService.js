@@ -157,6 +157,27 @@ function copyThumbnail(sourceJobId, targetJobId) {
 }
 
 /**
+ * Speichert ein lokal extrahiertes Bild als persistentes Job-Thumbnail.
+ * @returns {string|null} lokale URL (/api/thumbnails/job-{id}.jpg) oder null
+ */
+function storeLocalThumbnail(jobId, sourcePath) {
+  try {
+    const src = String(sourcePath || '').trim();
+    if (!src || !fs.existsSync(src)) {
+      return null;
+    }
+    ensureDirs();
+    const dest = persistentFilePath(jobId);
+    fs.copyFileSync(src, dest);
+    logger.info('thumbnail:stored-local', { jobId, sourcePath: src, dest });
+    return localUrl(jobId);
+  } catch (err) {
+    logger.warn('thumbnail:store-local:failed', { jobId, sourcePath, error: err.message });
+    return null;
+  }
+}
+
+/**
  * Löscht Cache- und persistente Thumbnail-Datei eines Jobs.
  * Wird beim Löschen eines Jobs aufgerufen.
  */
@@ -232,6 +253,7 @@ module.exports = {
   cacheJobThumbnail,
   promoteJobThumbnail,
   copyThumbnail,
+  storeLocalThumbnail,
   deleteThumbnail,
   getThumbnailsDir,
   migrateExistingThumbnails,

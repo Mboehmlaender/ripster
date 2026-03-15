@@ -174,7 +174,7 @@ function buildToolSections(settings) {
 const BLURAY_PATH_KEYS = ['raw_dir_bluray', 'movie_dir_bluray', 'output_template_bluray'];
 const DVD_PATH_KEYS = ['raw_dir_dvd', 'movie_dir_dvd', 'output_template_dvd'];
 const CD_PATH_KEYS = ['raw_dir_cd', 'movie_dir_cd', 'cd_output_template'];
-const AUDIOBOOK_PATH_KEYS = ['raw_dir_audiobook', 'movie_dir_audiobook', 'output_template_audiobook', 'audiobook_raw_template'];
+const AUDIOBOOK_PATH_KEYS = ['raw_dir_audiobook', 'movie_dir_audiobook', 'output_template_audiobook', 'output_chapter_template_audiobook', 'audiobook_raw_template'];
 const LOG_PATH_KEYS = ['log_dir'];
 
 function buildSectionsForCategory(categoryName, settings) {

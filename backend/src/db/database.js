@@ -828,6 +828,7 @@ const SETTINGS_CATEGORY_MOVES = [
   { key: 'output_template_bluray', category: 'Pfade' },
   { key: 'output_template_dvd', category: 'Pfade' },
   { key: 'output_template_audiobook', category: 'Pfade' },
+  { key: 'output_chapter_template_audiobook', category: 'Pfade' },
   { key: 'audiobook_raw_template', category: 'Pfade' }
 ];
 
@@ -916,6 +917,12 @@ async function migrateSettingsSchemaMetadata(db) {
      VALUES ('output_template_audiobook', 'Pfade', 'Output Template (Audiobook)', 'string', 1, 'Template für relative Audiobook-Ausgabepfade ohne Dateiendung. Platzhalter: {author}, {title}, {year}, {narrator}, {series}, {part}, {format}. Unterordner sind über "/" möglich.', '{author}/{author} - {title} ({year})', '[]', '{"minLength":1}', 735)`
   );
   await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_template_audiobook', '{author}/{author} - {title} ({year})')`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('output_chapter_template_audiobook', 'Pfade', 'Kapitel Template (Audiobook)', 'string', 1, 'Template für kapitelweise Audiobook-Ausgaben (MP3/FLAC) ohne Dateiendung. Platzhalter: {author}, {title}, {year}, {narrator}, {series}, {part}, {format}, {chapterNr}, {chapterNo}, {chapterTitle}. Unterordner sind über "/" möglich.', '{author}/{author} - {title} ({year})/{chapterNr} {chapterTitle}', '[]', '{"minLength":1}', 7355)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_chapter_template_audiobook', '{author}/{author} - {title} ({year})/{chapterNr} {chapterTitle}')`);
 
   await db.run(
     `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)

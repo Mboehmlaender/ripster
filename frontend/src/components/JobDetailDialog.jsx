@@ -250,7 +250,7 @@ function resolveMediaType(job) {
   if (Array.isArray(job?.makemkvInfo?.tracks) && job.makemkvInfo.tracks.length > 0) {
     return 'cd';
   }
-  if (String(job?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+  if (['audiobook_encode', 'audiobook_encode_split'].includes(String(job?.handbrakeInfo?.mode || '').trim().toLowerCase())) {
     return 'audiobook';
   }
   if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
@@ -320,9 +320,12 @@ function resolveCdDetails(job) {
 function resolveAudiobookDetails(job) {
   const encodePlan = job?.encodePlan && typeof job.encodePlan === 'object' ? job.encodePlan : {};
   const makemkvInfo = job?.makemkvInfo && typeof job.makemkvInfo === 'object' ? job.makemkvInfo : {};
-  const selectedMetadata = makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
-    ? makemkvInfo.selectedMetadata
-    : (encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {});
+  const selectedMetadata = {
+    ...(makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+      ? makemkvInfo.selectedMetadata
+      : {}),
+    ...(encodePlan?.metadata && typeof encodePlan.metadata === 'object' ? encodePlan.metadata : {})
+  };
   const chapters = Array.isArray(selectedMetadata?.chapters)
     ? selectedMetadata.chapters
     : (Array.isArray(makemkvInfo?.chapters) ? makemkvInfo.chapters : []);
@@ -713,7 +716,7 @@ export default function JobDetailDialog({
                 <strong>RAW vorhanden:</strong> <BoolState value={job.rawStatus?.exists} />
               </div>
               <div>
-                <strong>{isCd ? 'Audio-Dateien vorhanden:' : (isAudiobook ? 'Audiobook-Datei vorhanden:' : 'Movie Datei vorhanden:')}</strong> <BoolState value={job.outputStatus?.exists} />
+                <strong>{isCd ? 'Audio-Dateien vorhanden:' : (isAudiobook ? (job.outputStatus?.isDirectory ? 'Audiobook-Dateien vorhanden:' : 'Audiobook-Datei vorhanden:') : 'Movie Datei vorhanden:')}</strong> <BoolState value={job.outputStatus?.exists} />
               </div>
               {isCd ? (
                 <div>

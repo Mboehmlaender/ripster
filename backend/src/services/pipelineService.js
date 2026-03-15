@@ -7,6 +7,7 @@ const settingsService = require('./settingsService');
 const historyService = require('./historyService');
 const omdbService = require('./omdbService');
 const musicBrainzService = require('./musicBrainzService');
+const audnexService = require('./audnexService');
 const cdRipService = require('./cdRipService');
 const audiobookService = require('./audiobookService');
 const scriptService = require('./scriptService');
@@ -495,6 +496,12 @@ function withTimestampBeforeExtension(targetPath, suffix) {
   return path.join(dir, `${base}_${suffix}${ext}`);
 }
 
+function withTimestampSuffix(targetPath, suffix) {
+  const dir = path.dirname(targetPath);
+  const base = path.basename(targetPath);
+  return path.join(dir, `${base}_${suffix}`);
+}
+
 function resolveOutputTemplateValues(job, fallbackJobId = null) {
   return {
     title: job.title || job.detected_title || (fallbackJobId ? `job-${fallbackJobId}` : 'job'),
@@ -557,10 +564,21 @@ function ensureUniqueOutputPath(outputPath) {
   }
 
   const ts = fileTimestamp();
-  let attempt = withTimestampBeforeExtension(outputPath, ts);
+  let stat = null;
+  try {
+    stat = fs.statSync(outputPath);
+  } catch (_error) {
+    stat = null;
+  }
+  const isDirectory = Boolean(stat?.isDirectory?.());
+  let attempt = isDirectory
+    ? withTimestampSuffix(outputPath, ts)
+    : withTimestampBeforeExtension(outputPath, ts);
   let i = 1;
   while (fs.existsSync(attempt)) {
-    attempt = withTimestampBeforeExtension(outputPath, `${ts}-${i}`);
+    attempt = isDirectory
+      ? withTimestampSuffix(outputPath, `${ts}-${i}`)
+      : withTimestampBeforeExtension(outputPath, `${ts}-${i}`);
     i += 1;
   }
   return attempt;
@@ -588,6 +606,24 @@ function moveFileWithFallback(sourcePath, targetPath) {
   } catch (error) {
     if (error?.code !== 'EXDEV') {
       throw error;
+    }
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.unlinkSync(sourcePath);
+  }
+}
+
+function movePathWithFallback(sourcePath, targetPath) {
+  try {
+    fs.renameSync(sourcePath, targetPath);
+  } catch (error) {
+    if (error?.code !== 'EXDEV') {
+      throw error;
+    }
+    const stat = fs.statSync(sourcePath);
+    if (stat.isDirectory()) {
+      fs.cpSync(sourcePath, targetPath, { recursive: true });
+      fs.rmSync(sourcePath, { recursive: true, force: true });
+      return;
     }
     fs.copyFileSync(sourcePath, targetPath);
     fs.unlinkSync(sourcePath);
@@ -632,7 +668,7 @@ function finalizeOutputPathForCompletedEncode(incompleteOutputPath, preferredFin
   }
 
   ensureDir(path.dirname(targetPath));
-  moveFileWithFallback(sourcePath, targetPath);
+  movePathWithFallback(sourcePath, targetPath);
   removeDirectoryIfEmpty(path.dirname(sourcePath));
 
   return {
@@ -651,21 +687,34 @@ function buildAudiobookMetadataForJob(job, makemkvInfo = null, encodePlan = null
         ? mkInfo.selectedMetadata
         : (mkInfo?.detectedMetadata && typeof mkInfo.detectedMetadata === 'object' ? mkInfo.detectedMetadata : {})
     );
+  const title = String(metadataSource?.title || job?.title || job?.detected_title || 'Audiobook').trim() || 'Audiobook';
+  const durationMs = Number.isFinite(Number(metadataSource?.durationMs))
+    ? Number(metadataSource.durationMs)
+    : 0;
+  const chaptersSource = Array.isArray(metadataSource?.chapters)
+    ? metadataSource.chapters
+    : (Array.isArray(mkInfo?.chapters) ? mkInfo.chapters : []);
+  const chapters = audiobookService.normalizeChapterList(chaptersSource, {
+    durationMs,
+    fallbackTitle: title,
+    createFallback: false
+  });
+
   return {
-    title: String(metadataSource?.title || job?.title || job?.detected_title || 'Audiobook').trim() || 'Audiobook',
+    title,
     author: String(metadataSource?.author || metadataSource?.artist || '').trim() || null,
+    asin: String(metadataSource?.asin || '').trim() || null,
+    chapterSource: String(metadataSource?.chapterSource || '').trim() || null,
     narrator: String(metadataSource?.narrator || '').trim() || null,
+    description: String(metadataSource?.description || '').trim() || null,
     series: String(metadataSource?.series || '').trim() || null,
     part: String(metadataSource?.part || '').trim() || null,
     year: Number.isFinite(Number(metadataSource?.year))
       ? Math.trunc(Number(metadataSource.year))
       : (Number.isFinite(Number(job?.year)) ? Math.trunc(Number(job.year)) : null),
-    durationMs: Number.isFinite(Number(metadataSource?.durationMs))
-      ? Number(metadataSource.durationMs)
-      : 0,
-    chapters: Array.isArray(metadataSource?.chapters)
-      ? metadataSource.chapters
-      : (Array.isArray(mkInfo?.chapters) ? mkInfo.chapters : [])
+    durationMs,
+    chapters,
+    poster: String(metadataSource?.poster || job?.poster_url || '').trim() || null
   };
 }
 
@@ -682,25 +731,62 @@ function buildAudiobookOutputConfig(settings, job, makemkvInfo = null, encodePla
     settings?.output_template
     || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE
   ).trim() || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE;
+  const chapterOutputTemplate = String(
+    settings?.output_chapter_template_audiobook
+    || audiobookService.DEFAULT_AUDIOBOOK_CHAPTER_OUTPUT_TEMPLATE
+  ).trim() || audiobookService.DEFAULT_AUDIOBOOK_CHAPTER_OUTPUT_TEMPLATE;
   const outputFormat = audiobookService.normalizeOutputFormat(
     encodePlan?.format || settings?.output_extension || 'mp3'
-  );
-  const preferredFinalOutputPath = audiobookService.buildOutputPath(
-    metadata,
-    movieDir,
-    outputTemplate,
-    outputFormat
   );
   const numericJobId = Number(fallbackJobId || job?.id || 0);
   const incompleteFolder = Number.isFinite(numericJobId) && numericJobId > 0
     ? `Incomplete_job-${numericJobId}`
     : 'Incomplete_job-unknown';
-  const incompleteOutputPath = path.join(movieDir, incompleteFolder, path.basename(preferredFinalOutputPath));
-  return {
+  const incompleteBaseDir = path.join(movieDir, incompleteFolder);
+
+  if (outputFormat === 'm4b') {
+    const preferredFinalOutputPath = audiobookService.buildOutputPath(
+      metadata,
+      movieDir,
+      outputTemplate,
+      outputFormat
+    );
+    const incompleteOutputPath = path.join(incompleteBaseDir, path.basename(preferredFinalOutputPath));
+    return {
+      metadata,
+      outputFormat,
+      preferredFinalOutputPath,
+      incompleteOutputPath,
+      preferredChapterPlan: null,
+      incompleteChapterPlan: null
+    };
+  }
+
+  const preferredChapterPlan = audiobookService.buildChapterOutputPlan(
     metadata,
+    metadata.chapters,
+    movieDir,
+    chapterOutputTemplate,
+    outputFormat
+  );
+  const incompleteChapterPlan = audiobookService.buildChapterOutputPlan(
+    metadata,
+    preferredChapterPlan.chapters,
+    incompleteBaseDir,
+    chapterOutputTemplate,
+    outputFormat
+  );
+
+  return {
+    metadata: {
+      ...metadata,
+      chapters: preferredChapterPlan.chapters
+    },
     outputFormat,
-    preferredFinalOutputPath,
-    incompleteOutputPath
+    preferredFinalOutputPath: preferredChapterPlan.outputDir,
+    incompleteOutputPath: incompleteChapterPlan.outputDir,
+    preferredChapterPlan,
+    incompleteChapterPlan
   };
 }
 
@@ -10800,6 +10886,7 @@ class PipelineService extends EventEmitter {
     );
     const formatOptions = audiobookService.getDefaultFormatOptions(outputFormat);
     const ffprobeCommand = String(settings?.ffprobe_command || 'ffprobe').trim() || 'ffprobe';
+    const ffmpegCommand = String(settings?.ffmpeg_command || 'ffmpeg').trim() || 'ffmpeg';
 
     const job = await historyService.createJob({
       discDevice: null,
@@ -10859,6 +10946,79 @@ class PipelineService extends EventEmitter {
         stagedRawFilePath
       });
 
+      let detectedAsin = null;
+      let audnexChapters = [];
+      try {
+        detectedAsin = await audnexService.extractAsinFromAaxFile(storagePaths.rawFilePath);
+        if (detectedAsin) {
+          await historyService.appendLog(job.id, 'SYSTEM', `ASIN erkannt: ${detectedAsin}`);
+          audnexChapters = await audnexService.fetchChaptersByAsin(detectedAsin, 'de');
+          if (audnexChapters.length > 0) {
+            await historyService.appendLog(job.id, 'SYSTEM', `Audnex-Kapitel geladen: ${audnexChapters.length}`);
+          } else {
+            await historyService.appendLog(job.id, 'SYSTEM', `Keine Audnex-Kapitel fuer ASIN ${detectedAsin} gefunden.`);
+          }
+        } else {
+          await historyService.appendLog(job.id, 'SYSTEM', 'Keine ASIN in der AAX-Datei gefunden, verwende eingebettete Kapitel.');
+        }
+      } catch (audnexError) {
+        logger.warn('audiobook:upload:audnex-chapters-failed', {
+          jobId: job.id,
+          stagedRawFilePath: storagePaths.rawFilePath,
+          asin: detectedAsin,
+          error: errorToMeta(audnexError)
+        });
+        await historyService.appendLog(
+          job.id,
+          'SYSTEM',
+          `Audnex-Kapitel konnten nicht geladen werden: ${audnexError?.message || 'unknown'}`
+        ).catch(() => {});
+      }
+
+      let posterUrl = null;
+      if (metadata?.hasEmbeddedCover && metadata?.cover) {
+        const coverTempPath = path.join(storagePaths.rawDir, `.job-${job.id}-cover.jpg`);
+        try {
+          const coverCommand = audiobookService.buildCoverExtractionCommand(
+            ffmpegCommand,
+            storagePaths.rawFilePath,
+            coverTempPath,
+            metadata.cover
+          );
+          await this.runCapturedCommand(coverCommand.cmd, coverCommand.args);
+          posterUrl = thumbnailService.storeLocalThumbnail(job.id, coverTempPath);
+          if (posterUrl) {
+            await historyService.appendLog(job.id, 'SYSTEM', 'Eingebettetes AAX-Cover erkannt und gespeichert.');
+          }
+        } catch (coverError) {
+          logger.warn('audiobook:upload:cover-extract-failed', {
+            jobId: job.id,
+            stagedRawFilePath: storagePaths.rawFilePath,
+            error: errorToMeta(coverError)
+          });
+        } finally {
+          try {
+            fs.rmSync(coverTempPath, { force: true });
+          } catch (_error) {
+            // best effort cleanup
+          }
+        }
+      }
+
+      const resolvedMetadata = {
+        ...metadata,
+        asin: detectedAsin || null,
+        chapterSource: audnexChapters.length > 0 ? 'audnex' : 'probe',
+        chapters: audnexChapters.length > 0
+          ? audiobookService.normalizeChapterList(audnexChapters, {
+            durationMs: metadata.durationMs,
+            fallbackTitle: metadata.title,
+            createFallback: false
+          })
+          : metadata.chapters,
+        poster: posterUrl || null
+      };
+
       const makemkvInfo = this.withAnalyzeContextMediaProfile({
         status: 'SUCCESS',
         source: 'aax_upload',
@@ -10866,12 +11026,14 @@ class PipelineService extends EventEmitter {
         mediaProfile: 'audiobook',
         rawFileName: storagePaths.rawFileName,
         rawFilePath: storagePaths.rawFilePath,
-        chapters: metadata.chapters,
-        detectedMetadata: metadata,
-        selectedMetadata: metadata,
+        chapters: resolvedMetadata.chapters,
+        detectedMetadata: resolvedMetadata,
+        selectedMetadata: resolvedMetadata,
         probeSummary: {
-          durationMs: metadata.durationMs,
-          tagKeys: Object.keys(metadata.tags || {})
+          durationMs: resolvedMetadata.durationMs,
+          tagKeys: Object.keys(resolvedMetadata.tags || {}),
+          asin: detectedAsin || null,
+          chapterSource: resolvedMetadata.chapterSource || 'probe'
         }
       }, 'audiobook');
 
@@ -10885,16 +11047,16 @@ class PipelineService extends EventEmitter {
         rawTemplate,
         outputTemplate,
         encodeInputPath: storagePaths.rawFilePath,
-        metadata,
+        metadata: resolvedMetadata,
         reviewConfirmed: true
       };
 
       await historyService.updateJob(job.id, {
         status: 'READY_TO_START',
         last_state: 'READY_TO_START',
-        title: metadata.title || detectedTitle,
-        detected_title: metadata.title || detectedTitle,
-        year: metadata.year ?? null,
+        title: resolvedMetadata.title || detectedTitle,
+        detected_title: resolvedMetadata.title || detectedTitle,
+        year: resolvedMetadata.year ?? null,
         raw_path: storagePaths.rawDir,
         rip_successful: 1,
         makemkv_info_json: JSON.stringify(makemkvInfo),
@@ -10904,15 +11066,15 @@ class PipelineService extends EventEmitter {
         encode_input_path: storagePaths.rawFilePath,
         encode_review_confirmed: 1,
         output_path: null,
+        poster_url: posterUrl || null,
         error_message: null,
-        start_time: null,
         end_time: null
       });
 
       await historyService.appendLog(
         job.id,
         'SYSTEM',
-        `Audiobook analysiert: ${metadata.title || detectedTitle} | Autor: ${metadata.author || '-'} | Format: ${outputFormat.toUpperCase()}`
+        `Audiobook analysiert: ${resolvedMetadata.title || detectedTitle} | Autor: ${resolvedMetadata.author || '-'} | Format: ${outputFormat.toUpperCase()}`
       );
 
       if (!startImmediately) {
@@ -11004,6 +11166,29 @@ class PipelineService extends EventEmitter {
       config?.formatOptions || encodePlan?.formatOptions || {}
     );
     const metadata = buildAudiobookMetadataForJob(job, makemkvInfo, encodePlan);
+    const chapters = audiobookService.normalizeChapterList(
+      Array.isArray(config?.chapters) ? config.chapters : metadata.chapters,
+      {
+        durationMs: metadata.durationMs,
+        fallbackTitle: metadata.title,
+        createFallback: false
+      }
+    );
+    const resolvedMetadata = {
+      ...metadata,
+      chapters
+    };
+    const nextMakemkvInfo = {
+      ...(makemkvInfo && typeof makemkvInfo === 'object' ? makemkvInfo : {}),
+      chapters,
+      selectedMetadata: {
+        ...(makemkvInfo?.selectedMetadata && typeof makemkvInfo.selectedMetadata === 'object'
+          ? makemkvInfo.selectedMetadata
+          : {}),
+        ...resolvedMetadata,
+        poster: metadata.poster || job.poster_url || null
+      }
+    };
 
     const nextEncodePlan = {
       ...(encodePlan && typeof encodePlan === 'object' ? encodePlan : {}),
@@ -11011,15 +11196,16 @@ class PipelineService extends EventEmitter {
       mode: 'audiobook',
       format,
       formatOptions,
-      metadata,
+      metadata: resolvedMetadata,
       reviewConfirmed: true
     };
 
     await historyService.updateJob(normalizedJobId, {
       status: 'READY_TO_START',
       last_state: 'READY_TO_START',
-      title: metadata.title || job.title || job.detected_title || 'Audiobook',
-      year: metadata.year ?? job.year ?? null,
+      title: resolvedMetadata.title || job.title || job.detected_title || 'Audiobook',
+      year: resolvedMetadata.year ?? job.year ?? null,
+      makemkv_info_json: JSON.stringify(nextMakemkvInfo),
       encode_plan_json: JSON.stringify(nextEncodePlan),
       encode_review_confirmed: 1,
       error_message: null,
@@ -11030,7 +11216,7 @@ class PipelineService extends EventEmitter {
     await historyService.appendLog(
       normalizedJobId,
       'USER_ACTION',
-      `Audiobook-Encoding konfiguriert: Format ${format.toUpperCase()}`
+      `Audiobook-Encoding konfiguriert: Format ${format.toUpperCase()} | Kapitel: ${chapters.length || 0}`
     );
 
     const startResult = await this.startPreparedJob(normalizedJobId);
@@ -11107,13 +11293,29 @@ class PipelineService extends EventEmitter {
       metadata,
       outputFormat,
       preferredFinalOutputPath,
-      incompleteOutputPath
+      incompleteOutputPath,
+      preferredChapterPlan,
+      incompleteChapterPlan
     } = buildAudiobookOutputConfig(settings, job, makemkvInfo, encodePlan, jobId);
     const formatOptions = audiobookService.normalizeFormatOptions(
       outputFormat,
       encodePlan?.formatOptions || {}
     );
-    ensureDir(path.dirname(incompleteOutputPath));
+    const isSplitOutput = outputFormat !== 'm4b';
+    const activeChapters = isSplitOutput
+      ? (Array.isArray(incompleteChapterPlan?.chapters) ? incompleteChapterPlan.chapters : [])
+      : (Array.isArray(metadata.chapters) ? metadata.chapters : []);
+
+    if (isSplitOutput) {
+      try {
+        fs.rmSync(incompleteOutputPath, { recursive: true, force: true });
+      } catch (_error) {
+        // best effort cleanup
+      }
+      ensureDir(incompleteOutputPath);
+    } else {
+      ensureDir(path.dirname(incompleteOutputPath));
+    }
 
     await historyService.resetProcessLog(jobId);
     await this.setState('ENCODING', {
@@ -11129,17 +11331,18 @@ class PipelineService extends EventEmitter {
         outputPath: incompleteOutputPath,
         format: outputFormat,
         formatOptions,
-        chapters: metadata.chapters,
+        chapters: activeChapters,
         selectedMetadata: {
           title: metadata.title || job.title || job.detected_title || null,
           year: metadata.year ?? job.year ?? null,
           author: metadata.author || null,
           narrator: metadata.narrator || null,
+          description: metadata.description || null,
           series: metadata.series || null,
           part: metadata.part || null,
-          chapters: Array.isArray(metadata.chapters) ? metadata.chapters : [],
+          chapters: activeChapters,
           durationMs: metadata.durationMs || 0,
-          poster: job.poster_url || null
+          poster: metadata.poster || job.poster_url || null
         },
         audiobookConfig: {
           format: outputFormat,
@@ -11164,7 +11367,9 @@ class PipelineService extends EventEmitter {
     await historyService.appendLog(
       jobId,
       'SYSTEM',
-      `Audiobook-Encoding gestartet: ${path.basename(inputPath)} -> ${outputFormat.toUpperCase()}`
+      isSplitOutput
+        ? `Audiobook-Encoding gestartet: ${path.basename(inputPath)} -> ${outputFormat.toUpperCase()} | Kapitel-Dateien: ${activeChapters.length || 0}`
+        : `Audiobook-Encoding gestartet: ${path.basename(inputPath)} -> ${outputFormat.toUpperCase()}`
     );
 
     void this.notifyPushover('encoding_started', {
@@ -11172,30 +11377,161 @@ class PipelineService extends EventEmitter {
       message: `${metadata.title || job.title || job.detected_title || `Job #${jobId}`} -> ${preferredFinalOutputPath}`
     });
 
+    let temporaryChapterMetadataPath = null;
+
     try {
-      const ffmpegConfig = audiobookService.buildEncodeCommand(
-        settings?.ffmpeg_command || 'ffmpeg',
-        inputPath,
-        incompleteOutputPath,
-        outputFormat,
-        formatOptions
-      );
-      logger.info('audiobook:encode:command', { jobId, cmd: ffmpegConfig.cmd, args: ffmpegConfig.args });
-      const ffmpegRunInfo = await this.runCommand({
-        jobId,
-        stage: 'ENCODING',
-        source: 'FFMPEG',
-        cmd: ffmpegConfig.cmd,
-        args: ffmpegConfig.args,
-        parser: audiobookService.buildProgressParser(metadata.durationMs)
-      });
+      let ffmpegRunInfo = null;
+      if (isSplitOutput) {
+        const outputFiles = Array.isArray(incompleteChapterPlan?.outputFiles)
+          ? incompleteChapterPlan.outputFiles
+          : [];
+        if (outputFiles.length === 0) {
+          throw new Error('Keine Audiobook-Kapitel für den Encode verfügbar.');
+        }
+
+        const chapterRunInfos = [];
+        for (let index = 0; index < outputFiles.length; index += 1) {
+          const entry = outputFiles[index];
+          const chapter = entry?.chapter || {};
+          const chapterTitle = String(chapter?.title || `Kapitel ${index + 1}`).trim() || `Kapitel ${index + 1}`;
+          const startPercent = Number(((index / outputFiles.length) * 100).toFixed(2));
+          const endPercent = Number((((index + 1) / outputFiles.length) * 100).toFixed(2));
+
+          ensureDir(path.dirname(entry.outputPath));
+          await historyService.appendLog(
+            jobId,
+            'SYSTEM',
+            `Kapitel ${index + 1}/${outputFiles.length}: ${chapterTitle} -> ${path.basename(entry.outputPath)}`
+          );
+          await this.updateProgress(
+            'ENCODING',
+            startPercent,
+            null,
+            `Audiobook-Encoding Kapitel ${index + 1}/${outputFiles.length}: ${chapterTitle}`,
+            jobId,
+            {
+              contextPatch: {
+                outputPath: incompleteOutputPath,
+                currentChapter: {
+                  index: index + 1,
+                  total: outputFiles.length,
+                  title: chapterTitle
+                }
+              }
+            }
+          );
+
+          const ffmpegConfig = audiobookService.buildChapterEncodeCommand(
+            settings?.ffmpeg_command || 'ffmpeg',
+            inputPath,
+            entry.outputPath,
+            outputFormat,
+            formatOptions,
+            metadata,
+            chapter,
+            outputFiles.length
+          );
+          const baseParser = audiobookService.buildProgressParser(chapter?.durationMs || 0);
+          const scaledParser = baseParser
+            ? (line) => {
+              const progress = baseParser(line);
+              if (!progress || progress.percent == null) {
+                return null;
+              }
+              const scaledPercent = startPercent + ((endPercent - startPercent) * (progress.percent / 100));
+              return {
+                percent: Number(scaledPercent.toFixed(2)),
+                eta: null
+              };
+            }
+            : null;
+
+          logger.info('audiobook:encode:chapter-command', {
+            jobId,
+            chapterIndex: index + 1,
+            cmd: ffmpegConfig.cmd,
+            args: ffmpegConfig.args
+          });
+          const chapterRunInfo = await this.runCommand({
+            jobId,
+            stage: 'ENCODING',
+            source: 'FFMPEG',
+            cmd: ffmpegConfig.cmd,
+            args: ffmpegConfig.args,
+            parser: scaledParser
+          });
+
+          chapterRunInfos.push({
+            ...chapterRunInfo,
+            chapterIndex: index + 1,
+            chapterTitle,
+            outputPath: entry.outputPath
+          });
+        }
+
+        ffmpegRunInfo = {
+          source: 'FFMPEG',
+          stage: 'ENCODING',
+          cmd: String(settings?.ffmpeg_command || 'ffmpeg').trim() || 'ffmpeg',
+          args: ['<split-by-chapter>'],
+          startedAt: chapterRunInfos[0]?.startedAt || nowIso(),
+          endedAt: chapterRunInfos[chapterRunInfos.length - 1]?.endedAt || nowIso(),
+          durationMs: chapterRunInfos.reduce((sum, item) => sum + Number(item?.durationMs || 0), 0),
+          status: 'SUCCESS',
+          exitCode: 0,
+          stdoutLines: chapterRunInfos.reduce((sum, item) => sum + Number(item?.stdoutLines || 0), 0),
+          stderrLines: chapterRunInfos.reduce((sum, item) => sum + Number(item?.stderrLines || 0), 0),
+          lastProgress: 100,
+          eta: null,
+          lastDetail: `${chapterRunInfos.length} Kapitel abgeschlossen`,
+          highlights: chapterRunInfos.flatMap((item) => (Array.isArray(item?.highlights) ? item.highlights : [])).slice(0, 120),
+          steps: chapterRunInfos
+        };
+      } else {
+        temporaryChapterMetadataPath = path.join(path.dirname(inputPath), `.job-${jobId}-chapters.ffmeta`);
+        fs.writeFileSync(
+          temporaryChapterMetadataPath,
+          audiobookService.buildChapterMetadataContent(activeChapters, metadata),
+          'utf8'
+        );
+
+        const ffmpegConfig = audiobookService.buildEncodeCommand(
+          settings?.ffmpeg_command || 'ffmpeg',
+          inputPath,
+          incompleteOutputPath,
+          outputFormat,
+          formatOptions,
+          {
+            chapterMetadataPath: temporaryChapterMetadataPath,
+            metadata
+          }
+        );
+        logger.info('audiobook:encode:command', { jobId, cmd: ffmpegConfig.cmd, args: ffmpegConfig.args });
+        ffmpegRunInfo = await this.runCommand({
+          jobId,
+          stage: 'ENCODING',
+          source: 'FFMPEG',
+          cmd: ffmpegConfig.cmd,
+          args: ffmpegConfig.args,
+          parser: audiobookService.buildProgressParser(metadata.durationMs)
+        });
+      }
 
       const outputFinalization = finalizeOutputPathForCompletedEncode(
         incompleteOutputPath,
         preferredFinalOutputPath
       );
       const finalizedOutputPath = outputFinalization.outputPath;
-      chownRecursive(path.dirname(finalizedOutputPath), settings?.movie_dir_owner);
+      let ownershipTarget = path.dirname(finalizedOutputPath);
+      try {
+        const finalizedStat = fs.statSync(finalizedOutputPath);
+        if (finalizedStat.isDirectory()) {
+          ownershipTarget = finalizedOutputPath;
+        }
+      } catch (_error) {
+        ownershipTarget = path.dirname(finalizedOutputPath);
+      }
+      chownRecursive(ownershipTarget, settings?.movie_dir_owner);
 
       if (outputFinalization.outputPathWithTimestamp) {
         await historyService.appendLog(
@@ -11211,14 +11547,27 @@ class PipelineService extends EventEmitter {
         `Audiobook-Output finalisiert: ${finalizedOutputPath}`
       );
 
+      const finalizedOutputFiles = isSplitOutput
+        ? (Array.isArray(preferredChapterPlan?.outputFiles)
+          ? preferredChapterPlan.outputFiles.map((entry) => {
+            const relativePath = path.relative(preferredFinalOutputPath, entry.outputPath);
+            return path.join(finalizedOutputPath, relativePath);
+          })
+          : [])
+        : null;
       const ffmpegInfo = {
         ...ffmpegRunInfo,
-        mode: 'audiobook_encode',
+        mode: isSplitOutput ? 'audiobook_encode_split' : 'audiobook_encode',
         format: outputFormat,
         formatOptions,
-        metadata,
+        metadata: {
+          ...metadata,
+          chapters: activeChapters
+        },
         inputPath,
-        outputPath: finalizedOutputPath
+        outputPath: finalizedOutputPath,
+        chapterCount: activeChapters.length,
+        outputFiles: finalizedOutputFiles
       };
 
       await historyService.updateJob(jobId, {
@@ -11269,11 +11618,18 @@ class PipelineService extends EventEmitter {
         outputPath: finalizedOutputPath
       };
     } catch (error) {
+      if (temporaryChapterMetadataPath) {
+        try {
+          fs.rmSync(temporaryChapterMetadataPath, { force: true });
+        } catch (_error) {
+          // best effort cleanup
+        }
+      }
       if (error.runInfo && error.runInfo.source === 'FFMPEG') {
         await historyService.updateJob(jobId, {
           handbrake_info_json: JSON.stringify({
             ...error.runInfo,
-            mode: 'audiobook_encode',
+            mode: isSplitOutput ? 'audiobook_encode_split' : 'audiobook_encode',
             format: outputFormat,
             formatOptions,
             inputPath
@@ -11284,6 +11640,14 @@ class PipelineService extends EventEmitter {
       await this.failJob(jobId, 'ENCODING', error);
       error.jobAlreadyFailed = true;
       throw error;
+    } finally {
+      if (temporaryChapterMetadataPath) {
+        try {
+          fs.rmSync(temporaryChapterMetadataPath, { force: true });
+        } catch (_error) {
+          // best effort cleanup
+        }
+      }
     }
   }
 

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Dialog } from 'primereact/dialog';
 import { Dropdown } from 'primereact/dropdown';
 import { Slider } from 'primereact/slider';
 import { Button } from 'primereact/button';
 import { ProgressBar } from 'primereact/progressbar';
 import { Tag } from 'primereact/tag';
+import { InputText } from 'primereact/inputtext';
 import { AUDIOBOOK_FORMATS, AUDIOBOOK_FORMAT_SCHEMAS, getDefaultAudiobookFormatOptions } from '../config/audiobookFormatSchemas';
 import { getStatusLabel, getStatusSeverity } from '../utils/statusPresentation';
 
@@ -47,6 +49,35 @@ function formatChapterTime(secondsValue) {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function truncateDescription(value, maxLength = 220) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength).trim()}...`;
+}
+
+function normalizeChapterTitle(value, index) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  return normalized || `Kapitel ${index}`;
+}
+
+function normalizeEditableChapters(chapters = []) {
+  const source = Array.isArray(chapters) ? chapters : [];
+  return source.map((chapter, index) => {
+    const safeIndex = Number(chapter?.index);
+    const resolvedIndex = Number.isFinite(safeIndex) && safeIndex > 0 ? Math.trunc(safeIndex) : index + 1;
+    return {
+      index: resolvedIndex,
+      title: normalizeChapterTitle(chapter?.title, resolvedIndex),
+      startSeconds: Number(chapter?.startSeconds || 0),
+      endSeconds: Number(chapter?.endSeconds || 0),
+      startMs: Number(chapter?.startMs || 0),
+      endMs: Number(chapter?.endMs || 0)
+    };
+  });
 }
 
 function FormatField({ field, value, onChange, disabled }) {
@@ -111,12 +142,18 @@ export default function AudiobookConfigPanel({
     : (Array.isArray(context?.chapters) ? context.chapters : []);
   const [format, setFormat] = useState(initialFormat);
   const [formatOptions, setFormatOptions] = useState(() => buildFormatOptions(initialFormat, audiobookConfig?.formatOptions));
+  const [editableChapters, setEditableChapters] = useState(() => normalizeEditableChapters(chapters));
+  const [descriptionDialogVisible, setDescriptionDialogVisible] = useState(false);
 
   useEffect(() => {
     const nextFormat = normalizeFormat(audiobookConfig?.format);
     setFormat(nextFormat);
     setFormatOptions(buildFormatOptions(nextFormat, audiobookConfig?.formatOptions));
   }, [jobId, audiobookConfig?.format, JSON.stringify(audiobookConfig?.formatOptions || {})]);
+
+  useEffect(() => {
+    setEditableChapters(normalizeEditableChapters(chapters));
+  }, [jobId, JSON.stringify(chapters || [])]);
 
   const schema = AUDIOBOOK_FORMAT_SCHEMAS[format] || AUDIOBOOK_FORMAT_SCHEMAS.mp3;
   const canStart = Boolean(jobId) && (state === 'READY_TO_START' || state === 'ERROR' || state === 'CANCELLED');
@@ -125,6 +162,9 @@ export default function AudiobookConfigPanel({
   const outputPath = String(context?.outputPath || '').trim() || null;
   const statusLabel = getStatusLabel(state);
   const statusSeverity = getStatusSeverity(state);
+  const description = String(metadata?.description || '').trim();
+  const descriptionPreview = truncateDescription(description);
+  const posterUrl = String(metadata?.poster || '').trim() || null;
 
   const visibleFields = useMemo(
     () => (Array.isArray(schema?.fields) ? schema.fields.filter((field) => isFieldVisible(field, formatOptions)) : []),
@@ -134,19 +174,45 @@ export default function AudiobookConfigPanel({
   return (
     <div className="audiobook-config-panel">
       <div className="audiobook-config-head">
-        <div className="device-meta">
-          <div><strong>Titel:</strong> {metadata?.title || '-'}</div>
-          <div><strong>Autor:</strong> {metadata?.author || '-'}</div>
-          <div><strong>Sprecher:</strong> {metadata?.narrator || '-'}</div>
-          <div><strong>Serie:</strong> {metadata?.series || '-'}</div>
-          <div><strong>Teil:</strong> {metadata?.part || '-'}</div>
-          <div><strong>Jahr:</strong> {metadata?.year || '-'}</div>
-          <div><strong>Kapitel:</strong> {chapters.length || '-'}</div>
+        <div className="audiobook-config-summary">
+          {posterUrl ? (
+            <div className="audiobook-config-cover">
+              <img src={posterUrl} alt={metadata?.title || 'Audiobook Cover'} />
+            </div>
+          ) : null}
+
+          <div className="device-meta">
+            <div><strong>Titel:</strong> {metadata?.title || '-'}</div>
+            <div><strong>Autor:</strong> {metadata?.author || '-'}</div>
+            <div><strong>Sprecher:</strong> {metadata?.narrator || '-'}</div>
+            <div><strong>Serie:</strong> {metadata?.series || '-'}</div>
+            <div><strong>Teil:</strong> {metadata?.part || '-'}</div>
+            <div><strong>Jahr:</strong> {metadata?.year || '-'}</div>
+            <div><strong>Kapitel:</strong> {editableChapters.length || '-'}</div>
+            {descriptionPreview ? (
+              <div className="audiobook-description-preview">
+                <strong>Beschreibung:</strong>
+                <span>{descriptionPreview}</span>
+                {description.length > descriptionPreview.length ? (
+                  <Button
+                    type="button"
+                    label="Vollständig anzeigen"
+                    icon="pi pi-external-link"
+                    text
+                    size="small"
+                    onClick={() => setDescriptionDialogVisible(true)}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
+
         <div className="audiobook-config-tags">
           <Tag value={statusLabel} severity={statusSeverity} />
           <Tag value={`Format: ${format.toUpperCase()}`} severity="info" />
           {metadata?.durationMs ? <Tag value={`Dauer: ${Math.round(Number(metadata.durationMs) / 60000)} min`} severity="secondary" /> : null}
+          {posterUrl ? <Tag value="Cover erkannt" severity="success" /> : null}
         </div>
       </div>
 
@@ -184,23 +250,36 @@ export default function AudiobookConfigPanel({
           ))}
 
           <small>
-            Metadaten und Kapitel werden aus der AAX-Datei gelesen. Erst nach Klick auf Start wird `ffmpeg` ausgeführt.
+            <code>m4b</code> erzeugt eine Datei mit bearbeitbaren Kapiteln. <code>mp3</code> und <code>flac</code> werden kapitelweise als einzelne Dateien erzeugt.
           </small>
         </div>
 
         <div className="audiobook-config-chapters">
-          <h4>Kapitelvorschau</h4>
-          {chapters.length === 0 ? (
+          <h4>Kapitel</h4>
+          {editableChapters.length === 0 ? (
             <small>Keine Kapitel in der Quelle erkannt.</small>
           ) : (
             <div className="audiobook-chapter-list">
-              {chapters.map((chapter, index) => (
-                <div key={`${chapter?.index || index}-${chapter?.title || ''}`} className="audiobook-chapter-row">
-                  <strong>#{chapter?.index || index + 1}</strong>
-                  <span>{chapter?.title || `Kapitel ${index + 1}`}</span>
-                  <small>
-                    {formatChapterTime(chapter?.startSeconds)} - {formatChapterTime(chapter?.endSeconds)}
-                  </small>
+              {editableChapters.map((chapter, index) => (
+                <div key={`${chapter.index}-${index}`} className="audiobook-chapter-row audiobook-chapter-row-editable">
+                  <div className="audiobook-chapter-row-head">
+                    <strong>#{chapter.index || index + 1}</strong>
+                    <small>
+                      {formatChapterTime(chapter.startSeconds)} - {formatChapterTime(chapter.endSeconds)}
+                    </small>
+                  </div>
+                  <InputText
+                    value={chapter.title}
+                    onChange={(event) => {
+                      const nextTitle = event.target.value;
+                      setEditableChapters((prev) => prev.map((entry, entryIndex) => (
+                        entryIndex === index
+                          ? { ...entry, title: nextTitle }
+                          : entry
+                      )));
+                    }}
+                    disabled={busy || isRunning}
+                  />
                 </div>
               ))}
             </div>
@@ -227,7 +306,18 @@ export default function AudiobookConfigPanel({
             label={state === 'READY_TO_START' ? 'Encoding starten' : 'Mit diesen Einstellungen starten'}
             icon="pi pi-play"
             severity="success"
-            onClick={() => onStart?.({ format, formatOptions })}
+            onClick={() => onStart?.({
+              format,
+              formatOptions,
+              chapters: editableChapters.map((chapter, index) => ({
+                index: chapter.index || index + 1,
+                title: normalizeChapterTitle(chapter.title, chapter.index || index + 1),
+                startSeconds: chapter.startSeconds,
+                endSeconds: chapter.endSeconds,
+                startMs: chapter.startMs,
+                endMs: chapter.endMs
+              }))
+            })}
             loading={busy}
             disabled={!jobId}
           />
@@ -256,6 +346,17 @@ export default function AudiobookConfigPanel({
           />
         ) : null}
       </div>
+
+      <Dialog
+        header="Beschreibung"
+        visible={descriptionDialogVisible}
+        style={{ width: 'min(48rem, 92vw)' }}
+        onHide={() => setDescriptionDialogVisible(false)}
+      >
+        <div className="audiobook-description-dialog">
+          <p>{description || 'Keine Beschreibung vorhanden.'}</p>
+        </div>
+      </Dialog>
     </div>
   );
 }

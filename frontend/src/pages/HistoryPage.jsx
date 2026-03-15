@@ -105,7 +105,7 @@ function resolveMediaType(row) {
   if (Array.isArray(row?.makemkvInfo?.tracks) && row.makemkvInfo.tracks.length > 0) {
     return 'cd';
   }
-  if (String(row?.handbrakeInfo?.mode || '').trim().toLowerCase() === 'audiobook_encode') {
+  if (['audiobook_encode', 'audiobook_encode_split'].includes(String(row?.handbrakeInfo?.mode || '').trim().toLowerCase())) {
     return 'audiobook';
   }
   if (String(encodePlan?.mode || '').trim().toLowerCase() === 'audiobook') {
@@ -347,7 +347,7 @@ function formatDateTime(value) {
   });
 }
 
-export default function HistoryPage() {
+export default function HistoryPage({ refreshToken = 0 }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
@@ -437,7 +437,7 @@ export default function HistoryPage() {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [search, status]);
+  }, [search, status, refreshToken]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
