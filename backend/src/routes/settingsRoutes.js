@@ -8,6 +8,7 @@ const pipelineService = require('../services/pipelineService');
 const wsService = require('../services/websocketService');
 const hardwareMonitorService = require('../services/hardwareMonitorService');
 const userPresetService = require('../services/userPresetService');
+const activationBytesService = require('../services/activationBytesService');
 const logger = require('../services/logger').child('SETTINGS_ROUTE');
 
 const router = express.Router();
@@ -372,6 +373,15 @@ router.post(
     });
     const result = await notificationService.sendTest({ title, message });
     res.json({ result });
+  })
+);
+
+router.get(
+  '/activation-bytes',
+  asyncHandler(async (req, res) => {
+    logger.debug('get:settings:activation-bytes', { reqId: req.reqId });
+    const entries = await activationBytesService.listCachedEntries();
+    res.json({ entries });
   })
 );
 

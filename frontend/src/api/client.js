@@ -241,6 +241,12 @@ export const api = {
       forceRefresh: options.forceRefresh
     });
   },
+  getActivationBytes(options = {}) {
+    return requestCachedGet('/settings/activation-bytes', {
+      ttlMs: 0,
+      forceRefresh: options.forceRefresh ?? true
+    });
+  },
   getHandBrakePresets(options = {}) {
     return requestCachedGet('/settings/handbrake-presets', {
       ttlMs: 10 * 60 * 1000,

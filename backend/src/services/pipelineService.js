@@ -25,6 +25,7 @@ const { analyzePlaylistObfuscation, normalizePlaylistId } = require('../utils/pl
 const { errorToMeta } = require('../utils/errorMeta');
 const userPresetService = require('./userPresetService');
 const thumbnailService = require('./thumbnailService');
+const activationBytesService = require('./activationBytesService');
 
 const RUNNING_STATES = new Set(['ANALYZING', 'RIPPING', 'ENCODING', 'MEDIAINFO_CHECK', 'CD_ANALYZING', 'CD_RIPPING', 'CD_ENCODING']);
 const REVIEW_REFRESH_SETTING_PREFIXES = [
@@ -10945,6 +10946,27 @@ class PipelineService extends EventEmitter {
         stagedRawDir,
         stagedRawFilePath
       });
+
+      // Activation Bytes: erst Cache prüfen, dann einmalig Azure-API anfragen und persistent speichern
+      try {
+        const { checksum, activationBytes, source } = await activationBytesService.resolveActivationBytes(stagedRawFilePath);
+        await historyService.appendLog(
+          job.id,
+          'SYSTEM',
+          `Activation Bytes aufgelöst (${source}): checksum=${checksum} bytes=${activationBytes}`
+        );
+        logger.info('audiobook:upload:activation-bytes', { jobId: job.id, checksum, activationBytes, source });
+      } catch (abError) {
+        logger.warn('audiobook:upload:activation-bytes-failed', {
+          jobId: job.id,
+          error: errorToMeta(abError)
+        });
+        await historyService.appendLog(
+          job.id,
+          'SYSTEM',
+          `Activation Bytes konnten nicht aufgelöst werden: ${abError?.message || 'unknown'}`
+        ).catch(() => {});
+      }
 
       let detectedAsin = null;
       let audnexChapters = [];

@@ -184,6 +184,9 @@ export default function SettingsPage() {
   const [chainEditorErrors, setChainEditorErrors] = useState({});
   const [chainDragSource, setChainDragSource] = useState(null);
 
+  // Activation Bytes state
+  const [activationBytes, setActivationBytes] = useState([]);
+
   // User presets state
   const [userPresets, setUserPresets] = useState([]);
   const [userPresetsLoading, setUserPresetsLoading] = useState(false);
@@ -355,6 +358,8 @@ export default function SettingsPage() {
       setDraftValues(values);
       setErrors({});
       loadEffectivePaths({ silent: true });
+
+      api.getActivationBytes().then(r => setActivationBytes(Array.isArray(r?.entries) ? r.entries : [])).catch(() => {});
 
       const presetsPromise = api.getHandBrakePresets();
       const scriptsPromise = api.getScripts();
@@ -1738,6 +1743,33 @@ export default function SettingsPage() {
           </TabPanel>
         </TabView>
       </Card>
+
+      {activationBytes.length > 0 && (
+        <Card
+          title="Activation Bytes Cache"
+          subTitle="Lokal gespeicherte AAX-Activation Bytes. Werden beim ersten Upload automatisch über die Audible-Tools API ermittelt."
+          style={{ marginTop: '1.5rem' }}
+        >
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.875rem' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--surface-border)' }}>
+                <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem' }}>Checksum</th>
+                <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem' }}>Activation Bytes</th>
+                <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem' }}>Gespeichert am</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activationBytes.map((entry) => (
+                <tr key={entry.checksum} style={{ borderBottom: '1px solid var(--surface-border)' }}>
+                  <td style={{ padding: '0.5rem 0.75rem', color: 'var(--text-color-secondary)' }}>{entry.checksum}</td>
+                  <td style={{ padding: '0.5rem 0.75rem', fontWeight: 'bold' }}>{entry.activation_bytes}</td>
+                  <td style={{ padding: '0.5rem 0.75rem', color: 'var(--text-color-secondary)' }}>{new Date(entry.created_at).toLocaleString('de-DE')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
     </div>
   );
 }

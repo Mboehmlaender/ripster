@@ -164,6 +164,12 @@ CREATE TABLE user_presets (
 
 CREATE INDEX idx_user_presets_media_type ON user_presets(media_type);
 
+CREATE TABLE IF NOT EXISTS aax_activation_bytes (
+  checksum TEXT PRIMARY KEY,
+  activation_bytes TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- =============================================================================
 --  Default Settings Seed
 -- =============================================================================
