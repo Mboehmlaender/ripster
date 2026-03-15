@@ -3251,26 +3251,43 @@ function extractHandBrakeTrackSelectionFromPlan(encodePlan, inputPath = null) {
     return null;
   }
 
-  const audioTrackIds = normalizeTrackIdList(
-    (Array.isArray(encodeTitle.audioTracks) ? encodeTitle.audioTracks : [])
-      .filter((track) => Boolean(track?.selectedForEncode))
-      .map((track) => track?.sourceTrackId ?? track?.id)
-  );
-  const subtitleTrackIds = normalizeTrackIdList(
-    (Array.isArray(encodeTitle.subtitleTracks) ? encodeTitle.subtitleTracks : [])
-      .filter((track) => Boolean(track?.selectedForEncode))
-      .map((track) => track?.sourceTrackId ?? track?.id)
-  );
-  const selectedSubtitleTracks = (Array.isArray(encodeTitle.subtitleTracks) ? encodeTitle.subtitleTracks : [])
-    .filter((track) => Boolean(track?.selectedForEncode));
+  const allAudioTracks = Array.isArray(encodeTitle.audioTracks) ? encodeTitle.audioTracks : [];
+  const allSubtitleTracks = Array.isArray(encodeTitle.subtitleTracks) ? encodeTitle.subtitleTracks : [];
+
+  // manualTrackSelection stores validated track?.id values written by applyManualTrackSelectionToPlan.
+  // Use it as the authoritative source for audio/subtitle IDs.  Fall back to the selectedForEncode
+  // flags on the track objects when the field is absent (e.g. auto-selected plans without user review).
+  // Always resolve through track?.id – never sourceTrackId, which may hold MakeMKV stream IDs
+  // (e.g. 189) that have no relation to HandBrake's 1-indexed track positions.
+  const manualSelection = plan.manualTrackSelection && typeof plan.manualTrackSelection === 'object'
+    ? plan.manualTrackSelection
+    : null;
+  const manualTitleId = normalizeReviewTitleId(manualSelection?.titleId);
+  const manualMatchesTitle = !manualTitleId || !encodeInputTitleId || manualTitleId === encodeInputTitleId;
+
+  const audioTrackIds = (manualMatchesTitle && Array.isArray(manualSelection?.audioTrackIds))
+    ? normalizeTrackIdList(manualSelection.audioTrackIds)
+    : normalizeTrackIdList(allAudioTracks.filter((t) => Boolean(t?.selectedForEncode)).map((t) => t?.id));
+
+  const subtitleTrackIds = (manualMatchesTitle && Array.isArray(manualSelection?.subtitleTrackIds))
+    ? normalizeTrackIdList(manualSelection.subtitleTrackIds)
+    : normalizeTrackIdList(allSubtitleTracks.filter((t) => Boolean(t?.selectedForEncode)).map((t) => t?.id));
+
+  // Resolve burn/default/forced attributes from the actual track objects, matched by track?.id.
+  const subtitleTrackIdSet = new Set(subtitleTrackIds.map(String));
+  const selectedSubtitleTracks = allSubtitleTracks.filter((t) => {
+    const tid = normalizeTrackIdList([t?.id])[0];
+    return tid !== undefined && subtitleTrackIdSet.has(String(tid));
+  });
+
   const subtitleBurnTrackId = normalizeTrackIdList(
-    selectedSubtitleTracks.filter((track) => Boolean(track?.burnIn)).map((track) => track?.sourceTrackId ?? track?.id)
+    selectedSubtitleTracks.filter((track) => Boolean(track?.burnIn)).map((track) => track?.id)
   )[0] || null;
   const subtitleDefaultTrackId = normalizeTrackIdList(
-    selectedSubtitleTracks.filter((track) => Boolean(track?.defaultTrack)).map((track) => track?.sourceTrackId ?? track?.id)
+    selectedSubtitleTracks.filter((track) => Boolean(track?.defaultTrack)).map((track) => track?.id)
   )[0] || null;
   const subtitleForcedTrackId = normalizeTrackIdList(
-    selectedSubtitleTracks.filter((track) => Boolean(track?.forced)).map((track) => track?.sourceTrackId ?? track?.id)
+    selectedSubtitleTracks.filter((track) => Boolean(track?.forced)).map((track) => track?.id)
   )[0] || null;
   const subtitleForcedOnly = selectedSubtitleTracks.some((track) => Boolean(track?.forcedOnly));
 

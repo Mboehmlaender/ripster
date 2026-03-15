@@ -8,7 +8,8 @@
       "Bash(mkdocs build --strict)",
       "Read(//mnt/external/media/**)",
       "WebFetch(domain:www.makemkv.com)",
-      "Bash(node --check backend/src/services/pipelineService.js)"
+      "Bash(node --check backend/src/services/pipelineService.js)",
+      "Bash(wc -l /home/michael/ripster/debug/backend/data/logs/backend/*.log)"
     ]
   }
 }
