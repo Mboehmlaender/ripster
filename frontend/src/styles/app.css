@@ -168,6 +168,7 @@ body {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .nav-btn.p-button {
@@ -193,6 +194,47 @@ body {
 
 .nav-btn-active.p-button {
   box-shadow: 0 0 0 1px rgba(58, 29, 18, 0.3);
+}
+
+.zip-status-indicator {
+  border: 1px solid rgba(58, 29, 18, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 247, 232, 0.55);
+  color: var(--rip-brown-900);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.8rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.zip-status-indicator:hover {
+  background: rgba(255, 247, 232, 0.82);
+  border-color: var(--rip-brown-700);
+  transform: translateY(-1px);
+}
+
+.zip-status-indicator i {
+  font-size: 0.95rem;
+}
+
+.zip-status-indicator span {
+  white-space: nowrap;
+}
+
+.zip-status-indicator-ready {
+  background: rgba(231, 247, 233, 0.9);
+  border-color: rgba(28, 138, 58, 0.28);
+  color: #1f6d35;
+}
+
+.zip-status-indicator-error {
+  background: rgba(255, 236, 230, 0.9);
+  border-color: rgba(184, 74, 39, 0.26);
+  color: #9f3b1f;
 }
 
 .app-main {
@@ -1574,6 +1616,22 @@ body {
   white-space: nowrap;
 }
 
+.path-overview-extra {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.path-overview-extra code {
+  font-size: 0.8rem;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
 .path-medium-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1836,6 +1894,47 @@ body {
   display: grid;
   grid-template-columns: 1fr 16rem auto;
   gap: 0.5rem;
+}
+
+.downloads-summary-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+
+.downloads-title-cell,
+.downloads-path-cell {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.downloads-title-cell strong,
+.downloads-title-cell small,
+.downloads-path-cell code,
+.downloads-path-cell small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.downloads-path-cell code {
+  width: fit-content;
+  max-width: 100%;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+}
+
+.downloads-error-text {
+  color: #9f3b1f;
+}
+
+.downloads-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
 .history-dataview .p-dataview-header {
@@ -2667,6 +2766,11 @@ body {
     padding: 0.8rem 1rem;
   }
 
+  .nav-buttons {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .app-upload-banner {
     width: calc(100% - 1.5rem);
     grid-template-columns: 1fr;
@@ -2829,6 +2933,11 @@ body {
 
   .table-filters {
     grid-template-columns: 1fr;
+  }
+
+  .zip-status-indicator {
+    width: 100%;
+    justify-content: center;
   }
 
   .history-dv-item-list {

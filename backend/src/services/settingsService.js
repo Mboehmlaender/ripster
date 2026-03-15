@@ -18,7 +18,8 @@ const {
   defaultMovieDir: DEFAULT_MOVIE_DIR,
   defaultCdDir: DEFAULT_CD_DIR,
   defaultAudiobookRawDir: DEFAULT_AUDIOBOOK_RAW_DIR,
-  defaultAudiobookDir: DEFAULT_AUDIOBOOK_DIR
+  defaultAudiobookDir: DEFAULT_AUDIOBOOK_DIR,
+  defaultDownloadDir: DEFAULT_DOWNLOAD_DIR
 } = require('../config');
 
 const DEFAULT_AUDIO_COPY_MASK = ['copy:aac', 'copy:ac3', 'copy:eac3', 'copy:truehd', 'copy:dts', 'copy:dtshd', 'copy:mp3', 'copy:flac'];
@@ -741,6 +742,9 @@ class SettingsService {
       effective[legacyKey] = resolvedValue;
     }
 
+    effective.download_dir = String(sourceMap.download_dir || '').trim() || DEFAULT_DOWNLOAD_DIR;
+    effective.download_dir_owner = String(sourceMap.download_dir_owner || '').trim() || null;
+
     return effective;
   }
 
@@ -760,12 +764,14 @@ class SettingsService {
       dvd: { raw: dvd.raw_dir, movies: dvd.movie_dir },
       cd: { raw: cd.raw_dir, movies: cd.movie_dir },
       audiobook: { raw: audiobook.raw_dir, movies: audiobook.movie_dir },
+      downloads: { path: bluray.download_dir },
       defaults: {
         raw: DEFAULT_RAW_DIR,
         movies: DEFAULT_MOVIE_DIR,
         cd: DEFAULT_CD_DIR,
         audiobookRaw: DEFAULT_AUDIOBOOK_RAW_DIR,
-        audiobookMovies: DEFAULT_AUDIOBOOK_DIR
+        audiobookMovies: DEFAULT_AUDIOBOOK_DIR,
+        downloads: DEFAULT_DOWNLOAD_DIR
       }
     };
   }

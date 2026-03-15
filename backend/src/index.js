@@ -10,11 +10,13 @@ const requestLogger = require('./middleware/requestLogger');
 const settingsRoutes = require('./routes/settingsRoutes');
 const pipelineRoutes = require('./routes/pipelineRoutes');
 const historyRoutes = require('./routes/historyRoutes');
+const downloadRoutes = require('./routes/downloadRoutes');
 const cronRoutes = require('./routes/cronRoutes');
 const runtimeRoutes = require('./routes/runtimeRoutes');
 const wsService = require('./services/websocketService');
 const pipelineService = require('./services/pipelineService');
 const cronService = require('./services/cronService');
+const downloadService = require('./services/downloadService');
 const diskDetectionService = require('./services/diskDetectionService');
 const hardwareMonitorService = require('./services/hardwareMonitorService');
 const logger = require('./services/logger').child('BOOT');
@@ -26,6 +28,7 @@ async function start() {
   await initDatabase();
   await pipelineService.init();
   await cronService.init();
+  await downloadService.init();
 
   const app = express();
   app.use(cors({ origin: corsOrigin }));
@@ -39,6 +42,7 @@ async function start() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/history', historyRoutes);
+  app.use('/api/downloads', downloadRoutes);
   app.use('/api/crons', cronRoutes);
   app.use('/api/runtime', runtimeRoutes);
   app.use('/api/thumbnails', express.static(getThumbnailsDir(), { maxAge: '30d', immutable: true }));

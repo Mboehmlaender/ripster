@@ -953,6 +953,18 @@ async function migrateSettingsSchemaMetadata(db) {
      VALUES ('movie_dir_audiobook_owner', 'Pfade', 'Eigentümer Audiobook Output-Ordner', 'string', 0, 'Eigentümer der encodierten Audiobook-Dateien im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1155)`
   );
   await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('movie_dir_audiobook_owner', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('download_dir', 'Pfade', 'Download ZIP-Ordner', 'path', 0, 'Zielordner für vorbereitete ZIP-Downloads. Leer = Standardpfad (data/downloads).', NULL, '[]', '{}', 118)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('download_dir', NULL)`);
+
+  await db.run(
+    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
+     VALUES ('download_dir_owner', 'Pfade', 'Eigentümer Download ZIP-Ordner', 'string', 0, 'Eigentümer der vorbereiteten ZIP-Dateien im Format user:gruppe. Leer = Standardbenutzer des Dienstes.', NULL, '[]', '{}', 1185)`
+  );
+  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('download_dir_owner', NULL)`);
 }
 
 async function getDb() {

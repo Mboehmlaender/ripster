@@ -439,8 +439,8 @@ function PathField({
             rounded
             size="small"
             className="job-path-download-button"
-            aria-label={`${label} als ZIP herunterladen`}
-            tooltip={`${label} als ZIP herunterladen`}
+            aria-label={`${label} als ZIP vorbereiten`}
+            tooltip={`${label} als ZIP vorbereiten`}
             tooltipOptions={{ position: 'top' }}
             onClick={onDownload}
             disabled={downloadDisabled || downloadLoading}

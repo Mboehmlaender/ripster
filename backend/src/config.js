@@ -25,5 +25,6 @@ module.exports = {
   defaultMovieDir: resolveOutputPath(process.env.DEFAULT_MOVIE_DIR, 'output', 'movies'),
   defaultCdDir: resolveOutputPath(process.env.DEFAULT_CD_DIR, 'output', 'cd'),
   defaultAudiobookRawDir: resolveOutputPath(process.env.DEFAULT_AUDIOBOOK_RAW_DIR, 'output', 'audiobook-raw'),
-  defaultAudiobookDir: resolveOutputPath(process.env.DEFAULT_AUDIOBOOK_DIR, 'output', 'audiobooks')
+  defaultAudiobookDir: resolveOutputPath(process.env.DEFAULT_AUDIOBOOK_DIR, 'output', 'audiobooks'),
+  defaultDownloadDir: resolveOutputPath(process.env.DEFAULT_DOWNLOAD_DIR, 'downloads')
 };

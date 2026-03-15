@@ -175,6 +175,7 @@ const BLURAY_PATH_KEYS = ['raw_dir_bluray', 'movie_dir_bluray', 'output_template
 const DVD_PATH_KEYS = ['raw_dir_dvd', 'movie_dir_dvd', 'output_template_dvd'];
 const CD_PATH_KEYS = ['raw_dir_cd', 'movie_dir_cd', 'cd_output_template'];
 const AUDIOBOOK_PATH_KEYS = ['raw_dir_audiobook', 'movie_dir_audiobook', 'output_template_audiobook', 'output_chapter_template_audiobook', 'audiobook_raw_template'];
+const DOWNLOAD_PATH_KEYS = ['download_dir'];
 const LOG_PATH_KEYS = ['log_dir'];
 
 function buildSectionsForCategory(categoryName, settings) {
@@ -384,6 +385,7 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const dvdSettings = list.filter((s) => DVD_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && DVD_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const cdSettings = list.filter((s) => CD_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && CD_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const audiobookSettings = list.filter((s) => AUDIOBOOK_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && AUDIOBOOK_PATH_KEYS.includes(s.key.replace('_owner', ''))));
+  const downloadSettings = list.filter((s) => DOWNLOAD_PATH_KEYS.includes(s.key) || (s.key.endsWith('_owner') && DOWNLOAD_PATH_KEYS.includes(s.key.replace('_owner', ''))));
   const logSettings = list.filter((s) => LOG_PATH_KEYS.includes(s.key));
 
   const defaultRaw = effectivePaths?.defaults?.raw || 'data/output/raw';
@@ -391,6 +393,7 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const defaultCd = effectivePaths?.defaults?.cd || 'data/output/cd';
   const defaultAudiobookRaw = effectivePaths?.defaults?.audiobookRaw || 'data/output/audiobook-raw';
   const defaultAudiobookMovies = effectivePaths?.defaults?.audiobookMovies || 'data/output/audiobooks';
+  const defaultDownloads = effectivePaths?.defaults?.downloads || 'data/downloads';
 
   const ep = effectivePaths || {};
   const blurayRaw = ep.bluray?.raw || defaultRaw;
@@ -401,6 +404,7 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
   const cdMovies = ep.cd?.movies || cdRaw;
   const audiobookRaw = ep.audiobook?.raw || defaultAudiobookRaw;
   const audiobookMovies = ep.audiobook?.movies || defaultAudiobookMovies;
+  const downloadPath = ep.downloads?.path || defaultDownloads;
 
   const isDefault = (path, def) => path === def;
 
@@ -467,6 +471,11 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
             </tr>
           </tbody>
         </table>
+        <div className="path-overview-extra">
+          <strong>ZIP-Downloads:</strong>
+          <code>{downloadPath}</code>
+          {isDefault(downloadPath, defaultDownloads) && <span className="path-default-badge">Standard</span>}
+        </div>
       </div>
 
       {/* Medium-Karten */}
@@ -501,6 +510,15 @@ function PathCategoryTab({ settings, values, errors, dirtyKeys, onChange, effect
         <PathMediumCard
           title="Audiobook"
           pathSettings={audiobookSettings}
+          settingsByKey={settingsByKey}
+          values={values}
+          errors={errors}
+          dirtyKeys={dirtyKeys}
+          onChange={onChange}
+        />
+        <PathMediumCard
+          title="Downloads"
+          pathSettings={downloadSettings}
           settingsByKey={settingsByKey}
           values={values}
           errors={errors}

@@ -693,10 +693,25 @@ export const api = {
     afterMutationInvalidate(['/history', '/pipeline/queue']);
     return result;
   },
-  downloadJobArchive(jobId, target = 'raw') {
-    const query = new URLSearchParams();
-    query.set('target', String(target || 'raw').trim());
-    return download(`/history/${jobId}/download?${query.toString()}`);
+  requestJobArchive(jobId, target = 'raw') {
+    return request(`/downloads/history/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify({ target })
+    });
+  },
+  getDownloads() {
+    return request('/downloads');
+  },
+  getDownloadsSummary() {
+    return request('/downloads/summary');
+  },
+  downloadPreparedArchive(downloadId) {
+    return download(`/downloads/${encodeURIComponent(downloadId)}/file`);
+  },
+  deleteDownload(downloadId) {
+    return request(`/downloads/${encodeURIComponent(downloadId)}`, {
+      method: 'DELETE'
+    });
   },
   getJob(jobId, options = {}) {
     const query = new URLSearchParams();

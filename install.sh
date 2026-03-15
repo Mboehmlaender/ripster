@@ -555,6 +555,7 @@ mkdir -p "$INSTALL_DIR/backend/logs"
 mkdir -p "$INSTALL_DIR/backend/data/output/raw"
 mkdir -p "$INSTALL_DIR/backend/data/output/movies"
 mkdir -p "$INSTALL_DIR/backend/data/output/cd"
+mkdir -p "$INSTALL_DIR/backend/data/downloads"
 mkdir -p "$INSTALL_DIR/backend/data/logs"
 
 # Gesicherte Daten zurückspielen
@@ -616,6 +617,7 @@ CORS_ORIGIN=http://${FRONTEND_HOST}
 DEFAULT_RAW_DIR=${INSTALL_DIR}/backend/data/output/raw
 DEFAULT_MOVIE_DIR=${INSTALL_DIR}/backend/data/output/movies
 DEFAULT_CD_DIR=${INSTALL_DIR}/backend/data/output/cd
+DEFAULT_DOWNLOAD_DIR=${INSTALL_DIR}/backend/data/downloads
 EOF
   ok "Backend .env erstellt"
 fi
@@ -631,9 +633,11 @@ ACTUAL_USER="${SUDO_USER:-}"
 if [[ -n "$ACTUAL_USER" && "$ACTUAL_USER" != "root" ]]; then
   chown -R "$ACTUAL_USER:$SERVICE_USER" \
     "$INSTALL_DIR/backend/data/output" \
+    "$INSTALL_DIR/backend/data/downloads" \
     "$INSTALL_DIR/backend/data/logs"
   chmod -R 775 \
     "$INSTALL_DIR/backend/data/output" \
+    "$INSTALL_DIR/backend/data/downloads" \
     "$INSTALL_DIR/backend/data/logs"
   ok "Verzeichnisse $ACTUAL_USER:$SERVICE_USER (775) zugewiesen"
 else

@@ -774,6 +774,11 @@ rsync -a --delete \
 # Datenbank-/Log-Verzeichnisse anlegen
 mkdir -p "$INSTALL_DIR/backend/data"
 mkdir -p "$INSTALL_DIR/backend/logs"
+mkdir -p "$INSTALL_DIR/backend/data/output/raw"
+mkdir -p "$INSTALL_DIR/backend/data/output/movies"
+mkdir -p "$INSTALL_DIR/backend/data/output/cd"
+mkdir -p "$INSTALL_DIR/backend/data/downloads"
+mkdir -p "$INSTALL_DIR/backend/data/logs"
 
 # Bei Reinstall: Daten wiederherstellen
 if [[ -d "$INSTALL_DIR/../ripster-data-backup" ]]; then
@@ -830,6 +835,10 @@ LOG_LEVEL=info
 
 # CORS: Erlaube Anfragen vom Frontend (nginx)
 CORS_ORIGIN=http://${FRONTEND_HOST}
+DEFAULT_RAW_DIR=${INSTALL_DIR}/backend/data/output/raw
+DEFAULT_MOVIE_DIR=${INSTALL_DIR}/backend/data/output/movies
+DEFAULT_CD_DIR=${INSTALL_DIR}/backend/data/output/cd
+DEFAULT_DOWNLOAD_DIR=${INSTALL_DIR}/backend/data/downloads
 EOF
   ok "Backend .env erstellt"
 fi

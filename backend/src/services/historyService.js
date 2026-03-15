@@ -1519,9 +1519,12 @@ class HistoryService {
 
     return {
       jobId: normalizedJobId,
+      displayTitle: buildJobDisplayTitle(job),
       target: normalizedTarget,
       sourcePath,
       sourceType: sourceStat.isDirectory() ? 'directory' : 'file',
+      sourceMtimeMs: Number(sourceStat.mtimeMs || 0),
+      sourceModifiedAt: sourceStat.mtime ? sourceStat.mtime.toISOString() : null,
       entryName: path.basename(sourcePath) || (normalizedTarget === 'raw' ? 'raw' : 'output'),
       archiveName: buildJobArchiveName(job, normalizedTarget)
     };

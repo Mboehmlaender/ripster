@@ -1,10 +1,8 @@
 const express = require('express');
-const archiver = require('archiver');
 const asyncHandler = require('../middleware/asyncHandler');
 const historyService = require('../services/historyService');
 const pipelineService = require('../services/pipelineService');
 const logger = require('../services/logger').child('HISTORY_ROUTE');
-const { errorToMeta } = require('../utils/errorMeta');
 
 const router = express.Router();
 
@@ -179,72 +177,6 @@ router.post(
     const result = await historyService.deleteJob(id, target, { includeRelated });
     const uiReset = await pipelineService.resetFrontendState('history_delete');
     res.json({ ...result, uiReset });
-  })
-);
-
-router.get(
-  '/:id/download',
-  asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    const target = String(req.query.target || '').trim();
-    const descriptor = await historyService.getJobArchiveDescriptor(id, target);
-
-    logger.info('get:job:download', {
-      reqId: req.reqId,
-      id,
-      target: descriptor.target,
-      sourceType: descriptor.sourceType,
-      sourcePath: descriptor.sourcePath
-    });
-
-    const archive = archiver('zip', { zlib: { level: 9 } });
-
-    const handleArchiveError = (error) => {
-      logger.error('get:job:download:failed', {
-        reqId: req.reqId,
-        id,
-        target: descriptor.target,
-        error: errorToMeta(error)
-      });
-
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: {
-            message: 'ZIP-Download fehlgeschlagen.'
-          }
-        });
-        return;
-      }
-
-      res.destroy(error);
-    };
-
-    archive.on('warning', handleArchiveError);
-    archive.on('error', handleArchiveError);
-    res.on('close', () => {
-      if (!res.writableEnded) {
-        archive.abort();
-      }
-    });
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.attachment(descriptor.archiveName);
-    archive.pipe(res);
-
-    if (descriptor.sourceType === 'directory') {
-      archive.directory(descriptor.sourcePath, descriptor.entryName);
-    } else {
-      archive.file(descriptor.sourcePath, { name: descriptor.entryName });
-    }
-
-    try {
-      const finalizeResult = archive.finalize();
-      if (finalizeResult && typeof finalizeResult.catch === 'function') {
-        finalizeResult.catch(handleArchiveError);
-      }
-    } catch (error) {
-      handleArchiveError(error);
-    }
   })
 );
 

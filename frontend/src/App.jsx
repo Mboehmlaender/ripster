@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from 'primereact/button';
 import { ProgressBar } from 'primereact/progressbar';
 import { Tag } from 'primereact/tag';
+import { Toast } from 'primereact/toast';
 import { api } from './api/client';
 import { useWebSocket } from './hooks/useWebSocket';
 import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
 import HistoryPage from './pages/HistoryPage';
 import DatabasePage from './pages/DatabasePage';
+import DownloadsPage from './pages/DownloadsPage';
 
 function normalizeJobId(value) {
   const parsed = Number(value);
@@ -77,6 +79,32 @@ function getAudiobookUploadTagMeta(phase) {
   return { label: 'Inaktiv', severity: 'secondary' };
 }
 
+function getDownloadIndicatorMeta(summary) {
+  const activeCount = Number(summary?.activeCount || 0);
+  const failedCount = Number(summary?.failedCount || 0);
+  const totalCount = Number(summary?.totalCount || 0);
+
+  if (activeCount > 0) {
+    return {
+      icon: 'pi pi-spinner pi-spin',
+      label: activeCount === 1 ? '1 ZIP aktiv' : `${activeCount} ZIPs aktiv`,
+      className: 'zip-status-indicator-active'
+    };
+  }
+  if (totalCount > 0) {
+    return {
+      icon: 'pi pi-check',
+      label: failedCount > 0 ? 'ZIP-Jobs beendet' : 'ZIPs fertig',
+      className: 'zip-status-indicator-ready'
+    };
+  }
+  return {
+    icon: 'pi pi-download',
+    label: 'ZIPs',
+    className: 'zip-status-indicator-idle'
+  };
+}
+
 function App() {
   const appVersion = __APP_VERSION__;
   const [pipeline, setPipeline] = useState({ state: 'IDLE', progress: 0, context: {} });
@@ -85,9 +113,12 @@ function App() {
   const [audiobookUpload, setAudiobookUpload] = useState(() => createInitialAudiobookUploadState());
   const [dashboardJobsRefreshToken, setDashboardJobsRefreshToken] = useState(0);
   const [historyJobsRefreshToken, setHistoryJobsRefreshToken] = useState(0);
+  const [downloadsRefreshToken, setDownloadsRefreshToken] = useState(0);
+  const [downloadSummary, setDownloadSummary] = useState(null);
   const [pendingDashboardJobId, setPendingDashboardJobId] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
+  const globalToastRef = useRef(null);
 
   const refreshPipeline = async () => {
     const response = await api.getPipelineState();
@@ -196,6 +227,11 @@ function App() {
 
   useEffect(() => {
     refreshPipeline().catch(() => null);
+    api.getDownloadsSummary()
+      .then((response) => {
+        setDownloadSummary(response?.summary || null);
+      })
+      .catch(() => null);
   }, []);
 
   useWebSocket({
@@ -270,13 +306,47 @@ function App() {
       if (message.type === 'HARDWARE_MONITOR_UPDATE') {
         setHardwareMonitoring(message.payload || null);
       }
+
+      if (message.type === 'DOWNLOADS_UPDATED') {
+        const summary = message.payload?.summary && typeof message.payload.summary === 'object'
+          ? message.payload.summary
+          : null;
+        const reason = String(message.payload?.reason || '').trim().toLowerCase();
+        const item = message.payload?.item && typeof message.payload.item === 'object'
+          ? message.payload.item
+          : null;
+
+        if (summary) {
+          setDownloadSummary(summary);
+        }
+        setDownloadsRefreshToken((prev) => prev + 1);
+
+        if (reason === 'ready' && item) {
+          globalToastRef.current?.show({
+            severity: 'success',
+            summary: 'ZIP fertig',
+            detail: `${item.archiveName || 'ZIP-Datei'} steht jetzt auf der Downloads-Seite bereit.`,
+            life: 4500
+          });
+        }
+
+        if (reason === 'failed' && item) {
+          globalToastRef.current?.show({
+            severity: 'error',
+            summary: 'ZIP fehlgeschlagen',
+            detail: item.errorMessage || `${item.archiveName || 'ZIP-Datei'} konnte nicht erstellt werden.`,
+            life: 5000
+          });
+        }
+      }
     }
   });
 
   const nav = [
     { label: 'Dashboard', path: '/' },
     { label: 'Settings', path: '/settings' },
-    { label: 'Historie', path: '/history' }
+    { label: 'Historie', path: '/history' },
+    { label: 'Downloads', path: '/downloads' }
   ];
   const uploadPhase = String(audiobookUpload?.phase || 'idle').trim().toLowerCase();
   const showAudiobookUploadBanner = uploadPhase !== 'idle';
@@ -290,9 +360,12 @@ function App() {
   const canDismissUploadBanner = uploadPhase === 'completed' || uploadPhase === 'error';
   const hasUploadedJob = Boolean(normalizeJobId(audiobookUpload?.jobId));
   const isDashboardRoute = location.pathname === '/';
+  const downloadIndicator = getDownloadIndicatorMeta(downloadSummary);
 
   return (
     <div className="app-shell">
+      <Toast ref={globalToastRef} position="top-right" />
+
       <header className="app-header">
         <div className="brand-block">
           <img src="/logo.png" alt="Ripster Logo" className="brand-logo" />
@@ -316,6 +389,15 @@ function App() {
               outlined={location.pathname !== item.path}
             />
           ))}
+          <button
+            type="button"
+            className={`zip-status-indicator ${downloadIndicator.className}`}
+            onClick={() => navigate('/downloads')}
+            title="Downloads-Seite oeffnen"
+          >
+            <i className={downloadIndicator.icon} aria-hidden="true" />
+            <span>{downloadIndicator.label}</span>
+          </button>
         </div>
       </header>
 
@@ -394,6 +476,7 @@ function App() {
           />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/history" element={<HistoryPage refreshToken={historyJobsRefreshToken} />} />
+          <Route path="/downloads" element={<DownloadsPage refreshToken={downloadsRefreshToken} />} />
           <Route path="/database" element={<DatabasePage />} />
         </Routes>
       </main>

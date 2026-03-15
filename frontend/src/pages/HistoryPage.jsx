@@ -567,7 +567,19 @@ export default function HistoryPage({ refreshToken = 0 }) {
 
     setDownloadBusyTarget(normalizedTarget);
     try {
-      await api.downloadJobArchive(jobId, normalizedTarget);
+      const response = await api.requestJobArchive(jobId, normalizedTarget);
+      const item = response?.item && typeof response.item === 'object' ? response.item : null;
+      const label = normalizedTarget === 'raw' ? 'RAW' : 'Encode';
+      const isReady = String(item?.status || '').trim().toLowerCase() === 'ready';
+      const detail = isReady
+        ? `${label}-ZIP ist bereits auf der Downloads-Seite verfuegbar.`
+        : `${label}-ZIP wird im Hintergrund erstellt und erscheint danach auf der Downloads-Seite.`;
+      toastRef.current?.show({
+        severity: isReady ? 'success' : 'info',
+        summary: isReady ? 'ZIP bereit' : 'ZIP wird erstellt',
+        detail,
+        life: 4000
+      });
     } catch (error) {
       toastRef.current?.show({
         severity: 'error',
