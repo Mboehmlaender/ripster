@@ -109,5 +109,6 @@ function spawnTrackedProcess({
 }
 
 module.exports = {
-  spawnTrackedProcess
+  spawnTrackedProcess,
+  streamLines
 };

@@ -297,8 +297,10 @@ VALUES ('mediainfo_extra_args_bluray', 'Tools', 'Mediainfo Extra Args', 'string'
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('mediainfo_extra_args_bluray', NULL);
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('makemkv_rip_mode_bluray', 'Tools', 'MakeMKV Rip Modus', 'select', 1, 'mkv: direkte MKV-Dateien; backup: vollständige Blu-ray Struktur im RAW-Ordner.', 'backup', '[{"label":"MKV","value":"mkv"},{"label":"Backup","value":"backup"}]', '{}', 305);
+VALUES ('makemkv_rip_mode_bluray', 'Tools', 'MakeMKV Rip Modus', 'select', 1, 'backup: vollständige Blu-ray Struktur im RAW-Ordner (empfohlen, ermöglicht --decrypt).', 'backup', '[{"label":"Backup","value":"backup"},{"label":"MKV","value":"mkv"}]', '{}', 305);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('makemkv_rip_mode_bluray', 'backup');
+UPDATE settings_schema SET default_value = 'backup', description = 'backup: vollständige Blu-ray Struktur im RAW-Ordner (empfohlen, ermöglicht --decrypt).' WHERE key = 'makemkv_rip_mode_bluray';
+UPDATE settings_values SET value = 'backup' WHERE key = 'makemkv_rip_mode_bluray';
 
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('makemkv_analyze_extra_args_bluray', 'Tools', 'MakeMKV Analyze Extra Args', 'string', 0, 'Zusätzliche CLI-Parameter für Analyze (Blu-ray).', NULL, '[]', '{}', 310);
@@ -389,10 +391,6 @@ INSERT OR IGNORE INTO settings_values (key, value)
 VALUES ('cd_output_template', '{artist} - {album} ({year})/{trackNr} {artist} - {title}');
 
 -- Tools – Audiobook
-INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-VALUES ('output_extension_audiobook', 'Tools', 'Ausgabeformat', 'select', 1, 'Dateiendung für finale Audiobook-Datei.', 'mp3', '[{"label":"M4B","value":"m4b"},{"label":"MP3","value":"mp3"},{"label":"FLAC","value":"flac"}]', '{}', 730);
-INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_extension_audiobook', 'mp3');
-
 INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
 VALUES ('output_template_audiobook', 'Pfade', 'Output Template (Audiobook)', 'string', 1, 'Template für relative Audiobook-Ausgabepfade ohne Dateiendung. Platzhalter: {author}, {title}, {year}, {narrator}, {series}, {part}, {format}. Unterordner sind über "/" möglich.', '{author}/{author} - {title} ({year})', '[]', '{"minLength":1}', 735);
 INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_template_audiobook', '{author}/{author} - {title} ({year})');

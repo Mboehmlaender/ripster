@@ -10,6 +10,7 @@ const notificationService = require('./notificationService');
 const settingsService = require('./settingsService');
 const wsService = require('./websocketService');
 const runtimeActivityService = require('./runtimeActivityService');
+const { spawnTrackedProcess } = require('./processRunner');
 const { errorToMeta } = require('../utils/errorMeta');
 
 // Maximale Zeilen pro Log-Eintrag (Output-Truncation)
@@ -252,33 +253,57 @@ async function runCronJob(job) {
       let prepared = null;
       try {
         prepared = await scriptService.createExecutableScriptFile(script, { source: 'cron', cronJobId: job.id });
-        const result = await new Promise((resolve, reject) => {
-          const { spawn } = require('child_process');
-          const child = spawn(prepared.cmd, prepared.args, {
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe']
-          });
-          let stdout = '';
-          let stderr = '';
-          child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-          child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-          child.on('error', reject);
-          child.on('close', (code) => resolve({ code, stdout, stderr }));
+        let stdout = '';
+        let stderr = '';
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
+        const processHandle = spawnTrackedProcess({
+          cmd: prepared.cmd,
+          args: prepared.args,
+          context: { source: 'cron', cronJobId: job.id, scriptId: script.id },
+          onStdoutLine: (line) => {
+            const next = stdout.length <= MAX_OUTPUT_CHARS
+              ? `${stdout}${line}\n`
+              : stdout;
+            stdout = next.length > MAX_OUTPUT_CHARS ? next.slice(-MAX_OUTPUT_CHARS) : next;
+            stdoutTruncated = stdoutTruncated || next.length > MAX_OUTPUT_CHARS;
+            runtimeActivityService.appendActivityOutput(scriptActivityId, { stdout: line });
+          },
+          onStderrLine: (line) => {
+            const next = stderr.length <= MAX_OUTPUT_CHARS
+              ? `${stderr}${line}\n`
+              : stderr;
+            stderr = next.length > MAX_OUTPUT_CHARS ? next.slice(-MAX_OUTPUT_CHARS) : next;
+            stderrTruncated = stderrTruncated || next.length > MAX_OUTPUT_CHARS;
+            runtimeActivityService.appendActivityOutput(scriptActivityId, { stderr: line });
+          }
         });
+        let exitCode = 0;
+        try {
+          const result = await processHandle.promise;
+          exitCode = Number.isFinite(Number(result?.code)) ? Number(result.code) : 0;
+        } catch (error) {
+          exitCode = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+          if (exitCode === null) {
+            throw error;
+          }
+        }
 
-        output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+        output = [stdout, stderr].filter(Boolean).join('\n');
         if (output.length > MAX_OUTPUT_CHARS) output = output.slice(0, MAX_OUTPUT_CHARS) + '\n...[truncated]';
-        success = result.code === 0;
-        if (!success) errorMessage = `Exit-Code ${result.code}`;
+        success = exitCode === 0;
+        if (!success) errorMessage = `Exit-Code ${exitCode}`;
         runtimeActivityService.completeActivity(scriptActivityId, {
           status: success ? 'success' : 'error',
           success,
           outcome: success ? 'success' : 'error',
-          exitCode: result.code,
+          exitCode,
           message: success ? null : errorMessage,
           output: output || null,
-          stdout: result.stdout || null,
-          stderr: result.stderr || null,
+          stdout: stdout || null,
+          stderr: stderr || null,
+          stdoutTruncated,
+          stderrTruncated,
           errorMessage: success ? null : (errorMessage || null)
         });
       } catch (error) {

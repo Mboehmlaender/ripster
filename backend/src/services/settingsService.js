@@ -97,8 +97,7 @@ const PROFILED_SETTINGS = {
   },
   output_extension: {
     bluray: 'output_extension_bluray',
-    dvd: 'output_extension_dvd',
-    audiobook: 'output_extension_audiobook'
+    dvd: 'output_extension_dvd'
   },
   output_template: {
     bluray: 'output_template_bluray',

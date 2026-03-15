@@ -1,7 +1,7 @@
-const { spawn } = require('child_process');
 const { getDb } = require('../db/database');
 const logger = require('./logger').child('SCRIPT_CHAINS');
 const runtimeActivityService = require('./runtimeActivityService');
+const { spawnTrackedProcess } = require('./processRunner');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const CHAIN_NAME_MAX_LENGTH = 120;
@@ -74,6 +74,28 @@ function terminateChildProcess(child, { immediate = false } = {}) {
   } catch (_error) {
     return;
   }
+}
+
+function appendTailText(currentValue, nextChunk, maxChars = 12000) {
+  const chunk = String(nextChunk || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!chunk) {
+    return {
+      value: currentValue || '',
+      truncated: false
+    };
+  }
+  const normalizedChunk = chunk.endsWith('\n') ? chunk : `${chunk}\n`;
+  const combined = `${String(currentValue || '')}${normalizedChunk}`;
+  if (combined.length <= maxChars) {
+    return {
+      value: combined,
+      truncated: false
+    };
+  }
+  return {
+    value: combined.slice(-maxChars),
+    truncated: true
+  };
 }
 
 function validateSteps(rawSteps) {
@@ -615,29 +637,58 @@ class ScriptChainService {
               scriptName: script.name,
               source: context?.source || 'chain'
             });
-            const run = await new Promise((resolve, reject) => {
-              const child = spawn(prepared.cmd, prepared.args, {
-                env: process.env,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                detached: true
-              });
-              controlState.activeChild = child;
-              controlState.activeChildTermination = null;
-              let stdout = '';
-              let stderr = '';
-              child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-              child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-              child.on('error', (error) => {
-                controlState.activeChild = null;
-                reject(error);
-              });
-              child.on('close', (code, signal) => {
-                const termination = controlState.activeChildTermination;
-                controlState.activeChild = null;
+            let stdout = '';
+            let stderr = '';
+            let stdoutTruncated = false;
+            let stderrTruncated = false;
+            const processHandle = spawnTrackedProcess({
+              cmd: prepared.cmd,
+              args: prepared.args,
+              context: { source: context?.source || 'chain', chainId: chain.id, scriptId: script.id },
+              onStart: (child) => {
+                controlState.activeChild = child;
                 controlState.activeChildTermination = null;
-                resolve({ code, signal, stdout, stderr, termination });
-              });
+              },
+              onStdoutLine: (line) => {
+                const next = appendTailText(stdout, line);
+                stdout = next.value;
+                stdoutTruncated = stdoutTruncated || next.truncated;
+                runtimeActivityService.appendActivityOutput(scriptActivityId, { stdout: line });
+              },
+              onStderrLine: (line) => {
+                const next = appendTailText(stderr, line);
+                stderr = next.value;
+                stderrTruncated = stderrTruncated || next.truncated;
+                runtimeActivityService.appendActivityOutput(scriptActivityId, { stderr: line });
+              }
             });
+            let runError = null;
+            let exitCode = 0;
+            let signal = null;
+            try {
+              const result = await processHandle.promise;
+              exitCode = Number.isFinite(Number(result?.code)) ? Number(result.code) : 0;
+              signal = result?.signal || null;
+            } catch (error) {
+              runError = error;
+              exitCode = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+              signal = error?.signal || null;
+            }
+            const termination = controlState.activeChildTermination;
+            controlState.activeChild = null;
+            controlState.activeChildTermination = null;
+            if (runError && exitCode === null && !termination) {
+              throw runError;
+            }
+            const run = {
+              code: exitCode,
+              signal,
+              stdout,
+              stderr,
+              stdoutTruncated,
+              stderrTruncated,
+              termination
+            };
             controlState.currentStepType = null;
 
             if (run.termination === 'skip') {
@@ -648,7 +699,11 @@ class ScriptChainService {
                 skipped: true,
                 currentStep: null,
                 message: 'Schritt übersprungen',
-                output: [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null
+                output: [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null,
+                stdout: run.stdout || null,
+                stderr: run.stderr || null,
+                stdoutTruncated: Boolean(run.stdoutTruncated),
+                stderrTruncated: Boolean(run.stderrTruncated)
               });
               if (typeof appendLog === 'function') {
                 try {
@@ -678,6 +733,10 @@ class ScriptChainService {
                 currentStep: null,
                 message: controlState.cancelReason || 'Von Benutzer abgebrochen',
                 output: [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null,
+                stdout: run.stdout || null,
+                stderr: run.stderr || null,
+                stdoutTruncated: Boolean(run.stdoutTruncated),
+                stderrTruncated: Boolean(run.stderrTruncated),
                 errorMessage: controlState.cancelReason || 'Von Benutzer abgebrochen'
               });
               if (typeof appendLog === 'function') {
@@ -709,6 +768,8 @@ class ScriptChainService {
               output: success ? null : [run.stdout || '', run.stderr || ''].filter(Boolean).join('\n').trim() || null,
               stderr: success ? null : (run.stderr || null),
               stdout: success ? null : (run.stdout || null),
+              stdoutTruncated: Boolean(run.stdoutTruncated),
+              stderrTruncated: Boolean(run.stderrTruncated),
               errorMessage: success ? null : `Fehler (Exit ${run.code})`
             });
             logger.info('chain:step:script-done', { chainId, scriptId: script.id, exitCode: run.code, success });

@@ -737,7 +737,7 @@ function buildAudiobookOutputConfig(settings, job, makemkvInfo = null, encodePla
     || audiobookService.DEFAULT_AUDIOBOOK_CHAPTER_OUTPUT_TEMPLATE
   ).trim() || audiobookService.DEFAULT_AUDIOBOOK_CHAPTER_OUTPUT_TEMPLATE;
   const outputFormat = audiobookService.normalizeOutputFormat(
-    encodePlan?.format || settings?.output_extension || 'mp3'
+    encodePlan?.format || 'm4b'
   );
   const numericJobId = Number(fallbackJobId || job?.id || 0);
   const incompleteFolder = Number.isFinite(numericJobId) && numericJobId > 0
@@ -797,6 +797,28 @@ function truncateLine(value, max = 180) {
     return raw;
   }
   return `${raw.slice(0, max)}...`;
+}
+
+function appendTailText(currentValue, nextChunk, maxChars = 12000) {
+  const chunk = String(nextChunk || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!chunk) {
+    return {
+      value: currentValue || '',
+      truncated: false
+    };
+  }
+  const normalizedChunk = chunk.endsWith('\n') ? chunk : `${chunk}\n`;
+  const combined = `${String(currentValue || '')}${normalizedChunk}`;
+  if (combined.length <= maxChars) {
+    return {
+      value: combined,
+      truncated: false
+    };
+  }
+  return {
+    value: combined.slice(-maxChars),
+    truncated: true
+  };
 }
 
 function extractProgressDetail(source, line) {
@@ -4854,42 +4876,59 @@ class PipelineService extends EventEmitter {
       let prepared = null;
       try {
         prepared = await scriptService.createExecutableScriptFile(script, { source: 'queue', scriptId: script.id, scriptName: script.name });
-        const { spawn } = require('child_process');
-        await new Promise((resolve, reject) => {
-          const child = spawn(prepared.cmd, prepared.args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-          let stdout = '';
-          let stderr = '';
-          child.stdout?.on('data', (chunk) => {
-            stdout += String(chunk);
-            if (stdout.length > 12000) {
-              stdout = `${stdout.slice(0, 12000)}\n...[truncated]`;
-            }
-          });
-          child.stderr?.on('data', (chunk) => {
-            stderr += String(chunk);
-            if (stderr.length > 12000) {
-              stderr = `${stderr.slice(0, 12000)}\n...[truncated]`;
-            }
-          });
-          child.on('error', reject);
-          child.on('close', (code) => {
-            logger.info('queue:script:done', { scriptId: script.id, exitCode: code });
-            const output = [stdout, stderr].filter(Boolean).join('\n').trim();
-            const success = Number(code) === 0;
-            runtimeActivityService.completeActivity(activityId, {
-              status: success ? 'success' : 'error',
-              success,
-              outcome: success ? 'success' : 'error',
-              exitCode: Number.isFinite(Number(code)) ? Number(code) : null,
-              message: success ? 'Queue-Skript abgeschlossen' : `Queue-Skript fehlgeschlagen (Exit ${code})`,
-              output: output || null,
-              stdout: stdout || null,
-              stderr: stderr || null,
-              errorMessage: success ? null : `Queue-Skript fehlgeschlagen (Exit ${code})`
-            });
-            resolve();
-          });
+        let stdout = '';
+        let stderr = '';
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
+        const processHandle = spawnTrackedProcess({
+          cmd: prepared.cmd,
+          args: prepared.args,
+          context: { source: 'queue', scriptId: script.id },
+          onStdoutLine: (line) => {
+            const next = appendTailText(stdout, line);
+            stdout = next.value;
+            stdoutTruncated = stdoutTruncated || next.truncated;
+            runtimeActivityService.appendActivityOutput(activityId, { stdout: line });
+          },
+          onStderrLine: (line) => {
+            const next = appendTailText(stderr, line);
+            stderr = next.value;
+            stderrTruncated = stderrTruncated || next.truncated;
+            runtimeActivityService.appendActivityOutput(activityId, { stderr: line });
+          }
         });
+        let exitCode = 0;
+        let runError = null;
+        try {
+          const result = await processHandle.promise;
+          exitCode = Number.isFinite(Number(result?.code)) ? Number(result.code) : 0;
+        } catch (error) {
+          runError = error;
+          exitCode = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+          if (exitCode === null) {
+            throw error;
+          }
+        }
+
+        logger.info('queue:script:done', { scriptId: script.id, exitCode });
+        const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+        const success = Number(exitCode) === 0;
+        runtimeActivityService.completeActivity(activityId, {
+          status: success ? 'success' : 'error',
+          success,
+          outcome: success ? 'success' : 'error',
+          exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+          message: success ? 'Queue-Skript abgeschlossen' : `Queue-Skript fehlgeschlagen (Exit ${exitCode ?? 'n/a'})`,
+          output: output || null,
+          stdout: stdout || null,
+          stderr: stderr || null,
+          stdoutTruncated,
+          stderrTruncated,
+          errorMessage: success ? null : `Queue-Skript fehlgeschlagen (Exit ${exitCode ?? 'n/a'})`
+        });
+        if (runError && !success) {
+          logger.warn('queue:script:exit-nonzero', { scriptId: script.id, exitCode });
+        }
       } catch (err) {
         runtimeActivityService.completeActivity(activityId, {
           status: 'error',
@@ -8366,7 +8405,13 @@ class PipelineService extends EventEmitter {
           source: 'PRE_ENCODE_SCRIPT',
           cmd: prepared.cmd,
           args: prepared.args,
-          argsForLog: prepared.argsForLog
+          argsForLog: prepared.argsForLog,
+          onStdoutLine: (line) => {
+            runtimeActivityService.appendActivityOutput(activityId, { stdout: line });
+          },
+          onStderrLine: (line) => {
+            runtimeActivityService.appendActivityOutput(activityId, { stderr: line });
+          }
         });
         succeeded += 1;
         results.push({ scriptId: script.id, scriptName: script.name, status: 'SUCCESS', runInfo });
@@ -8377,7 +8422,11 @@ class PipelineService extends EventEmitter {
           outcome: 'success',
           exitCode: Number.isFinite(Number(runInfo?.exitCode)) ? Number(runInfo.exitCode) : null,
           message: 'Pre-Encode Skript erfolgreich',
-          output: runOutput || null
+          output: runOutput || null,
+          stdout: runInfo?.stdoutTail || null,
+          stderr: runInfo?.stderrTail || null,
+          stdoutTruncated: Boolean(runInfo?.stdoutTruncated),
+          stderrTruncated: Boolean(runInfo?.stderrTruncated)
         });
         await historyService.appendLog(jobId, 'SYSTEM', `Pre-Encode Skript erfolgreich: ${script.name}`);
         if (progressTracker?.onStepComplete) {
@@ -8395,7 +8444,11 @@ class PipelineService extends EventEmitter {
           cancelled,
           message: error?.message || 'Pre-Encode Skriptfehler',
           errorMessage: error?.message || 'Pre-Encode Skriptfehler',
-          output: runOutput || null
+          output: runOutput || null,
+          stdout: runInfo?.stdoutTail || null,
+          stderr: runInfo?.stderrTail || null,
+          stdoutTruncated: Boolean(runInfo?.stdoutTruncated),
+          stderrTruncated: Boolean(runInfo?.stderrTruncated)
         });
         failed += 1;
         aborted = true;
@@ -8527,7 +8580,13 @@ class PipelineService extends EventEmitter {
           source: 'POST_ENCODE_SCRIPT',
           cmd: prepared.cmd,
           args: prepared.args,
-          argsForLog: prepared.argsForLog
+          argsForLog: prepared.argsForLog,
+          onStdoutLine: (line) => {
+            runtimeActivityService.appendActivityOutput(activityId, { stdout: line });
+          },
+          onStderrLine: (line) => {
+            runtimeActivityService.appendActivityOutput(activityId, { stderr: line });
+          }
         });
 
         succeeded += 1;
@@ -8544,7 +8603,11 @@ class PipelineService extends EventEmitter {
           outcome: 'success',
           exitCode: Number.isFinite(Number(runInfo?.exitCode)) ? Number(runInfo.exitCode) : null,
           message: 'Post-Encode Skript erfolgreich',
-          output: runOutput || null
+          output: runOutput || null,
+          stdout: runInfo?.stdoutTail || null,
+          stderr: runInfo?.stderrTail || null,
+          stdoutTruncated: Boolean(runInfo?.stdoutTruncated),
+          stderrTruncated: Boolean(runInfo?.stderrTruncated)
         });
         await historyService.appendLog(
           jobId,
@@ -8566,7 +8629,11 @@ class PipelineService extends EventEmitter {
           cancelled,
           message: error?.message || 'Post-Encode Skriptfehler',
           errorMessage: error?.message || 'Post-Encode Skriptfehler',
-          output: runOutput || null
+          output: runOutput || null,
+          stdout: runInfo?.stdoutTail || null,
+          stderr: runInfo?.stderrTail || null,
+          stdoutTruncated: Boolean(runInfo?.stdoutTruncated),
+          stderrTruncated: Boolean(runInfo?.stderrTruncated)
         });
         failed += 1;
         aborted = true;
@@ -10550,7 +10617,9 @@ class PipelineService extends EventEmitter {
     collectStdoutLines = true,
     collectStderrLines = true,
     argsForLog = null,
-    silent = false
+    silent = false,
+    onStdoutLine = null,
+    onStderrLine = null
   }) {
     const normalizedJobId = this.normalizeQueueJobId(jobId) || Number(jobId) || jobId;
     const loggableArgs = Array.isArray(argsForLog) ? argsForLog : args;
@@ -10570,6 +10639,10 @@ class PipelineService extends EventEmitter {
         exitCode: null,
         stdoutLines: 0,
         stderrLines: 0,
+        stdoutTail: '',
+        stderrTail: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
         lastProgress: 0,
         eta: null,
         lastDetail: null,
@@ -10594,6 +10667,10 @@ class PipelineService extends EventEmitter {
       exitCode: null,
       stdoutLines: 0,
       stderrLines: 0,
+      stdoutTail: '',
+      stderrTail: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
       lastProgress: 0,
       eta: null,
       lastDetail: null,
@@ -10643,6 +10720,16 @@ class PipelineService extends EventEmitter {
           collectLines.push(line);
         }
         void historyService.appendProcessLog(jobId, source, line);
+        const nextStdout = appendTailText(runInfo.stdoutTail, line);
+        runInfo.stdoutTail = nextStdout.value;
+        runInfo.stdoutTruncated = runInfo.stdoutTruncated || nextStdout.truncated;
+        if (typeof onStdoutLine === 'function') {
+          try {
+            onStdoutLine(line);
+          } catch (_error) {
+            // ignore observer failures for live runtime mirroring
+          }
+        }
         applyLine(line, false);
       },
       onStderrLine: (line) => {
@@ -10650,6 +10737,16 @@ class PipelineService extends EventEmitter {
           collectLines.push(line);
         }
         void historyService.appendProcessLog(jobId, `${source}_ERR`, line);
+        const nextStderr = appendTailText(runInfo.stderrTail, line);
+        runInfo.stderrTail = nextStderr.value;
+        runInfo.stderrTruncated = runInfo.stderrTruncated || nextStderr.truncated;
+        if (typeof onStderrLine === 'function') {
+          try {
+            onStderrLine(line);
+          } catch (_error) {
+            // ignore observer failures for live runtime mirroring
+          }
+        }
         applyLine(line, true);
       }
     });
@@ -10900,7 +10997,7 @@ class PipelineService extends EventEmitter {
       settings?.output_template || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE
     ).trim() || audiobookService.DEFAULT_AUDIOBOOK_OUTPUT_TEMPLATE;
     const outputFormat = audiobookService.normalizeOutputFormat(
-      requestedFormat || settings?.output_extension || 'mp3'
+      requestedFormat || 'm4b'
     );
     const formatOptions = audiobookService.getDefaultFormatOptions(outputFormat);
     const ffprobeCommand = String(settings?.ffprobe_command || 'ffprobe').trim() || 'ffprobe';
@@ -11196,7 +11293,7 @@ class PipelineService extends EventEmitter {
     }
 
     const format = audiobookService.normalizeOutputFormat(
-      config?.format || encodePlan?.format || 'mp3'
+      config?.format || encodePlan?.format || 'm4b'
     );
     const formatOptions = audiobookService.normalizeFormatOptions(
       format,

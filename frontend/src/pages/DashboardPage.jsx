@@ -9,6 +9,7 @@ import { Dialog } from 'primereact/dialog';
 import { InputNumber } from 'primereact/inputnumber';
 import { InputText } from 'primereact/inputtext';
 import { api } from '../api/client';
+import { useWebSocket } from '../hooks/useWebSocket';
 import PipelineStatusCard from '../components/PipelineStatusCard';
 import MetadataSelectionDialog from '../components/MetadataSelectionDialog';
 import CdMetadataDialog from '../components/CdMetadataDialog';
@@ -130,6 +131,7 @@ function normalizeRuntimeActivitiesPayload(rawPayload) {
       output: source.output != null ? String(source.output) : null,
       stdout: source.stdout != null ? String(source.stdout) : null,
       stderr: source.stderr != null ? String(source.stderr) : null,
+      outputTruncated: Boolean(source.outputTruncated),
       stdoutTruncated: Boolean(source.stdoutTruncated),
       stderrTruncated: Boolean(source.stderrTruncated),
       exitCode: Number.isFinite(Number(source.exitCode)) ? Number(source.exitCode) : null,
@@ -187,6 +189,53 @@ function hasRuntimeOutputDetails(item) {
     || String(item.stdout || '').trim()
     || String(item.stderr || '').trim()
     || hasRelevantExitCode
+  );
+}
+
+function hasRuntimeLogContent(item) {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+  return Boolean(
+    String(item.output || '').trim()
+    || String(item.stdout || '').trim()
+    || String(item.stderr || '').trim()
+  );
+}
+
+function RuntimeActivityDetails({
+  item,
+  summary,
+  emptyLabel = 'Noch keine Log-Ausgabe vorhanden.'
+}) {
+  const hasLogs = hasRuntimeLogContent(item);
+  const hasOutput = Boolean(String(item?.output || '').trim());
+  const hasStdout = Boolean(String(item?.stdout || '').trim());
+  const hasStderr = Boolean(String(item?.stderr || '').trim());
+
+  return (
+    <details className="runtime-activity-details">
+      <summary>{summary}</summary>
+      {!hasLogs ? <small>{emptyLabel}</small> : null}
+      {hasOutput ? (
+        <div className="runtime-activity-details-block">
+          <small><strong>Ausgabe:</strong>{item?.outputTruncated ? ' (gekürzt)' : ''}</small>
+          <pre>{item.output}</pre>
+        </div>
+      ) : null}
+      {hasStdout ? (
+        <div className="runtime-activity-details-block">
+          <small><strong>stdout:</strong>{item?.stdoutTruncated ? ' (gekürzt)' : ''}</small>
+          <pre>{item.stdout}</pre>
+        </div>
+      ) : null}
+      {hasStderr ? (
+        <div className="runtime-activity-details-block">
+          <small><strong>stderr:</strong>{item?.stderrTruncated ? ' (gekürzt)' : ''}</small>
+          <pre>{item.stderr}</pre>
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -1016,12 +1065,22 @@ export default function DashboardPage({
     void load(false);
     const interval = setInterval(() => {
       void load(true);
-    }, 2500);
+    }, 10000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, []);
+
+  useWebSocket({
+    onMessage: (message) => {
+      if (message?.type !== 'RUNTIME_ACTIVITY_CHANGED') {
+        return;
+      }
+      setRuntimeActivities(normalizeRuntimeActivitiesPayload(message.payload));
+      setRuntimeLoading(false);
+    }
+  });
 
   useEffect(() => {
     const normalizedExpanded = normalizeJobId(expandedJobId);
@@ -2447,6 +2506,10 @@ export default function DashboardPage({
                         {item?.currentStep ? <small>Schritt: {item.currentStep}</small> : null}
                         {item?.currentScriptName ? <small>Laufendes Skript: {item.currentScriptName}</small> : null}
                         {item?.message ? <small>{item.message}</small> : null}
+                        <RuntimeActivityDetails
+                          item={item}
+                          summary="Live-Ausgabe anzeigen"
+                        />
                         <small>Gestartet: {formatUpdatedAt(item?.startedAt)}</small>
                         {canCancel || canNextStep ? (
                           <div className="runtime-activity-actions">
@@ -2515,27 +2578,10 @@ export default function DashboardPage({
                         {item?.message ? <small>{item.message}</small> : null}
                         {item?.errorMessage ? <small className="error-text">{item.errorMessage}</small> : null}
                         {hasRuntimeOutputDetails(item) ? (
-                          <details className="runtime-activity-details">
-                            <summary>Details anzeigen</summary>
-                            {item?.output ? (
-                              <div className="runtime-activity-details-block">
-                                <small><strong>Ausgabe:</strong></small>
-                                <pre>{item.output}</pre>
-                              </div>
-                            ) : null}
-                            {item?.stderr ? (
-                              <div className="runtime-activity-details-block">
-                                <small><strong>stderr:</strong>{item?.stderrTruncated ? ' (gekürzt)' : ''}</small>
-                                <pre>{item.stderr}</pre>
-                              </div>
-                            ) : null}
-                            {item?.stdout ? (
-                              <div className="runtime-activity-details-block">
-                                <small><strong>stdout:</strong>{item?.stdoutTruncated ? ' (gekürzt)' : ''}</small>
-                                <pre>{item.stdout}</pre>
-                              </div>
-                            ) : null}
-                          </details>
+                          <RuntimeActivityDetails
+                            item={item}
+                            summary="Details anzeigen"
+                          />
                         ) : null}
                         <small>
                           Ende: {formatUpdatedAt(item?.finishedAt || item?.startedAt)}

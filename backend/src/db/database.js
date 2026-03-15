@@ -788,7 +788,8 @@ async function removeDeprecatedSettings(db) {
     'filename_template_bluray',
     'filename_template_dvd',
     'output_folder_template_bluray',
-    'output_folder_template_dvd'
+    'output_folder_template_dvd',
+    'output_extension_audiobook'
   ];
   for (const key of deprecatedKeys) {
     const schemaResult = await db.run('DELETE FROM settings_schema WHERE key = ?', [key]);
@@ -906,11 +907,6 @@ async function migrateSettingsSchemaMetadata(db) {
   );
   await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('ffprobe_command', 'ffprobe')`);
 
-  await db.run(
-    `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)
-     VALUES ('output_extension_audiobook', 'Tools', 'Ausgabeformat', 'select', 1, 'Dateiendung für finale Audiobook-Datei.', 'mp3', '[{"label":"M4B","value":"m4b"},{"label":"MP3","value":"mp3"},{"label":"FLAC","value":"flac"}]', '{}', 730)`
-  );
-  await db.run(`INSERT OR IGNORE INTO settings_values (key, value) VALUES ('output_extension_audiobook', 'mp3')`);
 
   await db.run(
     `INSERT OR IGNORE INTO settings_schema (key, category, label, type, required, description, default_value, options_json, validation_json, order_index)

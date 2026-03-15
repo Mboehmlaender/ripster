@@ -6,6 +6,7 @@ const { getDb } = require('../db/database');
 const logger = require('./logger').child('SCRIPTS');
 const settingsService = require('./settingsService');
 const runtimeActivityService = require('./runtimeActivityService');
+const { streamLines } = require('./processRunner');
 const { errorToMeta } = require('../utils/errorMeta');
 
 const SCRIPT_NAME_MAX_LENGTH = 120;
@@ -206,7 +207,15 @@ function killChildProcessTree(child, signal = 'SIGTERM') {
   }
 }
 
-function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd = process.cwd(), onChild = null }) {
+function runProcessCapture({
+  cmd,
+  args,
+  timeoutMs = SCRIPT_TEST_TIMEOUT_MS,
+  cwd = process.cwd(),
+  onChild = null,
+  onStdoutLine = null,
+  onStderrLine = null
+}) {
   return new Promise((resolve, reject) => {
     const effectiveTimeoutMs = normalizeScriptTestTimeoutMs(timeoutMs, SCRIPT_TEST_TIMEOUT_MS);
     const startedAt = Date.now();
@@ -258,6 +267,13 @@ function runProcessCapture({ cmd, args, timeoutMs = SCRIPT_TEST_TIMEOUT_MS, cwd 
 
     child.stdout?.on('data', (chunk) => onData('stdout', chunk));
     child.stderr?.on('data', (chunk) => onData('stderr', chunk));
+
+    if (child.stdout && typeof onStdoutLine === 'function') {
+      streamLines(child.stdout, onStdoutLine);
+    }
+    if (child.stderr && typeof onStderrLine === 'function') {
+      streamLines(child.stderr, onStderrLine);
+    }
 
     child.on('error', (error) => {
       ended = true;
@@ -597,6 +613,12 @@ class ScriptService {
         timeoutMs: effectiveTimeoutMs,
         onChild: (child) => {
           controlState.child = child;
+        },
+        onStdoutLine: (line) => {
+          runtimeActivityService.appendActivityOutput(activityId, { stdout: line });
+        },
+        onStderrLine: (line) => {
+          runtimeActivityService.appendActivityOutput(activityId, { stderr: line });
         }
       });
       const exitCode = Number.isFinite(Number(run.code)) ? Number(run.code) : null;

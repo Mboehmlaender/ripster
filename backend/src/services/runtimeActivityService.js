@@ -3,6 +3,7 @@ const wsService = require('./websocketService');
 const MAX_RECENT_ACTIVITIES = 120;
 const MAX_ACTIVITY_OUTPUT_CHARS = 12000;
 const MAX_ACTIVITY_TEXT_CHARS = 2000;
+const OUTPUT_BROADCAST_THROTTLE_MS = 180;
 
 function nowIso() {
   return new Date().toISOString();
@@ -28,10 +29,50 @@ function normalizeText(value, { trim = true, maxChars = MAX_ACTIVITY_TEXT_CHARS 
     return null;
   }
   if (text.length > maxChars) {
-    const suffix = trim ? ' ...[gekürzt]' : '\n...[gekürzt]';
-    text = `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`;
+    if (trim) {
+      const suffix = ' ...[gekürzt]';
+      text = `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`;
+    } else {
+      const prefix = '...[gekürzt]\n';
+      text = `${prefix}${text.slice(-Math.max(0, maxChars - prefix.length))}`;
+    }
   }
   return text;
+}
+
+function normalizeOutputChunk(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const normalized = String(value).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!normalized) {
+    return '';
+  }
+  return normalized.endsWith('\n') ? normalized : `${normalized}\n`;
+}
+
+function appendOutputTail(currentValue, chunk, maxChars = MAX_ACTIVITY_OUTPUT_CHARS) {
+  const normalizedChunk = normalizeOutputChunk(chunk);
+  const currentText = currentValue == null ? '' : String(currentValue);
+  if (!normalizedChunk) {
+    return {
+      value: currentText || null,
+      truncated: false
+    };
+  }
+
+  const combined = `${currentText}${normalizedChunk}`;
+  if (combined.length <= maxChars) {
+    return {
+      value: combined,
+      truncated: false
+    };
+  }
+
+  return {
+    value: combined.slice(-maxChars),
+    truncated: true
+  };
 }
 
 function sanitizeActivity(input = {}) {
@@ -61,6 +102,7 @@ function sanitizeActivity(input = {}) {
     output: normalizeText(source.output, { trim: false, maxChars: MAX_ACTIVITY_OUTPUT_CHARS }),
     stdout: normalizeText(source.stdout, { trim: false, maxChars: MAX_ACTIVITY_OUTPUT_CHARS }),
     stderr: normalizeText(source.stderr, { trim: false, maxChars: MAX_ACTIVITY_OUTPUT_CHARS }),
+    outputTruncated: Boolean(source.outputTruncated),
     stdoutTruncated: Boolean(source.stdoutTruncated),
     stderrTruncated: Boolean(source.stderrTruncated),
     startedAt: source.startedAt || nowIso(),
@@ -77,6 +119,7 @@ class RuntimeActivityService {
     this.active = new Map();
     this.recent = [];
     this.controls = new Map();
+    this.outputBroadcastTimer = null;
   }
 
   buildSnapshot() {
@@ -92,7 +135,21 @@ class RuntimeActivityService {
   }
 
   broadcastSnapshot() {
+    if (this.outputBroadcastTimer) {
+      clearTimeout(this.outputBroadcastTimer);
+      this.outputBroadcastTimer = null;
+    }
     wsService.broadcast('RUNTIME_ACTIVITY_CHANGED', this.buildSnapshot());
+  }
+
+  scheduleOutputBroadcast() {
+    if (this.outputBroadcastTimer) {
+      return;
+    }
+    this.outputBroadcastTimer = setTimeout(() => {
+      this.outputBroadcastTimer = null;
+      wsService.broadcast('RUNTIME_ACTIVITY_CHANGED', this.buildSnapshot());
+    }, OUTPUT_BROADCAST_THROTTLE_MS);
   }
 
   startActivity(type, payload = {}) {
@@ -131,6 +188,35 @@ class RuntimeActivityService {
     });
     this.active.set(id, next);
     this.broadcastSnapshot();
+    return next;
+  }
+
+  appendActivityOutput(activityId, patch = {}) {
+    const id = normalizeNumber(activityId);
+    if (!id || !this.active.has(id)) {
+      return null;
+    }
+
+    const current = this.active.get(id);
+    const nextOutput = appendOutputTail(current.output, patch?.output, MAX_ACTIVITY_OUTPUT_CHARS);
+    const nextStdout = appendOutputTail(current.stdout, patch?.stdout, MAX_ACTIVITY_OUTPUT_CHARS);
+    const nextStderr = appendOutputTail(current.stderr, patch?.stderr, MAX_ACTIVITY_OUTPUT_CHARS);
+    const next = sanitizeActivity({
+      ...current,
+      ...patch,
+      id: current.id,
+      type: current.type,
+      status: current.status,
+      startedAt: current.startedAt,
+      output: nextOutput.value,
+      stdout: nextStdout.value,
+      stderr: nextStderr.value,
+      outputTruncated: Boolean(current.outputTruncated || patch?.outputTruncated || nextOutput.truncated),
+      stdoutTruncated: Boolean(current.stdoutTruncated || patch?.stdoutTruncated || nextStdout.truncated),
+      stderrTruncated: Boolean(current.stderrTruncated || patch?.stderrTruncated || nextStderr.truncated)
+    });
+    this.active.set(id, next);
+    this.scheduleOutputBroadcast();
     return next;
   }
 
