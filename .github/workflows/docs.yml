@@ -1,0 +1,159 @@
+name: Deploy Docs to GitHub Pages
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Für git-dates Plugin
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          key: mkdocs-material-${{ runner.os }}-${{ hashFiles('requirements-docs.txt') }}
+          path: ~/.cache/pip
+          restore-keys: |
+            mkdocs-material-${{ runner.os }}-
+
+      - name: Install MkDocs and dependencies
+        run: pip install -r requirements-docs.txt
+
+      - name: Build MkDocs site (main -> /, dev -> /dev)
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SITE_ROOT="${GITHUB_WORKSPACE:-$PWD}/site"
+          WORKTREE_ROOT="${RUNNER_TEMP:-$PWD}/mkdocs-worktrees"
+
+          has_ref() {
+            git rev-parse --verify --quiet "$1" >/dev/null
+          }
+
+          # Fetch refs separately (robust when one branch is not yet mirrored to GitHub).
+          git fetch origin main || true
+          git fetch origin dev || true
+
+          MAIN_REF="origin/main"
+          DEV_REF="origin/dev"
+          if [ "${REF_NAME}" = "main" ]; then
+            MAIN_REF="${SHA}"
+          fi
+          if [ "${REF_NAME}" = "dev" ]; then
+            DEV_REF="${SHA}"
+          fi
+
+          if ! has_ref "${MAIN_REF}"; then
+            echo "::error::Konnte Main-Ref '${MAIN_REF}' nicht auflösen. Main-Doku kann nicht gebaut werden."
+            exit 1
+          fi
+          if ! has_ref "${DEV_REF}"; then
+            echo "::warning::Dev-Ref '${DEV_REF}' nicht gefunden. Es wird ein Platzhalter unter /dev erzeugt."
+            DEV_REF=""
+          fi
+
+          # Build each branch in its own worktree and merge into one Pages artifact:
+          # - main docs at site/
+          # - dev docs at site/dev/
+          rm -rf "${WORKTREE_ROOT}" "${SITE_ROOT}"
+          mkdir -p "${WORKTREE_ROOT}"
+          mkdir -p "${SITE_ROOT}"
+          git worktree add --detach "${WORKTREE_ROOT}/main" "${MAIN_REF}"
+
+          if ! mkdocs build --strict --verbose \
+            --config-file "${WORKTREE_ROOT}/main/mkdocs.yml" \
+            --site-dir "${SITE_ROOT}"; then
+            echo "::error::Main-Dokumentation konnte nicht gebaut werden."
+            exit 1
+          fi
+
+          if [ -n "${DEV_REF}" ]; then
+            git worktree add --detach "${WORKTREE_ROOT}/dev" "${DEV_REF}"
+            if ! mkdocs build --strict --verbose \
+              --config-file "${WORKTREE_ROOT}/dev/mkdocs.yml" \
+              --site-dir "${SITE_ROOT}/dev"; then
+              echo "::warning::Dev-Dokumentation konnte nicht gebaut werden. Es wird ein Platzhalter unter /dev erzeugt."
+              rm -rf "${SITE_ROOT}/dev"
+              mkdir -p "${SITE_ROOT}/dev"
+              cat > "${SITE_ROOT}/dev/index.html" <<'EOF'
+          <!doctype html>
+          <html lang="de">
+          <head><meta charset="utf-8"><title>Dev Doku</title></head>
+          <body><p>Dev-Dokumentation ist aktuell auf GitHub noch nicht verfügbar.</p></body>
+          </html>
+          EOF
+            fi
+          else
+            mkdir -p "${SITE_ROOT}/dev"
+            cat > "${SITE_ROOT}/dev/index.html" <<'EOF'
+          <!doctype html>
+          <html lang="de">
+          <head><meta charset="utf-8"><title>Dev Doku</title></head>
+          <body><p>Dev-Dokumentation ist aktuell auf GitHub noch nicht verfügbar.</p></body>
+          </html>
+          EOF
+          fi
+
+      - name: Verify Pages artifact
+        run: |
+          set -euo pipefail
+          SITE_ROOT="${GITHUB_WORKSPACE:-$PWD}/site"
+          if [ ! -d "${SITE_ROOT}" ]; then
+            echo "::error::site/ wurde nicht erzeugt."
+            ls -la
+            exit 1
+          fi
+          if [ ! -f "${SITE_ROOT}/index.html" ]; then
+            echo "::error::site/index.html fehlt."
+            find "${SITE_ROOT}" -maxdepth 3 -type f | head -n 50 || true
+            exit 1
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ github.workspace }}/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

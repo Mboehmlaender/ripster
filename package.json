@@ -1,0 +1,33 @@
+{
+  "name": "ripster",
+  "private": true,
+  "version": "1.0.0-1",
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mboehmlaender/ripster.git"
+  },
+  "homepage": "https://mboehmlaender.github.io/ripster/",
+  "bugs": {
+    "url": "https://github.com/mboehmlaender/ripster/issues"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "start": "npm run start --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "qa:cd:analysis": "node ./scripts/smoketest/qa-cd-analysis.js",
+    "qa:dvd:analysis": "node ./scripts/smoketest/qa-dvd-analysis.js",
+    "qa:bluray:analysis": "node ./scripts/smoketest/qa-bluray-analysis.js",
+    "qa:audiobook:analysis": "node ./scripts/smoketest/qa-audiobook-analysis.js",
+    "qa:cd:check": "bash ./scripts/smoketest/qa-cd-check.sh",
+    "qa:audiobook:check": "bash ./scripts/smoketest/qa-audiobook-check.sh",
+    "qa:logs:ripper": "node ./scripts/smoketest/qa-log-ripper.js",
+    "qa:jobs:kind-check": "node ./scripts/smoketest/qa-jobs-kind-check.js",
+    "release:interactive": "bash ./scripts/release.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

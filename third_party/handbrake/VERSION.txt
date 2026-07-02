@@ -1,0 +1,7 @@
+[07:53:27] Compile-time hardening features are enabled
+Cannot load libnvidia-encode.so.1
+[07:53:27] hb_init: starting libhb thread
+[07:53:27] thread 78cd704016c0 started ("libhb")
+HandBrake has exited.
+HandBrake 1.10.0
+

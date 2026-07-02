@@ -1,0 +1,32 @@
+{
+  "name": "ripster-backend",
+  "version": "1.0.0-1",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mboehmlaender/ripster.git"
+  },
+  "homepage": "https://mboehmlaender.github.io/ripster/",
+  "bugs": {
+    "url": "https://github.com/mboehmlaender/ripster/issues"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^2.1.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
