@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Other medium">
+  <defs>
+    <linearGradient id="othbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f4f1da"/>
+      <stop offset="100%" stop-color="#bcae73"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#othbg)"/>
+  <path d="M40 15v26.5c0 5.5-4 9.5-9.5 9.5C25.8 51 22 47.5 22 43c0-4.7 4-8.5 8.8-8.5 1.4 0 2.8.3 4.2 1V22.4l12-3.2V39c0 5.6-4 9.6-9.4 9.6-4.8 0-8.6-3.4-8.6-7.8 0-4.9 4.2-8.8 9.2-8.8 1 0 2 .2 2.8.5V15z" fill="#2f3440"/>
+</svg>

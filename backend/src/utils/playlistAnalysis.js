@@ -1,0 +1,1522 @@
+const LARGE_JUMP_THRESHOLD = 20;
+const DEFAULT_DURATION_SIMILARITY_SECONDS = 90;
+const RAW_MIRROR_DURATION_TOLERANCE_SECONDS = 2;
+const RAW_MIRROR_SIZE_TOLERANCE_BYTES = 64 * 1024 * 1024;
+const BRANCHING_OVERLAP_THRESHOLD = 0.6;
+const BRANCHING_AUDIO_SIMILARITY_THRESHOLD = 0.75;
+
+function parseDurationSeconds(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return 0;
+  }
+
+  const hms = text.match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
+  if (hms) {
+    const h = Number(hms[1]);
+    const m = Number(hms[2]);
+    const s = Number(hms[3]);
+    return (h * 3600) + (m * 60) + s;
+  }
+
+  const hm = text.match(/^(\d{1,2}):(\d{2})(?:\.\d+)?$/);
+  if (hm) {
+    const m = Number(hm[1]);
+    const s = Number(hm[2]);
+    return (m * 60) + s;
+  }
+
+  const asNumber = Number(text);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return Math.round(asNumber);
+  }
+
+  return 0;
+}
+
+function formatDuration(seconds) {
+  const total = Number(seconds || 0);
+  if (!Number.isFinite(total) || total <= 0) {
+    return '-';
+  }
+
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function parseSizeBytes(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return 0;
+  }
+
+  if (/^\d+$/.test(text)) {
+    const direct = Number(text);
+    return Number.isFinite(direct) ? Math.max(0, Math.round(direct)) : 0;
+  }
+
+  const match = text.match(/([\d.]+)\s*(B|KB|MB|GB|TB)/i);
+  if (!match) {
+    return 0;
+  }
+
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const unit = String(match[2] || '').toUpperCase();
+  const factorByUnit = {
+    B: 1,
+    KB: 1024,
+    MB: 1024 ** 2,
+    GB: 1024 ** 3,
+    TB: 1024 ** 4
+  };
+  const factor = factorByUnit[unit] || 1;
+  return Math.max(0, Math.round(value * factor));
+}
+
+function normalizePlaylistId(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/(\d{1,5})(?:\.mpls)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  return String(match[1]).padStart(5, '0');
+}
+
+function toSegmentFile(segmentNumber) {
+  const value = Number(segmentNumber);
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return `${String(Math.trunc(value)).padStart(5, '0')}.m2ts`;
+}
+
+function parseSegmentNumbers(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return [];
+  }
+
+  const matches = text.match(/\d{1,6}/g) || [];
+  return matches
+    .map((item) => Number(item))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .map((value) => Math.trunc(value));
+}
+
+function extractPlaylistMapping(line) {
+  const raw = String(line || '');
+
+  // Robot message typically maps playlist to title id.
+  const msgMatch = raw.match(/MSG:3016.*,"(\d{5}\.mpls)","(\d+)"/i);
+  if (msgMatch) {
+    return {
+      playlistId: normalizePlaylistId(msgMatch[1]),
+      titleId: Number(msgMatch[2])
+    };
+  }
+
+  const textMatch = raw.match(/(?:file|datei)\s+(\d{5}\.mpls).*?(?:title\s*#|titel\s*#?\s*)(\d+)/i);
+  if (textMatch) {
+    return {
+      playlistId: normalizePlaylistId(textMatch[1]),
+      titleId: Number(textMatch[2])
+    };
+  }
+
+  return null;
+}
+
+function extractPlaylistEqualityMapping(line) {
+  const raw = String(line || '');
+  if (!raw) {
+    return null;
+  }
+
+  // Robot output often ends with explicit args:
+  // ..., "00100.mpls","00091.mpls"
+  if (/^MSG:3309,/i.test(raw)) {
+    const quoted = [];
+    const regex = /"([^"]*)"/g;
+    let match = regex.exec(raw);
+    while (match) {
+      quoted.push(String(match[1] || '').trim());
+      match = regex.exec(raw);
+    }
+    if (quoted.length >= 2) {
+      const aliasId = normalizePlaylistId(quoted[quoted.length - 2]);
+      const canonicalId = normalizePlaylistId(quoted[quoted.length - 1]);
+      if (aliasId && canonicalId && aliasId !== canonicalId) {
+        return {
+          aliasId,
+          canonicalId
+        };
+      }
+    }
+  }
+
+  // Text fallback:
+  // "Title 00100.mpls is equal to title 00091.mpls and was skipped"
+  const textMatch = raw.match(/title\s+(\d{5}\.mpls)\s+is equal to title\s+(\d{5}\.mpls)/i);
+  if (textMatch) {
+    const aliasId = normalizePlaylistId(textMatch[1]);
+    const canonicalId = normalizePlaylistId(textMatch[2]);
+    if (aliasId && canonicalId && aliasId !== canonicalId) {
+      return {
+        aliasId,
+        canonicalId
+      };
+    }
+  }
+
+  return null;
+}
+
+function buildPlaylistAliasMap(lines) {
+  const aliasMap = new Map();
+  for (const line of lines || []) {
+    const mapping = extractPlaylistEqualityMapping(line);
+    if (!mapping) {
+      continue;
+    }
+    const canonicalId = normalizePlaylistId(mapping.canonicalId);
+    const aliasId = normalizePlaylistId(mapping.aliasId);
+    if (!canonicalId || !aliasId || canonicalId === aliasId) {
+      continue;
+    }
+    if (!aliasMap.has(canonicalId)) {
+      aliasMap.set(canonicalId, new Set());
+    }
+    aliasMap.get(canonicalId).add(aliasId);
+  }
+
+  const normalized = {};
+  for (const [canonicalId, aliasSet] of aliasMap.entries()) {
+    const aliases = Array.from(aliasSet)
+      .map((value) => normalizePlaylistId(value))
+      .filter(Boolean)
+      .filter((value) => value !== canonicalId)
+      .sort();
+    if (aliases.length > 0) {
+      normalized[canonicalId] = aliases;
+    }
+  }
+  return normalized;
+}
+
+function parseAnalyzeTitles(lines) {
+  const titleMap = new Map();
+
+  const ensureTitle = (titleId) => {
+    if (!titleMap.has(titleId)) {
+      titleMap.set(titleId, {
+        titleId,
+        playlistId: null,
+        playlistIdFromMap: null,
+        playlistIdFromField16: null,
+        playlistFile: null,
+        durationSeconds: 0,
+        durationLabel: null,
+        sizeBytes: 0,
+        sizeLabel: null,
+        chapters: 0,
+        segmentNumbers: [],
+        segmentFiles: [],
+        streams: {},
+        fields: {}
+      });
+    }
+    return titleMap.get(titleId);
+  };
+
+  for (const line of lines || []) {
+    const mapping = extractPlaylistMapping(line);
+    if (mapping && Number.isFinite(mapping.titleId) && mapping.titleId >= 0) {
+      const title = ensureTitle(mapping.titleId);
+      title.playlistIdFromMap = normalizePlaylistId(mapping.playlistId);
+    }
+
+    const sinfo = String(line || '').match(/^SINFO:(\d+),(\d+),(\d+),\d+,"([^"]*)"/i);
+    if (sinfo) {
+      const titleId = Number(sinfo[1]);
+      const streamIndex = Number(sinfo[2]);
+      const fieldId = Number(sinfo[3]);
+      const value = String(sinfo[4] || '').trim();
+      if (
+        Number.isFinite(titleId) && titleId >= 0
+        && Number.isFinite(streamIndex) && streamIndex >= 0
+        && Number.isFinite(fieldId)
+      ) {
+        const title = ensureTitle(titleId);
+        const streamKey = String(Math.trunc(streamIndex));
+        if (!title.streams[streamKey]) {
+          title.streams[streamKey] = {
+            index: Math.trunc(streamIndex),
+            type: null,
+            language: null,
+            languageLabel: null,
+            format: null,
+            channels: null,
+            description: null
+          };
+        }
+        const stream = title.streams[streamKey];
+        if (fieldId === 1) {
+          const lowered = value.toLowerCase();
+          if (lowered.includes('audio')) {
+            stream.type = 'audio';
+          } else if (lowered.includes('subtitle') || lowered.includes('untertitel') || lowered.includes('text')) {
+            stream.type = 'subtitle';
+          }
+        } else if (fieldId === 3) {
+          stream.language = value ? value.toLowerCase() : null;
+        } else if (fieldId === 4) {
+          stream.languageLabel = value || null;
+        } else if (fieldId === 6 || fieldId === 7) {
+          if (!stream.format || fieldId === 6) {
+            stream.format = value || null;
+          }
+        } else if (fieldId === 14 || fieldId === 40) {
+          if (!stream.channels || fieldId === 40) {
+            stream.channels = value || null;
+          }
+        } else if (fieldId === 30) {
+          stream.description = value || null;
+        }
+      }
+      continue;
+    }
+
+    const tinfo = String(line || '').match(/^TINFO:(\d+),(\d+),\d+,"([^"]*)"/i);
+    if (!tinfo) {
+      continue;
+    }
+
+    const titleId = Number(tinfo[1]);
+    const fieldId = Number(tinfo[2]);
+    const value = String(tinfo[3] || '').trim();
+    if (!Number.isFinite(titleId) || titleId < 0) {
+      continue;
+    }
+
+    const title = ensureTitle(titleId);
+    title.fields[fieldId] = value;
+
+    if (fieldId === 16) {
+      const fromField = normalizePlaylistId(value);
+      if (fromField) {
+        title.playlistIdFromField16 = fromField;
+      }
+      continue;
+    }
+
+    if (fieldId === 26) {
+      const segmentNumbers = parseSegmentNumbers(value);
+      if (segmentNumbers.length > 0) {
+        title.segmentNumbers = segmentNumbers;
+      }
+      continue;
+    }
+
+    if (fieldId === 9) {
+      const seconds = parseDurationSeconds(value);
+      if (seconds > 0) {
+        title.durationSeconds = seconds;
+        title.durationLabel = formatDuration(seconds);
+      }
+      continue;
+    }
+
+    if (fieldId === 10 || fieldId === 11) {
+      const bytes = parseSizeBytes(value);
+      if (bytes > 0) {
+        title.sizeBytes = bytes;
+        title.sizeLabel = value;
+      }
+      continue;
+    }
+
+    if (fieldId === 8 || fieldId === 7) {
+      const chapters = Number(value);
+      if (Number.isFinite(chapters) && chapters >= 0) {
+        title.chapters = Math.trunc(chapters);
+      }
+    }
+
+    if (!title.durationSeconds && /\d+:\d{2}:\d{2}/.test(value)) {
+      const seconds = parseDurationSeconds(value);
+      if (seconds > 0) {
+        title.durationSeconds = seconds;
+        title.durationLabel = formatDuration(seconds);
+      }
+    }
+
+    if (!title.sizeBytes && /(kb|mb|gb|tb)\b/i.test(value)) {
+      const bytes = parseSizeBytes(value);
+      if (bytes > 0) {
+        title.sizeBytes = bytes;
+        title.sizeLabel = value;
+      }
+    }
+  }
+
+  return Array.from(titleMap.values())
+    .map((item) => {
+      const playlistId = normalizePlaylistId(item.playlistId);
+      const playlistIdFromMap = normalizePlaylistId(item.playlistIdFromMap);
+      const playlistIdFromField16 = normalizePlaylistId(item.playlistIdFromField16);
+      const field16Raw = String(item?.fields?.[16] || '').trim();
+      const hasField16 = field16Raw.length > 0;
+      const field16LooksPlaylist = /\.mpls$/i.test(field16Raw) || /^\d{1,5}$/i.test(field16Raw);
+      const field16LooksClip = /\.(?:m2ts|m2t|mts)$/i.test(field16Raw);
+      let resolvedPlaylistId = null;
+
+      // TINFO:16 is part of the final title block and is more reliable than MSG:3307
+      // lines, which can include pre-dedup title ids.
+      if (field16LooksPlaylist && playlistIdFromField16) {
+        resolvedPlaylistId = playlistIdFromField16;
+      } else if (!hasField16) {
+        resolvedPlaylistId = playlistIdFromField16 || playlistIdFromMap || playlistId;
+      } else if (!field16LooksClip && playlistIdFromField16) {
+        resolvedPlaylistId = playlistIdFromField16;
+      }
+      const segmentNumbers = Array.isArray(item.segmentNumbers) ? item.segmentNumbers : [];
+      const segmentFiles = segmentNumbers
+        .map((number) => toSegmentFile(number))
+        .filter(Boolean);
+      const streams = item?.streams && typeof item.streams === 'object' ? Object.values(item.streams) : [];
+      const sortedStreams = streams
+        .filter((stream) => Number.isFinite(Number(stream?.index)))
+        .sort((a, b) => Number(a.index) - Number(b.index));
+      const audioTracks = sortedStreams
+        .filter((stream) => String(stream?.type || '').toLowerCase() === 'audio')
+        .map((stream) => ({
+          id: Number(stream.index) + 1,
+          sourceTrackId: Number(stream.index) + 1,
+          language: stream.language || 'und',
+          languageLabel: stream.languageLabel || stream.language || 'und',
+          title: stream.description || null,
+          format: stream.format || null,
+          channels: stream.channels || null
+        }));
+      const subtitleTracks = sortedStreams
+        .filter((stream) => String(stream?.type || '').toLowerCase() === 'subtitle')
+        .map((stream) => ({
+          id: Number(stream.index) + 1,
+          sourceTrackId: Number(stream.index) + 1,
+          language: stream.language || 'und',
+          languageLabel: stream.languageLabel || stream.language || 'und',
+          title: stream.description || null,
+          format: stream.format || null,
+          channels: null
+        }));
+
+      const { streams: _omitStreams, ...restItem } = item;
+      return {
+        ...restItem,
+        playlistId: resolvedPlaylistId,
+        playlistIdFromMap,
+        playlistIdFromField16,
+        playlistFile: resolvedPlaylistId ? `${resolvedPlaylistId}.mpls` : null,
+        durationLabel: item.durationLabel || formatDuration(item.durationSeconds),
+        audioTracks,
+        subtitleTracks,
+        audioTrackCount: audioTracks.length,
+        subtitleTrackCount: subtitleTracks.length,
+        segmentNumbers,
+        segmentFiles
+      };
+    })
+    .sort((a, b) => a.titleId - b.titleId);
+}
+
+function uniqueOrdered(values) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values || []) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    output.push(String(value).trim());
+  }
+  return output;
+}
+
+function parseReportedTitleCount(lines) {
+  for (let index = (Array.isArray(lines) ? lines.length : 0) - 1; index >= 0; index -= 1) {
+    const line = String(lines[index] || '').trim();
+    const match = line.match(/^TCOUNT:(\d+)/i);
+    if (!match) {
+      continue;
+    }
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value >= 0) {
+      return Math.trunc(value);
+    }
+  }
+  return null;
+}
+
+function likelyRawMirrorOfPlaylist(rawTitle, playlistTitle) {
+  const rawDuration = Number(rawTitle?.durationSeconds || 0);
+  const playlistDuration = Number(playlistTitle?.durationSeconds || 0);
+  const rawSize = Number(rawTitle?.sizeBytes || 0);
+  const playlistSize = Number(playlistTitle?.sizeBytes || 0);
+  if (!Number.isFinite(rawDuration) || !Number.isFinite(playlistDuration) || rawDuration <= 0 || playlistDuration <= 0) {
+    return false;
+  }
+  if (Math.abs(rawDuration - playlistDuration) > RAW_MIRROR_DURATION_TOLERANCE_SECONDS) {
+    return false;
+  }
+
+  if (rawSize > 0 && playlistSize > 0) {
+    return Math.abs(rawSize - playlistSize) <= RAW_MIRROR_SIZE_TOLERANCE_BYTES;
+  }
+  return true;
+}
+
+function suppressRawMirrorCandidates(candidates) {
+  const rows = Array.isArray(candidates) ? candidates : [];
+  if (rows.length <= 1) {
+    return rows;
+  }
+
+  const playlistRows = rows.filter((item) => normalizePlaylistId(item?.playlistId));
+  if (playlistRows.length === 0) {
+    return rows;
+  }
+
+  return rows.filter((item) => {
+    if (normalizePlaylistId(item?.playlistId)) {
+      return true;
+    }
+    return !playlistRows.some((playlistRow) => likelyRawMirrorOfPlaylist(item, playlistRow));
+  });
+}
+
+function buildSimilarityGroups(candidates, durationSimilaritySeconds) {
+  const list = Array.isArray(candidates) ? [...candidates] : [];
+  const tolerance = Math.max(0, Math.round(Number(durationSimilaritySeconds || 0)));
+  const groups = [];
+  const used = new Set();
+
+  for (let i = 0; i < list.length; i += 1) {
+    if (used.has(i)) {
+      continue;
+    }
+
+    const base = list[i];
+    const currentGroup = [base];
+    used.add(i);
+
+    for (let j = i + 1; j < list.length; j += 1) {
+      if (used.has(j)) {
+        continue;
+      }
+      const candidate = list[j];
+      if (Math.abs(Number(candidate.durationSeconds || 0) - Number(base.durationSeconds || 0)) <= tolerance) {
+        currentGroup.push(candidate);
+        used.add(j);
+      }
+    }
+
+    if (currentGroup.length > 1) {
+      const sortedTitles = currentGroup
+        .slice()
+        .sort((a, b) => b.durationSeconds - a.durationSeconds || b.sizeBytes - a.sizeBytes || a.titleId - b.titleId);
+      const referenceDuration = Number(sortedTitles[0]?.durationSeconds || 0);
+      groups.push({
+        durationSeconds: referenceDuration,
+        durationLabel: formatDuration(referenceDuration),
+        titles: sortedTitles
+      });
+    }
+  }
+
+  return groups.sort((a, b) =>
+    b.durationSeconds - a.durationSeconds || b.titles.length - a.titles.length
+  );
+}
+
+function clamp01(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, numeric));
+}
+
+function normalizeTrackSignaturePart(value, fallback = 'na') {
+  const text = String(value || '').trim().toLowerCase();
+  return text || fallback;
+}
+
+function buildAudioSignatureTokens(title) {
+  const audioTracks = Array.isArray(title?.audioTracks) ? title.audioTracks : [];
+  if (audioTracks.length === 0) {
+    const count = Number(title?.audioTrackCount || 0);
+    return count > 0 ? [`count:${count}`] : [];
+  }
+  return uniqueOrdered(audioTracks.map((track) => (
+    `${normalizeTrackSignaturePart(track?.language || track?.languageLabel || 'und', 'und')}`
+    + `|${normalizeTrackSignaturePart(track?.format)}`
+    + `|${normalizeTrackSignaturePart(track?.channels)}`
+  )));
+}
+
+function computeTokenJaccardSimilarity(leftTokens, rightTokens) {
+  const left = new Set((Array.isArray(leftTokens) ? leftTokens : []).map((value) => String(value || '').trim()).filter(Boolean));
+  const right = new Set((Array.isArray(rightTokens) ? rightTokens : []).map((value) => String(value || '').trim()).filter(Boolean));
+  if (left.size === 0 && right.size === 0) {
+    return 1;
+  }
+  if (left.size === 0 || right.size === 0) {
+    return 0;
+  }
+  let shared = 0;
+  for (const token of left) {
+    if (right.has(token)) {
+      shared += 1;
+    }
+  }
+  const unionSize = new Set([...left, ...right]).size;
+  return unionSize > 0 ? Number((shared / unionSize).toFixed(4)) : 0;
+}
+
+function computeSegmentOverlapInfo(leftSegments, rightSegments) {
+  const leftNumbers = Array.isArray(leftSegments)
+    ? leftSegments.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+  const rightNumbers = Array.isArray(rightSegments)
+    ? rightSegments.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+  const leftSet = new Set(leftNumbers);
+  const rightSet = new Set(rightNumbers);
+  if (leftSet.size === 0 || rightSet.size === 0) {
+    return {
+      sharedCount: 0,
+      ratioToSmaller: 0,
+      ratioToLarger: 0,
+      jaccard: 0
+    };
+  }
+  let sharedCount = 0;
+  for (const value of leftSet) {
+    if (rightSet.has(value)) {
+      sharedCount += 1;
+    }
+  }
+  const smaller = Math.max(1, Math.min(leftSet.size, rightSet.size));
+  const larger = Math.max(1, Math.max(leftSet.size, rightSet.size));
+  const unionSize = new Set([...leftSet, ...rightSet]).size;
+  return {
+    sharedCount,
+    ratioToSmaller: Number((sharedCount / smaller).toFixed(4)),
+    ratioToLarger: Number((sharedCount / larger).toFixed(4)),
+    jaccard: unionSize > 0 ? Number((sharedCount / unionSize).toFixed(4)) : 0
+  };
+}
+
+function buildDisjointSet(size) {
+  const parent = Array.from({ length: Math.max(0, Number(size || 0)) }, (_, index) => index);
+  const rank = Array.from({ length: parent.length }, () => 0);
+  const find = (value) => {
+    if (parent[value] !== value) {
+      parent[value] = find(parent[value]);
+    }
+    return parent[value];
+  };
+  const union = (left, right) => {
+    const rootLeft = find(left);
+    const rootRight = find(right);
+    if (rootLeft === rootRight) {
+      return;
+    }
+    if (rank[rootLeft] < rank[rootRight]) {
+      parent[rootLeft] = rootRight;
+      return;
+    }
+    if (rank[rootLeft] > rank[rootRight]) {
+      parent[rootRight] = rootLeft;
+      return;
+    }
+    parent[rootRight] = rootLeft;
+    rank[rootLeft] += 1;
+  };
+  return { find, union };
+}
+
+function longestCommonSubsequence(leftValues, rightValues) {
+  const left = Array.isArray(leftValues) ? leftValues : [];
+  const right = Array.isArray(rightValues) ? rightValues : [];
+  if (left.length === 0 || right.length === 0) {
+    return [];
+  }
+  const dp = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      if (left[i] === right[j]) {
+        dp[i][j] = dp[i + 1][j + 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+  }
+  const output = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      output.push(left[i]);
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  return output;
+}
+
+function buildFallbackCoreSequence(clusterTitles) {
+  const titles = Array.isArray(clusterTitles) ? clusterTitles : [];
+  const minimumFrequency = Math.max(2, Math.ceil(titles.length * 0.75));
+  const frequencyMap = new Map();
+  const positionMap = new Map();
+  for (const title of titles) {
+    const numbers = Array.isArray(title?.segmentNumbers) ? title.segmentNumbers : [];
+    const seenInTitle = new Set();
+    numbers.forEach((segment, index) => {
+      if (!Number.isFinite(segment)) {
+        return;
+      }
+      const normalized = Math.trunc(segment);
+      if (!frequencyMap.has(normalized)) {
+        frequencyMap.set(normalized, 0);
+        positionMap.set(normalized, []);
+      }
+      if (!seenInTitle.has(normalized)) {
+        frequencyMap.set(normalized, Number(frequencyMap.get(normalized) || 0) + 1);
+        seenInTitle.add(normalized);
+      }
+      positionMap.get(normalized).push(index);
+    });
+  }
+
+  return Array.from(frequencyMap.entries())
+    .filter(([, frequency]) => Number(frequency || 0) >= minimumFrequency)
+    .map(([segment]) => {
+      const positions = positionMap.get(segment) || [];
+      const averagePosition = positions.length > 0
+        ? positions.reduce((sum, value) => sum + Number(value || 0), 0) / positions.length
+        : Number.MAX_SAFE_INTEGER;
+      return {
+        segment,
+        averagePosition
+      };
+    })
+    .sort((a, b) => a.averagePosition - b.averagePosition || a.segment - b.segment)
+    .map((entry) => entry.segment);
+}
+
+function buildClusterCoreSequence(clusterTitles) {
+  const titles = Array.isArray(clusterTitles) ? clusterTitles : [];
+  const sequences = titles
+    .map((title) => Array.isArray(title?.segmentNumbers) ? title.segmentNumbers : [])
+    .filter((sequence) => sequence.length > 0);
+  if (sequences.length === 0) {
+    return [];
+  }
+  let coreSequence = sequences[0].slice();
+  for (let index = 1; index < sequences.length; index += 1) {
+    coreSequence = longestCommonSubsequence(coreSequence, sequences[index]);
+    if (coreSequence.length === 0) {
+      break;
+    }
+  }
+  if (coreSequence.length >= Math.max(2, Math.floor(sequences[0].length / 3))) {
+    return coreSequence;
+  }
+  return buildFallbackCoreSequence(clusterTitles);
+}
+
+function makeVariantBoundaryKey(beforeSegment, afterSegment) {
+  const before = Number.isFinite(Number(beforeSegment)) ? String(Math.trunc(Number(beforeSegment))).padStart(5, '0') : 'START';
+  const after = Number.isFinite(Number(afterSegment)) ? String(Math.trunc(Number(afterSegment))).padStart(5, '0') : 'END';
+  return `${before}->${after}`;
+}
+
+function formatVariantSpanLabel(span) {
+  if (!span || !Array.isArray(span.segments) || span.segments.length === 0) {
+    return null;
+  }
+  const before = Number.isFinite(Number(span.beforeSegment))
+    ? String(Math.trunc(Number(span.beforeSegment))).padStart(5, '0')
+    : 'START';
+  const after = Number.isFinite(Number(span.afterSegment))
+    ? String(Math.trunc(Number(span.afterSegment))).padStart(5, '0')
+    : 'END';
+  const segmentList = span.segments
+    .map((segment) => String(Math.trunc(Number(segment))).padStart(5, '0'))
+    .join(', ');
+  return `${before}->${after}: [${segmentList}]`;
+}
+
+function extractVariantSpansForTitle(segmentNumbers, coreSequence) {
+  const numbers = Array.isArray(segmentNumbers)
+    ? segmentNumbers.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+  const core = Array.isArray(coreSequence)
+    ? coreSequence.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+  if (numbers.length === 0 || core.length === 0) {
+    return [];
+  }
+
+  const coreIndexBySegment = new Map(core.map((segment, index) => [segment, index]));
+  const spans = [];
+  let matchedCoreIndex = -1;
+  let currentSpan = [];
+
+  const flushCurrentSpan = (afterSegment = null) => {
+    if (currentSpan.length === 0) {
+      return;
+    }
+    spans.push({
+      beforeSegment: matchedCoreIndex >= 0 ? core[matchedCoreIndex] : null,
+      afterSegment,
+      segments: currentSpan.slice(),
+      boundaryKey: makeVariantBoundaryKey(
+        matchedCoreIndex >= 0 ? core[matchedCoreIndex] : null,
+        afterSegment
+      )
+    });
+    currentSpan = [];
+  };
+
+  for (const segment of numbers) {
+    const coreIndex = coreIndexBySegment.has(segment) ? coreIndexBySegment.get(segment) : -1;
+    const expectedCoreIndex = matchedCoreIndex + 1;
+    if (coreIndex === expectedCoreIndex) {
+      flushCurrentSpan(segment);
+      matchedCoreIndex = coreIndex;
+      continue;
+    }
+    if (coreIndex > expectedCoreIndex) {
+      flushCurrentSpan(core[expectedCoreIndex] ?? segment);
+      matchedCoreIndex = coreIndex;
+      continue;
+    }
+    currentSpan.push(segment);
+  }
+
+  flushCurrentSpan(matchedCoreIndex + 1 < core.length ? core[matchedCoreIndex + 1] : null);
+  return spans;
+}
+
+function buildClusterCommonRuns(coreSequence, titleSpanRows) {
+  const core = Array.isArray(coreSequence)
+    ? coreSequence.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+  if (core.length === 0) {
+    return [];
+  }
+  const boundaries = new Set();
+  for (const row of titleSpanRows || []) {
+    for (const span of row?.variantSpans || []) {
+      if (!Number.isFinite(Number(span?.beforeSegment)) || !Number.isFinite(Number(span?.afterSegment))) {
+        continue;
+      }
+      boundaries.add(makeVariantBoundaryKey(span.beforeSegment, span.afterSegment));
+    }
+  }
+  const runs = [];
+  let startIndex = 0;
+  for (let index = 0; index < core.length - 1; index += 1) {
+    const boundaryKey = makeVariantBoundaryKey(core[index], core[index + 1]);
+    if (!boundaries.has(boundaryKey)) {
+      continue;
+    }
+    const runSegments = core.slice(startIndex, index + 1);
+    if (runSegments.length > 0) {
+      runs.push({
+        startSegment: runSegments[0],
+        endSegment: runSegments[runSegments.length - 1],
+        length: runSegments.length,
+        segments: runSegments
+      });
+    }
+    startIndex = index + 1;
+  }
+  const tailSegments = core.slice(startIndex);
+  if (tailSegments.length > 0) {
+    runs.push({
+      startSegment: tailSegments[0],
+      endSegment: tailSegments[tailSegments.length - 1],
+      length: tailSegments.length,
+      segments: tailSegments
+    });
+  }
+  return runs;
+}
+
+function computeLegacySegmentMetrics(segmentNumbers) {
+  const numbers = Array.isArray(segmentNumbers)
+    ? segmentNumbers.filter((value) => Number.isFinite(value)).map((value) => Math.trunc(value))
+    : [];
+
+  if (numbers.length === 0) {
+    return {
+      segmentCount: 0,
+      segmentNumbers: [],
+      directSequenceSteps: 0,
+      backwardJumps: 0,
+      largeJumps: 0,
+      alternatingJumps: 0,
+      alternatingPairs: 0,
+      alternatingRatio: 0,
+      sequenceCoherence: 0,
+      monotonicRatio: 0,
+      score: 0
+    };
+  }
+
+  let directSequenceSteps = 0;
+  let backwardJumps = 0;
+  let largeJumps = 0;
+  let alternatingJumps = 0;
+  let alternatingPairs = 0;
+  let prevDiff = null;
+
+  for (let i = 1; i < numbers.length; i += 1) {
+    const current = numbers[i - 1];
+    const next = numbers[i];
+    const diff = next - current;
+
+    if (next < current) {
+      backwardJumps += 1;
+    }
+    if (Math.abs(diff) > LARGE_JUMP_THRESHOLD) {
+      largeJumps += 1;
+    }
+    if (diff === 1) {
+      directSequenceSteps += 1;
+    }
+
+    if (prevDiff !== null) {
+      const largePair = Math.abs(prevDiff) > LARGE_JUMP_THRESHOLD && Math.abs(diff) > LARGE_JUMP_THRESHOLD;
+      if (largePair) {
+        alternatingPairs += 1;
+        const signChanged = (prevDiff < 0 && diff > 0) || (prevDiff > 0 && diff < 0);
+        if (signChanged) {
+          alternatingJumps += 1;
+        }
+      }
+    }
+    prevDiff = diff;
+  }
+
+  const transitions = Math.max(1, numbers.length - 1);
+  const sequenceCoherence = Number((directSequenceSteps / transitions).toFixed(4));
+  const alternatingRatio = alternatingPairs > 0
+    ? Number((alternatingJumps / alternatingPairs).toFixed(4))
+    : 0;
+
+  const score = (directSequenceSteps * 2) - (backwardJumps * 3) - (largeJumps * 2);
+
+  return {
+    segmentCount: numbers.length,
+    segmentNumbers: numbers,
+    directSequenceSteps,
+    backwardJumps,
+    largeJumps,
+    alternatingJumps,
+    alternatingPairs,
+    alternatingRatio,
+    sequenceCoherence,
+    monotonicRatio: sequenceCoherence,
+    score
+  };
+}
+
+function computeStandaloneSegmentMetrics(title) {
+  const legacyMetrics = computeLegacySegmentMetrics(title?.segmentNumbers);
+  const transitions = Math.max(1, legacyMetrics.segmentCount - 1);
+  const directRatio = legacyMetrics.directSequenceSteps / transitions;
+  const nonBackwardRatio = 1 - (legacyMetrics.backwardJumps / transitions);
+  const boundedJumpRatio = 1 - (legacyMetrics.largeJumps / transitions);
+  const antiAlternatingRatio = 1 - legacyMetrics.alternatingRatio;
+  const correctedCoherence = clamp01(
+    (directRatio * 0.18)
+    + (clamp01(nonBackwardRatio) * 0.34)
+    + (clamp01(boundedJumpRatio) * 0.34)
+    + (clamp01(antiAlternatingRatio) * 0.14)
+  );
+  return {
+    ...legacyMetrics,
+    clusterId: null,
+    clusterSize: 1,
+    averageSegmentOverlap: 0,
+    commonRuns: [],
+    commonRunCount: 0,
+    sharedCoreCount: 0,
+    sharedCoreRatio: 0,
+    sharedAdjacencyRatio: 0,
+    variantSpans: [],
+    variantSpanCount: 0,
+    variantSegmentCount: 0,
+    singleSegmentVariantSpans: 0,
+    multiSegmentVariantSpans: 0,
+    variantComplexity: 0,
+    legacySequenceCoherence: legacyMetrics.sequenceCoherence,
+    legacyStructureScore: legacyMetrics.score,
+    correctedCoherence: Number(correctedCoherence.toFixed(4)),
+    sequenceCoherence: Number(correctedCoherence.toFixed(4)),
+    score: Number((correctedCoherence * 35).toFixed(4)),
+    coherenceMode: 'standalone',
+    positionReason: 'Einzelkandidat oder kein Branching-Cluster erkannt.'
+  };
+}
+
+function buildClusterContexts(titles, options = {}) {
+  const rows = (Array.isArray(titles) ? titles : []).map((title, index) => ({
+    ...title,
+    _clusterIndex: index,
+    _audioSignatureTokens: buildAudioSignatureTokens(title)
+  }));
+  if (rows.length === 0) {
+    return [];
+  }
+  const durationTolerance = Math.max(
+    0,
+    Math.round(Number(options.durationSimilaritySeconds || DEFAULT_DURATION_SIMILARITY_SECONDS))
+  );
+  const dsu = buildDisjointSet(rows.length);
+  for (let leftIndex = 0; leftIndex < rows.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < rows.length; rightIndex += 1) {
+      const left = rows[leftIndex];
+      const right = rows[rightIndex];
+      const durationClose = Math.abs(Number(left?.durationSeconds || 0) - Number(right?.durationSeconds || 0)) <= durationTolerance;
+      if (!durationClose) {
+        continue;
+      }
+      const audioSimilarity = computeTokenJaccardSimilarity(left._audioSignatureTokens, right._audioSignatureTokens);
+      if (audioSimilarity < BRANCHING_AUDIO_SIMILARITY_THRESHOLD) {
+        continue;
+      }
+      const overlapInfo = computeSegmentOverlapInfo(left?.segmentNumbers, right?.segmentNumbers);
+      if (overlapInfo.ratioToSmaller < BRANCHING_OVERLAP_THRESHOLD) {
+        continue;
+      }
+      dsu.union(leftIndex, rightIndex);
+    }
+  }
+
+  const grouped = new Map();
+  rows.forEach((row, index) => {
+    const root = dsu.find(index);
+    if (!grouped.has(root)) {
+      grouped.set(root, []);
+    }
+    grouped.get(root).push(row);
+  });
+
+  return Array.from(grouped.values())
+    .filter((clusterRows) => clusterRows.length > 1)
+    .sort((left, right) => right.length - left.length)
+    .map((clusterRows, clusterIndex) => {
+      const clusterId = `branching-${clusterIndex + 1}`;
+      const pairwiseOverlap = {};
+      for (const row of clusterRows) {
+        const playlistId = normalizePlaylistId(row?.playlistId);
+        if (!playlistId) {
+          continue;
+        }
+        pairwiseOverlap[playlistId] = {};
+      }
+      for (let i = 0; i < clusterRows.length; i += 1) {
+        for (let j = i + 1; j < clusterRows.length; j += 1) {
+          const left = clusterRows[i];
+          const right = clusterRows[j];
+          const leftPlaylistId = normalizePlaylistId(left?.playlistId);
+          const rightPlaylistId = normalizePlaylistId(right?.playlistId);
+          const overlapInfo = computeSegmentOverlapInfo(left?.segmentNumbers, right?.segmentNumbers);
+          if (leftPlaylistId && rightPlaylistId) {
+            pairwiseOverlap[leftPlaylistId][rightPlaylistId] = overlapInfo;
+            pairwiseOverlap[rightPlaylistId][leftPlaylistId] = overlapInfo;
+          }
+        }
+      }
+
+      const coreSequence = buildClusterCoreSequence(clusterRows);
+      const titleSpanRows = clusterRows.map((row) => {
+        const variantSpans = extractVariantSpansForTitle(row?.segmentNumbers, coreSequence);
+        const variantSegmentCount = variantSpans.reduce((sum, span) => sum + span.segments.length, 0);
+        const singleSegmentVariantSpans = variantSpans.filter((span) => span.segments.length === 1).length;
+        const multiSegmentVariantSpans = variantSpans.filter((span) => span.segments.length > 1).length;
+        const variantComplexity = variantSpans.reduce((sum, span) => sum + (span.segments.length ** 2), 0);
+        const playlistId = normalizePlaylistId(row?.playlistId);
+        const overlapEntries = playlistId && pairwiseOverlap[playlistId]
+          ? Object.entries(pairwiseOverlap[playlistId]).map(([otherPlaylistId, info]) => ({
+            otherPlaylistId,
+            ratioToSmaller: Number(info?.ratioToSmaller || 0),
+            sharedCount: Number(info?.sharedCount || 0)
+          }))
+          : [];
+        const averageSegmentOverlap = overlapEntries.length > 0
+          ? overlapEntries.reduce((sum, entry) => sum + Number(entry.ratioToSmaller || 0), 0) / overlapEntries.length
+          : 0;
+        return {
+          row,
+          variantSpans,
+          variantSegmentCount,
+          singleSegmentVariantSpans,
+          multiSegmentVariantSpans,
+          variantComplexity,
+          overlapEntries,
+          averageSegmentOverlap: Number(averageSegmentOverlap.toFixed(4))
+        };
+      });
+
+      const commonRuns = buildClusterCommonRuns(coreSequence, titleSpanRows);
+      const maxVariantComplexity = titleSpanRows.reduce((max, row) => Math.max(max, Number(row.variantComplexity || 0)), 0);
+      const maxVariantSegmentCount = titleSpanRows.reduce((max, row) => Math.max(max, Number(row.variantSegmentCount || 0)), 0);
+      const maxVariantSpanCount = titleSpanRows.reduce((max, row) => Math.max(max, Number(row.variantSpans.length || 0)), 0);
+      const legacyStructureScores = titleSpanRows.map((row) => Number(computeLegacySegmentMetrics(row.row?.segmentNumbers).score || 0));
+      const minLegacyStructureScore = legacyStructureScores.length > 0 ? Math.min(...legacyStructureScores) : 0;
+      const maxLegacyStructureScore = legacyStructureScores.length > 0 ? Math.max(...legacyStructureScores) : 0;
+
+      const titlesWithMetrics = titleSpanRows.map((spanRow, index) => {
+        const legacyMetrics = computeLegacySegmentMetrics(spanRow.row?.segmentNumbers);
+        const sharedCoreCount = coreSequence.length;
+        const segmentCount = Math.max(1, Number(legacyMetrics.segmentCount || 0));
+        const sharedCoreRatio = sharedCoreCount > 0 ? sharedCoreCount / segmentCount : 0;
+        const variantSpanCount = spanRow.variantSpans.length;
+        const variantComplexityNorm = maxVariantComplexity > 0
+          ? Number(spanRow.variantComplexity || 0) / maxVariantComplexity
+          : 0;
+        const variantSegmentNorm = maxVariantSegmentCount > 0
+          ? Number(spanRow.variantSegmentCount || 0) / maxVariantSegmentCount
+          : 0;
+        const variantSpanNorm = maxVariantSpanCount > 0
+          ? Number(variantSpanCount || 0) / maxVariantSpanCount
+          : 0;
+        const singleSegmentVariantRatio = variantSpanCount > 0
+          ? spanRow.singleSegmentVariantSpans / variantSpanCount
+          : 1;
+        const multiSegmentPenalty = variantSpanCount > 0
+          ? spanRow.multiSegmentVariantSpans / variantSpanCount
+          : 0;
+        const legacyRange = maxLegacyStructureScore - minLegacyStructureScore;
+        const legacyTieHint = legacyRange > 0
+          ? clamp01((Number(legacyMetrics.score || 0) - minLegacyStructureScore) / legacyRange)
+          : 0;
+        const correctedCoherence = clamp01(
+          (sharedCoreRatio * 0.38)
+          + (spanRow.averageSegmentOverlap * 0.12)
+          + (singleSegmentVariantRatio * 0.22)
+          + ((1 - variantComplexityNorm) * 0.16)
+          + ((1 - variantSegmentNorm) * 0.08)
+          + ((1 - variantSpanNorm) * 0.04)
+          + (legacyTieHint * 0.02)
+          - (multiSegmentPenalty * 0.08)
+        );
+
+        let positionReason = 'nahe Branching-Variante';
+        if (spanRow.multiSegmentVariantSpans === 0 && spanRow.variantSegmentCount <= Math.max(1, variantSpanCount)) {
+          positionReason = 'strukturell einfachster Basis-/Referenzpfad im Cluster';
+        } else if (spanRow.multiSegmentVariantSpans > 0) {
+          positionReason = 'Variante mit zusätzlichen Mehrsegment-Branches';
+        }
+
+        return {
+          ...spanRow.row,
+          ...legacyMetrics,
+          clusterId,
+          clusterSize: clusterRows.length,
+          averageSegmentOverlap: spanRow.averageSegmentOverlap,
+          overlapEntries: spanRow.overlapEntries,
+          commonRuns,
+          commonRunCount: commonRuns.length,
+          sharedCoreCount,
+          sharedCoreRatio: Number(sharedCoreRatio.toFixed(4)),
+          sharedAdjacencyRatio: coreSequence.length > 1 ? 1 : 0,
+          variantSpans: spanRow.variantSpans,
+          variantSpanCount,
+          variantSegmentCount: spanRow.variantSegmentCount,
+          singleSegmentVariantSpans: spanRow.singleSegmentVariantSpans,
+          multiSegmentVariantSpans: spanRow.multiSegmentVariantSpans,
+          variantComplexity: spanRow.variantComplexity,
+          legacySequenceCoherence: legacyMetrics.sequenceCoherence,
+          legacyStructureScore: legacyMetrics.score,
+          correctedCoherence: Number(correctedCoherence.toFixed(4)),
+          sequenceCoherence: Number(correctedCoherence.toFixed(4)),
+          score: Number((((correctedCoherence * 60) + Math.min(18, (clusterRows.length - 1) * 9))).toFixed(4)),
+          coherenceMode: 'cluster_relative',
+          positionReason,
+          _legacyTieHint: legacyTieHint,
+          _clusterSortIndex: index
+        };
+      });
+
+      const variantBoundaries = uniqueOrdered(
+        titleSpanRows
+          .flatMap((row) => row.variantSpans.map((span) => formatVariantSpanLabel(span)))
+          .filter(Boolean)
+      );
+
+      return {
+        id: clusterId,
+        size: clusterRows.length,
+        coreSequence,
+        commonRuns,
+        variantBoundaries,
+        pairwiseOverlap,
+        titles: titlesWithMetrics
+      };
+    });
+}
+
+function computeSegmentMetrics(title, clusterMetricsByPlaylist = null) {
+  const playlistId = normalizePlaylistId(title?.playlistId);
+  if (playlistId && clusterMetricsByPlaylist && clusterMetricsByPlaylist[playlistId]) {
+    return clusterMetricsByPlaylist[playlistId];
+  }
+  return computeStandaloneSegmentMetrics(title);
+}
+
+function buildEvaluationLabel(metrics) {
+  if (!metrics || metrics.segmentCount === 0) {
+    return 'Keine Segmentliste aus TINFO:26 verfügbar';
+  }
+  if (String(metrics?.coherenceMode || '') === 'cluster_relative' && Number(metrics?.clusterSize || 0) > 1) {
+    if (metrics.multiSegmentVariantSpans === 0 && metrics.variantSegmentCount <= Math.max(1, Number(metrics.variantSpanCount || 0))) {
+      return 'strukturell sauberster Basis-/Referenzpfad im Branching-Cluster';
+    }
+    if (metrics.correctedCoherence >= 0.6) {
+      return 'nahe Branching-Variante mit plausibler Segmentstruktur';
+    }
+    return 'komplexere Branching-Variante - Sichtprüfung empfohlen';
+  }
+  if (metrics.alternatingRatio >= 0.55 && metrics.alternatingPairs >= 3) {
+    return 'Auffällige Segmentstruktur - Sichtprüfung empfohlen';
+  }
+  if (metrics.correctedCoherence < 0.45) {
+    return 'unklare Segmentstruktur - Sichtprüfung empfohlen';
+  }
+  return 'wahrscheinlich konsistente Segmentstruktur';
+}
+
+function normalizeRelativeScore(value, maxValue) {
+  const numericValue = Number(value || 0);
+  const numericMax = Number(maxValue || 0);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return 0;
+  }
+  if (!Number.isFinite(numericMax) || numericMax <= 0) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, numericValue / numericMax));
+}
+
+function scoreCandidates(groupTitles, options = {}) {
+  const titles = Array.isArray(groupTitles) ? groupTitles : [];
+  if (titles.length === 0) {
+    return [];
+  }
+
+  const maxDurationSeconds = titles.reduce(
+    (max, title) => Math.max(max, Number(title?.durationSeconds || 0)),
+    0
+  );
+  const maxAudioTrackCount = titles.reduce(
+    (max, title) => Math.max(max, Number(title?.audioTrackCount || 0)),
+    0
+  );
+  const maxChapterCount = titles.reduce(
+    (max, title) => Math.max(max, Number(title?.chapters || 0)),
+    0
+  );
+  const clusterContexts = buildClusterContexts(titles, options);
+  const clusterMetricsByPlaylist = {};
+  const clusterSummaryRows = [];
+  for (const clusterContext of clusterContexts) {
+    const playlistIds = [];
+    for (const metrics of clusterContext.titles || []) {
+      const playlistId = normalizePlaylistId(metrics?.playlistId);
+      if (playlistId) {
+        clusterMetricsByPlaylist[playlistId] = metrics;
+        playlistIds.push(playlistId);
+      }
+    }
+    clusterSummaryRows.push({
+      id: clusterContext.id,
+      size: clusterContext.size,
+      playlistIds: uniqueOrdered(playlistIds),
+      commonRuns: clusterContext.commonRuns,
+      variantBoundaries: clusterContext.variantBoundaries
+    });
+  }
+
+  return titles
+    .map((title) => {
+      const metrics = computeSegmentMetrics(title, clusterMetricsByPlaylist);
+      const structureScore = Number(metrics.score || 0);
+      const durationScore = normalizeRelativeScore(title.durationSeconds, maxDurationSeconds) * 20;
+      const audioScore = normalizeRelativeScore(title.audioTrackCount, maxAudioTrackCount) * 4;
+      const chapterScore = normalizeRelativeScore(title.chapters, maxChapterCount) * 6;
+      const totalScore = structureScore + durationScore + audioScore + chapterScore;
+      const overlapSummary = Array.isArray(metrics?.overlapEntries)
+        ? metrics.overlapEntries
+          .map((entry) => `${entry.otherPlaylistId}:${Number(entry.ratioToSmaller || 0).toFixed(3)}`)
+          .join(', ')
+        : '';
+      const commonRunsSummary = Array.isArray(metrics?.commonRuns)
+        ? metrics.commonRuns
+          .map((run) => `${String(run.startSegment).padStart(5, '0')}-${String(run.endSegment).padStart(5, '0')}`)
+          .join(' | ')
+        : '';
+      const variantSummary = Array.isArray(metrics?.variantSpans)
+        ? metrics.variantSpans
+          .map((span) => formatVariantSpanLabel(span))
+          .filter(Boolean)
+          .join(' | ')
+        : '';
+      const reasons = [
+        `structure_score=${structureScore.toFixed(2)}`,
+        `duration_score=${durationScore.toFixed(2)}`,
+        `audio_score=${audioScore.toFixed(2)}`,
+        `chapter_score=${chapterScore.toFixed(2)}`,
+        `legacy_structure_score=${Number(metrics.legacyStructureScore || 0).toFixed(2)}`,
+        `legacy_sequence_coherence=${Number(metrics.legacySequenceCoherence || 0).toFixed(3)}`,
+        `corrected_coherence=${Number(metrics.correctedCoherence || 0).toFixed(3)}`,
+        `cluster=${metrics.clusterId || 'standalone'}${metrics.clusterSize > 1 ? `(${metrics.clusterSize})` : ''}`,
+        `avg_segment_overlap=${Number(metrics.averageSegmentOverlap || 0).toFixed(3)}`,
+        `core_coverage=${Number(metrics.sharedCoreRatio || 0).toFixed(3)}`,
+        `variant_spans=${Number(metrics.variantSpanCount || 0)}`,
+        `variant_segments=${Number(metrics.variantSegmentCount || 0)}`,
+        `single_segment_spans=${Number(metrics.singleSegmentVariantSpans || 0)}`,
+        `multi_segment_spans=${Number(metrics.multiSegmentVariantSpans || 0)}`,
+        `common_runs=${commonRunsSummary || '-'}`,
+        `variant_boundaries=${variantSummary || '-'}`,
+        `segment_overlap_map=${overlapSummary || '-'}`,
+        `position_reason=${metrics.positionReason || '-'}`,
+        `sequence_steps=${metrics.directSequenceSteps}`,
+        `sequence_coherence=${metrics.sequenceCoherence.toFixed(3)}`,
+        `backward_jumps=${metrics.backwardJumps}`,
+        `large_jumps=${metrics.largeJumps}`,
+        `alternating_ratio=${metrics.alternatingRatio.toFixed(3)}`
+      ];
+
+      return {
+        ...title,
+        score: Number(totalScore.toFixed(4)),
+        reasons,
+        structuralMetrics: metrics,
+        evaluationLabel: buildEvaluationLabel(metrics),
+        correctedCoherence: Number(metrics.correctedCoherence || 0),
+        legacySequenceCoherence: Number(metrics.legacySequenceCoherence || 0),
+        legacyStructureScore: Number(metrics.legacyStructureScore || 0),
+        clusterId: metrics.clusterId || null,
+        clusterSize: Number(metrics.clusterSize || 1),
+        averageSegmentOverlap: Number(metrics.averageSegmentOverlap || 0),
+        commonRuns: Array.isArray(metrics.commonRuns) ? metrics.commonRuns : [],
+        variantSpans: Array.isArray(metrics.variantSpans) ? metrics.variantSpans : [],
+        overlapEntries: Array.isArray(metrics.overlapEntries) ? metrics.overlapEntries : [],
+        positionReason: metrics.positionReason || null
+      };
+    })
+    .sort((a, b) =>
+      b.score - a.score
+      || b.structuralMetrics.sequenceCoherence - a.structuralMetrics.sequenceCoherence
+      || b.legacyStructureScore - a.legacyStructureScore
+      || b.durationSeconds - a.durationSeconds
+      || b.sizeBytes - a.sizeBytes
+      || a.titleId - b.titleId
+    )
+    .map((item, index) => ({
+      ...item,
+      recommended: index === 0,
+      clusterSummary: clusterSummaryRows.find((row) => row.id === item.clusterId) || null
+    }));
+}
+
+function buildPlaylistSegmentMap(titles) {
+  const map = {};
+  for (const title of titles || []) {
+    const playlistId = normalizePlaylistId(title?.playlistId);
+    if (!playlistId || map[playlistId]) {
+      continue;
+    }
+
+    map[playlistId] = {
+      playlistId,
+      playlistFile: `${playlistId}.mpls`,
+      playlistPath: `BDMV/PLAYLIST/${playlistId}.mpls`,
+      segmentCommand: `strings BDMV/PLAYLIST/${playlistId}.mpls | grep m2ts`,
+      segmentFiles: Array.isArray(title?.segmentFiles) ? title.segmentFiles : [],
+      segmentNumbers: Array.isArray(title?.segmentNumbers) ? title.segmentNumbers : [],
+      fileExists: null,
+      source: 'makemkv_tinfo_26'
+    };
+  }
+  return map;
+}
+
+function buildPlaylistToTitleIdMap(titles) {
+  const map = {};
+  for (const title of titles || []) {
+    const playlistId = normalizePlaylistId(title?.playlistId || title?.playlistFile || null);
+    const titleId = Number(title?.titleId);
+    if (!playlistId || !Number.isFinite(titleId) || titleId < 0) {
+      continue;
+    }
+    const normalizedTitleId = Math.trunc(titleId);
+    if (map[playlistId] === undefined) {
+      map[playlistId] = normalizedTitleId;
+    }
+    const playlistFile = `${playlistId}.mpls`;
+    if (map[playlistFile] === undefined) {
+      map[playlistFile] = normalizedTitleId;
+    }
+  }
+  return map;
+}
+
+function extractWarningLines(lines) {
+  return (Array.isArray(lines) ? lines : [])
+    .filter((line) => /warn|warning|error|fehler|decode|decoder|timeout|corrupt/i.test(String(line || '')))
+    .slice(0, 40)
+    .map((line) => String(line || '').slice(0, 260));
+}
+
+function extractPlaylistMismatchWarnings(titles) {
+  return (Array.isArray(titles) ? titles : [])
+    .filter((title) => title?.playlistIdFromMap && title?.playlistIdFromField16)
+    .filter((title) => String(title.playlistIdFromMap) !== String(title.playlistIdFromField16))
+    .slice(0, 25)
+    .map((title) =>
+      `Titel #${title.titleId}: MSG-Playlist=${title.playlistIdFromMap}.mpls, TINFO16=${title.playlistIdFromField16}.mpls (TINFO16 bevorzugt)`
+    );
+}
+
+function analyzePlaylistObfuscation(lines, minLengthMinutes = 60, options = {}) {
+  const parsedTitles = parseAnalyzeTitles(lines);
+  const playlistAliasMap = buildPlaylistAliasMap(lines);
+  const parsedTitlesWithAliases = parsedTitles.map((item) => {
+    const playlistId = normalizePlaylistId(item?.playlistId);
+    const aliasesRaw = playlistId && Array.isArray(playlistAliasMap?.[playlistId])
+      ? playlistAliasMap[playlistId]
+      : [];
+    const playlistAliases = uniqueOrdered(aliasesRaw.map((value) => normalizePlaylistId(value)).filter(Boolean));
+    return {
+      ...item,
+      playlistAliases
+    };
+  });
+  const reportedTitleCount = parseReportedTitleCount(lines);
+  const minSeconds = Math.max(0, Math.round(Number(minLengthMinutes || 0) * 60));
+  const durationSimilaritySeconds = Math.max(
+    0,
+    Math.round(Number(options.durationSimilaritySeconds || DEFAULT_DURATION_SIMILARITY_SECONDS))
+  );
+
+  const candidatesRaw = parsedTitlesWithAliases
+    .filter((item) => Number(item.durationSeconds || 0) >= minSeconds)
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || b.sizeBytes - a.sizeBytes || a.titleId - b.titleId);
+  const candidates = suppressRawMirrorCandidates(candidatesRaw)
+    .slice()
+    .sort((a, b) => b.durationSeconds - a.durationSeconds || b.sizeBytes - a.sizeBytes || a.titleId - b.titleId);
+  const playlistBackedCandidates = candidates
+    .filter((item) => normalizePlaylistId(item?.playlistId));
+  const candidatePlaylistsAll = uniqueOrdered(
+    playlistBackedCandidates.map((item) => item.playlistId).filter(Boolean)
+  );
+
+  const similarityGroups = buildSimilarityGroups(playlistBackedCandidates, durationSimilaritySeconds);
+  const obfuscationDetected = similarityGroups.length > 0;
+  const multipleCandidatesDetected = candidatePlaylistsAll.length > 1;
+  const manualDecisionRequired = multipleCandidatesDetected;
+  const decisionPool = manualDecisionRequired ? playlistBackedCandidates : [];
+  const evaluatedCandidates = decisionPool.length > 0
+    ? scoreCandidates(decisionPool, { durationSimilaritySeconds })
+    : [];
+  const recommendation = evaluatedCandidates[0] || null;
+  const rankedCandidatePlaylists = uniqueOrdered(
+    evaluatedCandidates.map((item) => normalizePlaylistId(item?.playlistId)).filter(Boolean)
+  );
+  const candidatePlaylists = manualDecisionRequired
+    ? uniqueOrdered([...rankedCandidatePlaylists, ...candidatePlaylistsAll])
+    : [];
+  const playlistSegments = buildPlaylistSegmentMap(decisionPool);
+  const playlistToTitleId = buildPlaylistToTitleIdMap(parsedTitlesWithAliases);
+  const branchingClusters = uniqueOrdered(
+    evaluatedCandidates
+      .map((item) => item?.clusterSummary)
+      .filter((value) => value && typeof value === 'object')
+      .map((value) => JSON.stringify(value))
+  ).map((value) => JSON.parse(value));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    reportedTitleCount,
+    minLengthMinutes: Number(minLengthMinutes || 0),
+    minLengthSeconds: minSeconds,
+    durationSimilaritySeconds,
+    titles: parsedTitlesWithAliases,
+    candidates,
+    duplicateDurationGroups: similarityGroups,
+    obfuscationDetected,
+    manualDecisionRequired,
+    manualDecisionReason: manualDecisionRequired
+      ? (obfuscationDetected ? 'multiple_similar_candidates' : 'multiple_candidates_after_min_length')
+      : null,
+    candidatePlaylists,
+    candidatePlaylistFiles: candidatePlaylists.map((item) => `${item}.mpls`),
+    playlistToTitleId,
+    playlistAliasMap,
+    recommendation: recommendation
+      ? {
+        titleId: recommendation.titleId,
+        playlistId: recommendation.playlistId,
+        score: Number(recommendation.score || 0),
+        reason: Array.isArray(recommendation.reasons) && recommendation.reasons.length > 0
+          ? recommendation.reasons.join('; ')
+          : 'höchster Struktur-Score'
+      }
+      : null,
+    evaluatedCandidates,
+    playlistSegments,
+    branchingClusters,
+    structuralAnalysis: {
+      method: 'makemkv_tinfo_26',
+      sourceCommand: 'makemkvcon -r info disc:0 --robot',
+      analyzedPlaylists: Object.keys(playlistSegments).length
+    },
+    warningLines: [
+      ...extractWarningLines(lines),
+      ...(reportedTitleCount !== null && reportedTitleCount !== parsedTitles.length
+        ? [`Titel-Anzahl abweichend: TCOUNT=${reportedTitleCount}, geparst=${parsedTitles.length}`]
+        : []),
+      ...extractPlaylistMismatchWarnings(parsedTitlesWithAliases)
+    ].slice(0, 60)
+  };
+}
+
+module.exports = {
+  normalizePlaylistId,
+  analyzePlaylistObfuscation
+};

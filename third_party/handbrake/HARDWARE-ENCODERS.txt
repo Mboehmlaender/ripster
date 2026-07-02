@@ -1,0 +1,131 @@
+# Hardware encoder and codec feature evidence
+
+Generated from local inspection of `bin/HandBrakeCLI` on 2026-06-30.
+
+## `HandBrakeCLI --help` matches
+
+```text
+                           Use 'nvdec' to enable NVDec                  
+                           Use 'qsv' to enable QSV decoding             
+```
+
+## `strings bin/HandBrakeCLI` matches
+
+```text
+                           Use 'nvdec' to enable NVDec                  
+                    "PresetDescription": "AMD VCN hardware accelerated H.265 video (up to 1080p) and AAC stereo audio, in an MP4 container.",
+                    "PresetDescription": "AMD VCN hardware accelerated H.265 video (up to 2160p) and AAC stereo audio, in an MP4 container.",
+                    "PresetDescription": "Apple VideoToolbox hardware accelerated H.265 video (up to 1080p) and AAC stereo audio, in an MP4 container.",
+                    "PresetDescription": "Apple VideoToolbox hardware accelerated H.265 video (up to 2160p) and AAC stereo audio, in an MP4 container.",
+                    "PresetDescription": "Nvidia NVENC hardware accelerated H.265 video (up to 1080p) and AAC stereo audio, in an MP4 container.",
+                    "PresetDescription": "Nvidia NVENC hardware accelerated H.265 video (up to 2160p) and AAC stereo audio, in an MP4 container.",
+                    "PresetName": "AV1 QSV 2160p 4K",
+                    "PresetName": "H.265 Apple VideoToolbox 1080p",
+                    "PresetName": "H.265 Apple VideoToolbox 2160p 4K",
+                    "PresetName": "H.265 NVENC 1080p",
+                    "PresetName": "H.265 NVENC 2160p 4K",
+                    "PresetName": "H.265 QSV 1080p",
+                    "PresetName": "H.265 QSV 2160p 4K",
+                    "PresetName": "H.265 VCN 1080p",
+                    "PresetName": "H.265 VCN 2160p 4K",
+                    "VideoEncoder": "nvenc_h265",
+                    "VideoEncoder": "qsv_av1_10bit",
+                    "VideoEncoder": "qsv_h265",
+                    "VideoEncoder": "vce_h265",
+AV1 (Intel QSV)
+AV1 (NVEnc)
+AV1 10-bit (Intel QSV)
+AV1 10-bit (NVEnc)
+Configure how nvenc handles packed RGB input.
+Driver does not support the required nvenc API version. Required: %d.%d Found: %d.%d
+Enabled with number of horizontal strips forced to 2 when number of NVENCs > 1
+Enabled with number of horizontal strips forced to 3 when number of NVENCs > 2
+Failed locking nvenc input buffer
+Failed to create nvenc instance
+Failed to query nvenc max version
+H.264 (AMD VCE)
+H.264 (Intel QSV)
+H.264 (NVEnc)
+H.264 (VideoToolbox)
+H.265 (AMD VCE)
+H.265 (Intel QSV)
+H.265 (NVEnc)
+H.265 (VideoToolbox)
+H.265 10-bit (AMD VCE)
+H.265 10-bit (Intel QSV)
+H.265 10-bit (NVEnc)
+H.265 10-bit (VideoToolbox)
+HE-AAC (FDK)
+HE-AAC (libfdk_aac)
+Loaded Nvenc version %d.%d
+NVDEC capabilities:
+NVIDIA NVENC H.264 encoder
+NVIDIA NVENC av1 encoder
+NVIDIA NVENC hevc encoder
+NvEncodeAPICreateInstance
+NvEncodeAPIGetMaxSupportedVersion
+Nvenc initialized successfully
+Nvenc unloaded
+Provided device doesn't support required NVENC features
+Selects which NVENC capable GPU to use. First GPU is 0, second is 1, and so on.
+The minimum required Nvidia driver for nvenc is %s or newer
+Using global_quality with nvenc is deprecated. Use qp instead.
+Using more than 32 (%d) decode surfaces might cause nvdec to fail.
+av1_nvdec
+av1_nvenc
+av1_qsv
+does not support NVENC
+encavcodecInit: AV1 (AMD VCE)
+encavcodecInit: AV1 (Nvidia NVENC)
+encavcodecInit: H.264 (AMD VCE)
+encavcodecInit: H.264 (Nvidia NVENC)
+encavcodecInit: H.265 (AMD VCE)
+encavcodecInit: H.265 (Nvidia NVENC)
+failed to reconfigure nvenc
+fdk_haac
+h264_nvdec
+h264_nvenc
+h264_qsv
+hevc_nvdec
+hevc_nvenc
+hevc_qsv
+libfdk_aac
+mjpeg_nvdec
+mpeg1_nvdec
+mpeg2_nvdec
+mpeg4_nvdec
+nvdec hwaccel
+nvdec: is available
+nvenc: not available
+nvenc: version %d.%d is available
+nvenc_av1
+nvenc_av1_10bit
+nvenc_h264
+nvenc_h265
+nvenc_h265_10bit
+qsv-preset
+qsv_av1
+qsv_av1_10bit
+qsv_h264
+qsv_h265
+qsv_h265_10bit
+supports NVENC
+vaapi
+vc1_nvdec
+vce_av1
+vce_h264
+vce_h265
+vce_h265_10bit
+vcn: not compiled into this build.
+videotoolbox
+videotoolbox_vld
+vp8_nvdec
+vp9_nvdec
+wmv3_nvdec
+```
+
+## Notes
+
+- `--help` explicitly mentions NVDec and QSV hardware decoding.
+- Binary strings contain NVENC, NVDEC, QSV, AMD VCE/VCN, VAAPI, VideoToolbox and FDK-AAC related strings. These strings are evidence for review, not a complete legal or runtime capability determination.
+- FDK-AAC strings were found; redistribution of this binary is marked as unresolved in `BUILDINFO.md`.
